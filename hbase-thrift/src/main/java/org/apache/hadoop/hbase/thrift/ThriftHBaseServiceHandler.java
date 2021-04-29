@@ -1,5 +1,4 @@
-/**
- *
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,12 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.hadoop.hbase.thrift;
 
 import static org.apache.hadoop.hbase.thrift.Constants.COALESCE_INC_KEY;
 import static org.apache.hadoop.hbase.util.Bytes.getBytes;
 
+import com.google.common.base.Throwables;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -30,35 +29,33 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.CatalogFamilyFormat;
-import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.CellBuilder;
-import org.apache.hadoop.hbase.CellBuilderFactory;
-import org.apache.hadoop.hbase.CellBuilderType;
-import org.apache.hadoop.hbase.CellUtil;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Append;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.OperationWithAttributes;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.ParseFilter;
 import org.apache.hadoop.hbase.filter.PrefixFilter;
@@ -80,11 +77,6 @@ import org.apache.hadoop.hbase.thrift.generated.TScan;
 import org.apache.hadoop.hbase.thrift.generated.TThriftServerType;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.thrift.TException;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.base.Throwables;
 
 /**
  * The HBaseServiceHandler is a glue object that connects Thrift RPC calls to the
@@ -93,7 +85,7 @@ import org.apache.hbase.thirdparty.com.google.common.base.Throwables;
 @InterfaceAudience.Private
 @SuppressWarnings("deprecation")
 public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hbase.Iface {
-  private static final Logger LOG = LoggerFactory.getLogger(ThriftHBaseServiceHandler.class);
+  private static final Log LOG = LogFactory.getLog(ThriftHBaseServiceHandler.class);
 
   public static final int HREGION_VERSION = 1;
 
@@ -104,20 +96,23 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
 
   /**
    * Returns a list of all the column families for a given Table.
+   *
+   * @param table
+   * @throws IOException
    */
   byte[][] getAllColumns(Table table) throws IOException {
-    ColumnFamilyDescriptor[] cds = table.getDescriptor().getColumnFamilies();
+    HColumnDescriptor[] cds = table.getTableDescriptor().getColumnFamilies();
     byte[][] columns = new byte[cds.length][];
     for (int i = 0; i < cds.length; i++) {
-      columns[i] = Bytes.add(cds[i].getName(), KeyValue.COLUMN_FAMILY_DELIM_ARRAY);
+      columns[i] = Bytes.add(cds[i].getName(),
+          KeyValue.COLUMN_FAMILY_DELIM_ARRAY);
     }
     return columns;
   }
 
-
   /**
-   * Assigns a unique ID to the scanner and adds the mapping to an internal
-   * hash-map.
+   * Assign a unique ID to the scanner and adds the mapping to an internal
+   * hash-map
    *
    * @param scanner the {@link ResultScanner} to add
    * @return integer scanner id
@@ -129,6 +124,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     scannerMap.put(id, resultScannerWrapper);
     return id;
   }
+
 
   /**
    * Returns the scanner associated with the specified ID.
@@ -142,7 +138,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
 
   /**
    * Removes the scanner associated with the specified ID from the internal
-   * id-&gt;scanner hash-map.
+   * id-&gt;scanner hash-map
    *
    * @param id the ID of the scanner to remove
    * @return a Scanner, or null if ID was invalid.
@@ -158,10 +154,9 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     this.coalescer = new IncrementCoalescer(this);
   }
 
-
   @Override
   public void enableTable(ByteBuffer tableName) throws IOError {
-    try{
+    try {
       getAdmin().enableTable(getTableName(tableName));
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
@@ -170,9 +165,9 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   @Override
-  public void disableTable(ByteBuffer tableName) throws IOError{
-    try{
-      getAdmin().disableTable(getTableName(tableName));
+  public void disableTable(ByteBuffer tableName) throws IOError, TException {
+    try {
+      getAdmin().disableTable(TableName.valueOf(Bytes.getBytes(tableName)));
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
@@ -190,7 +185,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   // ThriftServerRunner.compact should be deprecated and replaced with methods specific to
-  // table and region.
+  // table and region
   @Override
   public void compact(ByteBuffer tableNameOrRegionName) throws IOError {
     try {
@@ -207,7 +202,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   // ThriftServerRunner.majorCompact should be deprecated and replaced with methods specific
-  // to table and region.
+  // to table and region
   @Override
   public void majorCompact(ByteBuffer tableNameOrRegionName) throws IOError {
     try {
@@ -247,11 +242,10 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       List<HRegionLocation> regionLocations = locator.getAllRegionLocations();
       List<TRegionInfo> results = new ArrayList<>(regionLocations.size());
       for (HRegionLocation regionLocation : regionLocations) {
-        RegionInfo info = regionLocation.getRegion();
+        HRegionInfo info = regionLocation.getRegionInfo();
         ServerName serverName = regionLocation.getServerName();
         TRegionInfo region = new TRegionInfo();
-        region.serverName = ByteBuffer.wrap(
-            Bytes.toBytes(serverName.getHostname()));
+        region.serverName = ByteBuffer.wrap(Bytes.toBytes(serverName.getHostname()));
         region.port = serverName.getPort();
         region.startKey = ByteBuffer.wrap(info.getStartKey());
         region.endKey = ByteBuffer.wrap(info.getEndKey());
@@ -262,20 +256,18 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       }
       return results;
     } catch (TableNotFoundException e) {
-      // Return empty list for non-existing table
       return Collections.emptyList();
-    } catch (IOException e){
+    } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
     }
   }
 
   @Override
-  public List<TCell> get(
-      ByteBuffer tableName, ByteBuffer row, ByteBuffer column,
+  public List<TCell> get(ByteBuffer tableName, ByteBuffer row, ByteBuffer column,
       Map<ByteBuffer, ByteBuffer> attributes)
       throws IOError {
-    byte [][] famAndQf = CellUtil.parseColumn(getBytes(column));
+    byte[][] famAndQf = KeyValue.parseColumn(getBytes(column));
     if (famAndQf.length == 1) {
       return get(tableName, row, famAndQf[0], null, attributes);
     }
@@ -317,20 +309,6 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     }
   }
 
-  @Override
-  public List<TCell> getVer(ByteBuffer tableName, ByteBuffer row, ByteBuffer column,
-      int numVersions, Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
-    byte [][] famAndQf = CellUtil.parseColumn(getBytes(column));
-    if(famAndQf.length == 1) {
-      return getVer(tableName, row, famAndQf[0], null, numVersions, attributes);
-    }
-    if (famAndQf.length == 2) {
-      return getVer(tableName, row, famAndQf[0], famAndQf[1], numVersions, attributes);
-    }
-    throw new IllegalArgumentException("Invalid familyAndQualifier provided.");
-
-  }
-
   /**
    * Note: this public interface is slightly different from public Java APIs in regard to
    * handling of the qualifier. Here we differ from the public Java API in that null != byte[0].
@@ -339,9 +317,8 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
    * {@link #getVer(ByteBuffer, ByteBuffer, ByteBuffer, int, Map)} with a {@code column} value
    * that lacks a {@code ':'}.
    */
-  public List<TCell> getVer(ByteBuffer tableName, ByteBuffer row, byte[] family,
-      byte[] qualifier, int numVersions, Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
-
+  public List<TCell> getVer(ByteBuffer tableName, ByteBuffer row, byte[] family, byte[] qualifier,
+      int numVersions, Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
     Table table = null;
     try {
       table = getTable(tableName);
@@ -352,42 +329,54 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       } else {
         get.addColumn(family, qualifier);
       }
-      get.readVersions(numVersions);
+      get.setMaxVersions(numVersions);
       Result result = table.get(get);
       return ThriftUtilities.cellFromHBase(result.rawCells());
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
-    } finally{
+    } finally {
       closeTable(table);
     }
   }
 
   @Override
+  public List<TCell> getVer(ByteBuffer tableName, ByteBuffer row, ByteBuffer column,
+      int numVersions, Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
+    byte[][] famAndQf = KeyValue.parseColumn(getBytes(column));
+    if (famAndQf.length == 1) {
+      return getVer(tableName, row, famAndQf[0], null, numVersions, attributes);
+    }
+    if (famAndQf.length == 2) {
+      return getVer(tableName, row, famAndQf[0], famAndQf[1], numVersions, attributes);
+    }
+    throw new IllegalArgumentException("Invalid familyAndQualifier provided.");
+  }
+
+  @Override
   public List<TCell> getVerTs(ByteBuffer tableName, ByteBuffer row, ByteBuffer column,
-      long timestamp, int numVersions, Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
-    byte [][] famAndQf = CellUtil.parseColumn(getBytes(column));
+    long timestamp, int numVersions, Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
+    byte [][] famAndQf = KeyValue.parseColumn(getBytes(column));
     if (famAndQf.length == 1) {
       return getVerTs(tableName, row, famAndQf[0], null, timestamp, numVersions, attributes);
     }
     if (famAndQf.length == 2) {
       return getVerTs(tableName, row, famAndQf[0], famAndQf[1], timestamp, numVersions,
-          attributes);
+        attributes);
     }
     throw new IllegalArgumentException("Invalid familyAndQualifier provided.");
   }
 
   /**
-   * Note: this internal interface is slightly different from public APIs in regard to handling
-   * of the qualifier. Here we differ from the public Java API in that null != byte[0]. Rather,
-   * we respect qual == null as a request for the entire column family. The caller (
-   * {@link #getVerTs(ByteBuffer, ByteBuffer, ByteBuffer, long, int, Map)}) interface IS
-   * consistent in that the column is parse like normal.
-   */
+    * Note: this internal interface is slightly different from public APIs in regard to handling
+    * of the qualifier. Here we differ from the public Java API in that null != byte[0]. Rather,
+    * we respect qual == null as a request for the entire column family. The caller (
+    * {@link #getVerTs(ByteBuffer, ByteBuffer, ByteBuffer, long, int, Map)}) interface IS
+    * consistent in that the column is parse like normal.
+    */
   protected List<TCell> getVerTs(ByteBuffer tableName, ByteBuffer row, byte[] family,
-      byte[] qualifier, long timestamp, int numVersions, Map<ByteBuffer, ByteBuffer> attributes)
-      throws IOError {
-
+    byte[] qualifier, long timestamp, int numVersions, Map<ByteBuffer, ByteBuffer> attributes)
+    throws IOError {
     Table table = null;
     try {
       table = getTable(tableName);
@@ -399,33 +388,32 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
         get.addColumn(family, qualifier);
       }
       get.setTimeRange(0, timestamp);
-      get.readVersions(numVersions);
+      get.setMaxVersions(numVersions);
       Result result = table.get(get);
       return ThriftUtilities.cellFromHBase(result.rawCells());
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
-    } finally{
+    } finally {
       closeTable(table);
     }
   }
 
   @Override
   public List<TRowResult> getRow(ByteBuffer tableName, ByteBuffer row,
-      Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
+    Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
     return getRowWithColumnsTs(tableName, row, null,
-        HConstants.LATEST_TIMESTAMP,
-        attributes);
+      HConstants.LATEST_TIMESTAMP,
+      attributes);
   }
 
   @Override
   public List<TRowResult> getRowWithColumns(ByteBuffer tableName,
-      ByteBuffer row,
-      List<ByteBuffer> columns,
-      Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
+    ByteBuffer row,
+    List<ByteBuffer> columns,
+    Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
     return getRowWithColumnsTs(tableName, row, columns,
-        HConstants.LATEST_TIMESTAMP,
-        attributes);
+      HConstants.LATEST_TIMESTAMP,attributes);
   }
 
   @Override
@@ -439,7 +427,6 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   public List<TRowResult> getRowWithColumnsTs(
       ByteBuffer tableName, ByteBuffer row, List<ByteBuffer> columns,
       long timestamp, Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
-
     Table table = null;
     try {
       table = getTable(tableName);
@@ -452,8 +439,8 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       }
       Get get = new Get(getBytes(row));
       addAttributes(get, attributes);
-      for(ByteBuffer column : columns) {
-        byte [][] famAndQf = CellUtil.parseColumn(getBytes(column));
+      for (ByteBuffer column: columns) {
+        byte[][] famAndQf = KeyValue.parseColumn(getBytes(column));
         if (famAndQf.length == 1) {
           get.addFamily(famAndQf[0]);
         } else {
@@ -466,7 +453,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
-    } finally{
+    } finally {
       closeTable(table);
     }
   }
@@ -477,8 +464,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       Map<ByteBuffer, ByteBuffer> attributes)
       throws IOError {
     return getRowsWithColumnsTs(tableName, rows, null,
-        HConstants.LATEST_TIMESTAMP,
-        attributes);
+      HConstants.LATEST_TIMESTAMP, attributes);
   }
 
   @Override
@@ -487,8 +473,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       List<ByteBuffer> columns,
       Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
     return getRowsWithColumnsTs(tableName, rows, columns,
-        HConstants.LATEST_TIMESTAMP,
-        attributes);
+      HConstants.LATEST_TIMESTAMP, attributes);
   }
 
   @Override
@@ -497,7 +482,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       long timestamp,
       Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
     return getRowsWithColumnsTs(tableName, rows, null,
-        timestamp, attributes);
+      timestamp, attributes);
   }
 
   @Override
@@ -505,21 +490,19 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       List<ByteBuffer> rows,
       List<ByteBuffer> columns, long timestamp,
       Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
-
-    Table table= null;
+    Table table = null;
     try {
       List<Get> gets = new ArrayList<>(rows.size());
       table = getTable(tableName);
       if (metrics != null) {
         metrics.incNumRowKeysInBatchGet(rows.size());
       }
-      for (ByteBuffer row : rows) {
+      for (ByteBuffer row: rows) {
         Get get = new Get(getBytes(row));
         addAttributes(get, attributes);
         if (columns != null) {
-
-          for(ByteBuffer column : columns) {
-            byte [][] famAndQf = CellUtil.parseColumn(getBytes(column));
+          for (ByteBuffer column: columns) {
+            byte[][] famAndQf = KeyValue.parseColumn(getBytes(column));
             if (famAndQf.length == 1) {
               get.addFamily(famAndQf[0]);
             } else {
@@ -535,7 +518,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
-    } finally{
+    } finally {
       closeTable(table);
     }
   }
@@ -545,8 +528,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       ByteBuffer tableName, ByteBuffer row, ByteBuffer column,
       Map<ByteBuffer, ByteBuffer> attributes)
       throws IOError {
-    deleteAllTs(tableName, row, column, HConstants.LATEST_TIMESTAMP,
-        attributes);
+    deleteAllTs(tableName, row, column, HConstants.LATEST_TIMESTAMP, attributes);
   }
 
   @Override
@@ -557,16 +539,15 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Delete delete  = new Delete(getBytes(row));
+      Delete delete = new Delete(getBytes(row));
       addAttributes(delete, attributes);
-      byte [][] famAndQf = CellUtil.parseColumn(getBytes(column));
+      byte[][] famAndQf = KeyValue.parseColumn(getBytes(column));
       if (famAndQf.length == 1) {
         delete.addFamily(famAndQf[0], timestamp);
       } else {
         delete.addColumns(famAndQf[0], famAndQf[1], timestamp);
       }
       table.delete(delete);
-
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
@@ -589,7 +570,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Delete delete  = new Delete(getBytes(row), timestamp);
+      Delete delete = new Delete((getBytes(row)), timestamp);
       addAttributes(delete, attributes);
       table.delete(delete);
     } catch (IOException e) {
@@ -601,18 +582,19 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   @Override
-  public void createTable(ByteBuffer in_tableName, List<ColumnDescriptor> columnFamilies)
-    throws IOError, IllegalArgument, AlreadyExists {
+  public void createTable(ByteBuffer in_tableName,
+      List<ColumnDescriptor> columnFamilies) throws IOError, IllegalArgument,AlreadyExists {
     TableName tableName = getTableName(in_tableName);
     try {
       if (getAdmin().tableExists(tableName)) {
         throw new AlreadyExists("table name already in use");
       }
-      TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableName);
-      for (ColumnDescriptor col : columnFamilies) {
-        builder.setColumnFamily(ThriftUtilities.colDescFromThrift(col));
+      HTableDescriptor desc = new HTableDescriptor(tableName);
+      for (ColumnDescriptor col: columnFamilies) {
+        HColumnDescriptor colDesc = ThriftUtilities.colDescFromThrift(col);
+        desc.addFamily(colDesc);
       }
-      getAdmin().createTable(builder.build());
+      getAdmin().createTable(desc);
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
@@ -630,11 +612,11 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   public void deleteTable(ByteBuffer in_tableName) throws IOError {
     TableName tableName = getTableName(in_tableName);
     if (LOG.isDebugEnabled()) {
-      LOG.debug("deleteTable: table={}", tableName);
+      LOG.debug("deleteTable: table= " + tableName);
     }
     try {
       if (!getAdmin().tableExists(tableName)) {
-        throw new IOException("table does not exist");
+        throw new IOException("table does not exists.");
       }
       getAdmin().deleteTable(tableName);
     } catch (IOException e) {
@@ -645,8 +627,8 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
 
   @Override
   public void mutateRow(ByteBuffer tableName, ByteBuffer row,
-      List<Mutation> mutations, Map<ByteBuffer, ByteBuffer> attributes)
-      throws IOError, IllegalArgument {
+    List<Mutation> mutations, Map<ByteBuffer, ByteBuffer> attributes)
+    throws IOError, IllegalArgument {
     mutateRowTs(tableName, row, mutations, HConstants.LATEST_TIMESTAMP, attributes);
   }
 
@@ -660,38 +642,28 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       table = getTable(tableName);
       Put put = new Put(getBytes(row), timestamp);
       addAttributes(put, attributes);
-
       Delete delete = new Delete(getBytes(row));
       addAttributes(delete, attributes);
       if (metrics != null) {
         metrics.incNumRowKeysInBatchMutate(mutations.size());
       }
-
-      // I apologize for all this mess :)
-      CellBuilder builder = CellBuilderFactory.create(CellBuilderType.SHALLOW_COPY);
-      for (Mutation m : mutations) {
-        byte[][] famAndQf = CellUtil.parseColumn(getBytes(m.column));
+      for (Mutation m: mutations) {
+        byte[][] famAndQf = KeyValue.parseColumn(getBytes(m.column));
         if (m.isDelete) {
           if (famAndQf.length == 1) {
             delete.addFamily(famAndQf[0], timestamp);
           } else {
-            delete.addColumns(famAndQf[0], famAndQf[1], timestamp);
+            delete.addColumn(famAndQf[0], famAndQf[1], timestamp);
           }
           delete.setDurability(m.writeToWAL ? Durability.SYNC_WAL : Durability.SKIP_WAL);
         } else {
-          if(famAndQf.length == 1) {
+          if (famAndQf.length == 1) {
             LOG.warn("No column qualifier specified. Delete is the only mutation supported "
-                + "over the whole column family.");
+              + "over the whole column family.");
           } else {
-            put.add(builder.clear()
-                .setRow(put.getRow())
-                .setFamily(famAndQf[0])
-                .setQualifier(famAndQf[1])
-                .setTimestamp(put.getTimestamp())
-                .setType(Cell.Type.Put)
-                .setValue(m.value != null ? getBytes(m.value)
-                    : HConstants.EMPTY_BYTE_ARRAY)
-                .build());
+            put.addImmutable(famAndQf[0], famAndQf[1],
+                m.value != null ? getBytes(m.value)
+                    : HConstants.EMPTY_BYTE_ARRAY);
           }
           put.setDurability(m.writeToWAL ? Durability.SYNC_WAL : Durability.SKIP_WAL);
         }
@@ -708,7 +680,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     } catch (IllegalArgumentException e) {
       LOG.warn(e.getMessage(), e);
       throw new IllegalArgument(Throwables.getStackTraceAsString(e));
-    } finally{
+    } finally {
       closeTable(table);
     }
   }
@@ -716,7 +688,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   @Override
   public void mutateRows(ByteBuffer tableName, List<BatchMutation> rowBatches,
       Map<ByteBuffer, ByteBuffer> attributes)
-      throws IOError, IllegalArgument, TException {
+      throws TException {
     mutateRowsTs(tableName, rowBatches, HConstants.LATEST_TIMESTAMP, attributes);
   }
 
@@ -725,9 +697,9 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       ByteBuffer tableName, List<BatchMutation> rowBatches, long timestamp,
       Map<ByteBuffer, ByteBuffer> attributes)
       throws IOError, IllegalArgument, TException {
-    List<Put> puts = new ArrayList<>();
-    List<Delete> deletes = new ArrayList<>();
-    CellBuilder builder = CellBuilderFactory.create(CellBuilderType.SHALLOW_COPY);
+    List<Put> puts = new ArrayList<Put>();
+    List<Delete> deletes = new ArrayList<Delete>();
+
     for (BatchMutation batch : rowBatches) {
       byte[] row = getBytes(batch.row);
       List<Mutation> mutations = batch.mutations;
@@ -736,13 +708,13 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       Put put = new Put(row, timestamp);
       addAttributes(put, attributes);
       for (Mutation m : mutations) {
-        byte[][] famAndQf = CellUtil.parseColumn(getBytes(m.column));
+        byte[][] famAndQf = KeyValue.parseColumn(getBytes(m.column));
         if (m.isDelete) {
           // no qualifier, family only.
           if (famAndQf.length == 1) {
-            delete.addFamily(famAndQf[0], timestamp);
+            delete.deleteFamily(famAndQf[0], timestamp);
           } else {
-            delete.addColumns(famAndQf[0], famAndQf[1], timestamp);
+            delete.deleteColumns(famAndQf[0], famAndQf[1], timestamp);
           }
           delete.setDurability(m.writeToWAL ? Durability.SYNC_WAL
               : Durability.SKIP_WAL);
@@ -752,19 +724,8 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
                 + "over the whole column family.");
           }
           if (famAndQf.length == 2) {
-            try {
-              put.add(builder.clear()
-                  .setRow(put.getRow())
-                  .setFamily(famAndQf[0])
-                  .setQualifier(famAndQf[1])
-                  .setTimestamp(put.getTimestamp())
-                  .setType(Cell.Type.Put)
-                  .setValue(m.value != null ? getBytes(m.value)
-                      : HConstants.EMPTY_BYTE_ARRAY)
-                  .build());
-            } catch (IOException e) {
-              throw new IllegalArgumentException(e);
-            }
+            put.addImmutable(famAndQf[0], famAndQf[1],
+                m.value != null ? getBytes(m.value) : HConstants.EMPTY_BYTE_ARRAY);
           } else {
             throw new IllegalArgumentException("Invalid famAndQf provided.");
           }
@@ -803,15 +764,15 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   public long atomicIncrement(
       ByteBuffer tableName, ByteBuffer row, ByteBuffer column, long amount)
       throws IOError, IllegalArgument, TException {
-    byte [][] famAndQf = CellUtil.parseColumn(getBytes(column));
-    if(famAndQf.length == 1) {
+    byte[][] famAndQf = KeyValue.parseColumn(getBytes(column));
+    if (famAndQf.length == 1) {
       return atomicIncrement(tableName, row, famAndQf[0], HConstants.EMPTY_BYTE_ARRAY, amount);
     }
     return atomicIncrement(tableName, row, famAndQf[0], famAndQf[1], amount);
   }
 
   protected long atomicIncrement(ByteBuffer tableName, ByteBuffer row,
-      byte [] family, byte [] qualifier, long amount)
+      byte[] family, byte[] qualifier, long amount)
       throws IOError, IllegalArgument, TException {
     Table table = null;
     try {
@@ -827,31 +788,19 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   @Override
-  public void scannerClose(int id) throws IOError, IllegalArgument {
-    LOG.debug("scannerClose: id={}", id);
-    ResultScannerWrapper resultScannerWrapper = getScanner(id);
-    if (resultScannerWrapper == null) {
-      LOG.warn("scanner ID is invalid");
-      throw new IllegalArgument("scanner ID is invalid");
-    }
-    resultScannerWrapper.getScanner().close();
-    removeScanner(id);
-  }
-
-  @Override
-  public List<TRowResult> scannerGetList(int id,int nbRows)
+  public List<TRowResult> scannerGetList(int id, int nbRows)
       throws IllegalArgument, IOError {
-    LOG.debug("scannerGetList: id={}", id);
-    ResultScannerWrapper resultScannerWrapper = getScanner(id);
-    if (null == resultScannerWrapper) {
-      String message = "scanner ID is invalid";
+    LOG.debug("scannerGetList: id= " + id);
+    ResultScannerWrapper resultscannerWrapper = getScanner(id);
+    if (null == resultscannerWrapper) {
+      String message = "scanner ID is invalid.";
       LOG.warn(message);
-      throw new IllegalArgument("scanner ID is invalid");
+      throw new IllegalArgument("scanner ID is invalid.");
     }
 
-    Result [] results;
+    Result[] results;
     try {
-      results = resultScannerWrapper.getScanner().next(nbRows);
+      results = resultscannerWrapper.getScanner().next(nbRows);
       if (null == results) {
         return new ArrayList<>();
       }
@@ -859,29 +808,44 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
     }
-    return ThriftUtilities.rowResultFromHBase(results, resultScannerWrapper.isColumnSorted());
+    return ThriftUtilities.rowResultFromHBase(results, resultscannerWrapper.isColumnSorted());
+  }
+
+  @Override
+  public void scannerClose(int id) throws IOError, IllegalArgument {
+    LOG.debug("scannerClose: id= " + id);
+    ResultScannerWrapper resultScannerWrapper = getScanner(id);
+    if (resultScannerWrapper == null) {
+      LOG.warn("scanner ID is invalid.");
+      throw new IllegalArgument("scanner ID is invalid.");
+    }
+    resultScannerWrapper.getScanner().close();
+    removeScanner(id);
+  }
+
+  public List<TCell> getRowOrBefore(ByteBuffer tableName, ByteBuffer row, ByteBuffer family)
+      throws IOError, TException {
+    return null;
   }
 
   @Override
   public List<TRowResult> scannerGet(int id) throws IllegalArgument, IOError {
-    return scannerGetList(id,1);
+    return scannerGetList(id, 1);
   }
 
   @Override
   public int scannerOpenWithScan(ByteBuffer tableName, TScan tScan,
-      Map<ByteBuffer, ByteBuffer> attributes)
-      throws IOError {
-
+      Map<ByteBuffer, ByteBuffer> attributes) throws IOError {
     Table table = null;
     try {
       table = getTable(tableName);
       Scan scan = new Scan();
       addAttributes(scan, attributes);
       if (tScan.isSetStartRow()) {
-        scan.withStartRow(tScan.getStartRow());
+        scan.setStartRow(tScan.getStartRow());
       }
       if (tScan.isSetStopRow()) {
-        scan.withStopRow(tScan.getStopRow());
+        scan.setStopRow(tScan.getStopRow());
       }
       if (tScan.isSetTimestamp()) {
         scan.setTimeRange(0, tScan.getTimestamp());
@@ -894,7 +858,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       }
       if (tScan.isSetColumns() && !tScan.getColumns().isEmpty()) {
         for(ByteBuffer column : tScan.getColumns()) {
-          byte [][] famQf = CellUtil.parseColumn(getBytes(column));
+          byte [][] famQf = KeyValue.parseColumn(getBytes(column));
           if(famQf.length == 1) {
             scan.addFamily(famQf[0]);
           } else {
@@ -930,11 +894,11 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan().withStartRow(getBytes(startRow));
+      Scan scan = new Scan(getBytes(startRow));
       addAttributes(scan, attributes);
       if(columns != null && !columns.isEmpty()) {
         for(ByteBuffer column : columns) {
-          byte [][] famQf = CellUtil.parseColumn(getBytes(column));
+          byte [][] famQf = KeyValue.parseColumn(getBytes(column));
           if(famQf.length == 1) {
             scan.addFamily(famQf[0]);
           } else {
@@ -960,11 +924,11 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan().withStartRow(getBytes(startRow)).withStopRow(getBytes(stopRow));
+      Scan scan = new Scan(getBytes(startRow), getBytes(stopRow));
       addAttributes(scan, attributes);
       if(columns != null && !columns.isEmpty()) {
         for(ByteBuffer column : columns) {
-          byte [][] famQf = CellUtil.parseColumn(getBytes(column));
+          byte [][] famQf = KeyValue.parseColumn(getBytes(column));
           if(famQf.length == 1) {
             scan.addFamily(famQf[0]);
           } else {
@@ -991,14 +955,14 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan().withStartRow(getBytes(startAndPrefix));
+      Scan scan = new Scan(getBytes(startAndPrefix));
       addAttributes(scan, attributes);
       Filter f = new WhileMatchFilter(
           new PrefixFilter(getBytes(startAndPrefix)));
       scan.setFilter(f);
       if (columns != null && !columns.isEmpty()) {
         for(ByteBuffer column : columns) {
-          byte [][] famQf = CellUtil.parseColumn(getBytes(column));
+          byte [][] famQf = KeyValue.parseColumn(getBytes(column));
           if(famQf.length == 1) {
             scan.addFamily(famQf[0]);
           } else {
@@ -1023,12 +987,12 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan().withStartRow(getBytes(startRow));
+      Scan scan = new Scan(getBytes(startRow));
       addAttributes(scan, attributes);
       scan.setTimeRange(0, timestamp);
       if (columns != null && !columns.isEmpty()) {
         for (ByteBuffer column : columns) {
-          byte [][] famQf = CellUtil.parseColumn(getBytes(column));
+          byte [][] famQf = KeyValue.parseColumn(getBytes(column));
           if(famQf.length == 1) {
             scan.addFamily(famQf[0]);
           } else {
@@ -1048,18 +1012,17 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   @Override
   public int scannerOpenWithStopTs(ByteBuffer tableName, ByteBuffer startRow,
       ByteBuffer stopRow, List<ByteBuffer> columns, long timestamp,
-      Map<ByteBuffer, ByteBuffer> attributes)
-      throws IOError, TException {
+      Map<ByteBuffer, ByteBuffer> attributes) throws IOError, TException {
 
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan().withStartRow(getBytes(startRow)).withStopRow(getBytes(stopRow));
+      Scan scan = new Scan(getBytes(startRow), getBytes(stopRow));
       addAttributes(scan, attributes);
       scan.setTimeRange(0, timestamp);
       if (columns != null && !columns.isEmpty()) {
         for (ByteBuffer column : columns) {
-          byte [][] famQf = CellUtil.parseColumn(getBytes(column));
+          byte [][] famQf = KeyValue.parseColumn(getBytes(column));
           if(famQf.length == 1) {
             scan.addFamily(famQf[0]);
           } else {
@@ -1080,15 +1043,12 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   @Override
   public Map<ByteBuffer, ColumnDescriptor> getColumnDescriptors(
       ByteBuffer tableName) throws IOError, TException {
-
     Table table = null;
     try {
       TreeMap<ByteBuffer, ColumnDescriptor> columns = new TreeMap<>();
-
       table = getTable(tableName);
-      TableDescriptor desc = table.getDescriptor();
-
-      for (ColumnFamilyDescriptor e : desc.getColumnFamilies()) {
+      HTableDescriptor desc = table.getTableDescriptor();
+      for (HColumnDescriptor e: desc.getFamilies()) {
         ColumnDescriptor col = ThriftUtilities.colDescFromHbase(e);
         columns.put(col.name, col);
       }
@@ -1102,11 +1062,11 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   private void closeTable(Table table) throws IOError {
-    try{
-      if(table != null){
+    try {
+      if (table != null) {
         table.close();
       }
-    } catch (IOException e){
+    } catch (IOException e) {
       LOG.error(e.getMessage(), e);
       throw getIOError(e);
     }
@@ -1117,19 +1077,18 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     try {
       byte[] row = getBytes(searchRow);
       Result startRowResult = getReverseScanResult(TableName.META_TABLE_NAME.getName(), row,
-          HConstants.CATALOG_FAMILY);
+        HConstants.CATALOG_FAMILY);
 
       if (startRowResult == null) {
-        throw new IOException("Cannot find row in "+ TableName.META_TABLE_NAME+", row="
+        throw new IOException("Cannot find row in " + TableName.META_TABLE_NAME + ", row="
             + Bytes.toStringBinary(row));
       }
 
       // find region start and end keys
-      RegionInfo regionInfo = CatalogFamilyFormat.getRegionInfo(startRowResult);
+      HRegionInfo regionInfo = MetaTableAccessor.getHRegionInfo(startRowResult);
       if (regionInfo == null) {
-        throw new IOException("RegionInfo REGIONINFO was null or " +
-            " empty in Meta for row="
-            + Bytes.toStringBinary(row));
+        throw new IOException("RegionInfo REGIONINFOR was null or " +
+            " empty in Meta for row=" + Bytes.toStringBinary(row));
       }
       TRegionInfo region = new TRegionInfo();
       region.setStartKey(regionInfo.getStartKey());
@@ -1137,9 +1096,8 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       region.id = regionInfo.getRegionId();
       region.setName(regionInfo.getRegionName());
       region.version = HREGION_VERSION; // version not used anymore, PB encoding used.
-
       // find region assignment to server
-      ServerName serverName = CatalogFamilyFormat.getServerName(startRowResult, 0);
+      ServerName serverName = HRegionInfo.getServerName(startRowResult);
       if (serverName != null) {
         region.setServerName(Bytes.toBytes(serverName.getHostname()));
         region.port = serverName.getPort();
@@ -1152,94 +1110,87 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   private Result getReverseScanResult(byte[] tableName, byte[] row, byte[] family)
-      throws IOException {
-    Scan scan = new Scan().withStartRow(row);
+    throws IOException {
+    Scan scan = new Scan(row);
     scan.setReversed(true);
     scan.addFamily(family);
-    scan.withStartRow(row);
+    scan.setStartRow(row);
     try (Table table = getTable(tableName);
-         ResultScanner scanner = table.getScanner(scan)) {
+        ResultScanner scanner = table.getScanner(scan)) {
       return scanner.next();
     }
   }
 
   @Override
-  public void increment(TIncrement tincrement) throws IOError, TException {
-
-    if (tincrement.getRow().length == 0 || tincrement.getTable().length == 0) {
-      throw new TException("Must supply a table and a row key; can't increment");
+  public void increment(TIncrement tIncrement) throws IOError, TException {
+    if (tIncrement.getRow().length == 0 || tIncrement.getTable().length == 0) {
+      throw new TException("Must supply a table and a row key; can't increment.");
     }
 
     if (conf.getBoolean(COALESCE_INC_KEY, false)) {
-      this.coalescer.queueIncrement(tincrement);
+      this.coalescer.queueIncrement(tIncrement);
       return;
     }
 
     Table table = null;
     try {
-      table = getTable(tincrement.getTable());
-      Increment inc = ThriftUtilities.incrementFromThrift(tincrement);
+      table = getTable(tIncrement.getTable());
+      Increment inc = ThriftUtilities.incrementFromThrift(tIncrement);
       table.increment(inc);
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
-    } finally{
+    } finally {
       closeTable(table);
     }
   }
 
   @Override
-  public void incrementRows(List<TIncrement> tincrements) throws IOError, TException {
+  public void incrementRows(List<TIncrement> tIncrements) throws IOError, TException {
     if (conf.getBoolean(COALESCE_INC_KEY, false)) {
-      this.coalescer.queueIncrements(tincrements);
+      this.coalescer.queueIncrements(tIncrements);
       return;
     }
-    for (TIncrement tinc : tincrements) {
+    for (TIncrement tinc: tIncrements) {
       increment(tinc);
     }
   }
 
   @Override
-  public List<TCell> append(TAppend tappend) throws IOError, TException {
-    if (tappend.getRow().length == 0 || tappend.getTable().length == 0) {
-      throw new TException("Must supply a table and a row key; can't append");
+  public List<TCell> append(TAppend tAppend) throws IOError, TException {
+    if (tAppend.getRow().length == 0 || tAppend.getTable().length == 0) {
+      throw new TException("Must supply a table and a row key; can't append.");
     }
 
     Table table = null;
     try {
-      table = getTable(tappend.getTable());
-      Append append = ThriftUtilities.appendFromThrift(tappend);
+      table = getTable(tAppend.getTable());
+      Append append = ThriftUtilities.appendFromThrift(tAppend);
       Result result = table.append(append);
       return ThriftUtilities.cellFromHBase(result.rawCells());
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
-    } finally{
+    } finally {
       closeTable(table);
     }
   }
 
   @Override
   public boolean checkAndPut(ByteBuffer tableName, ByteBuffer row, ByteBuffer column,
-      ByteBuffer value, Mutation mput, Map<ByteBuffer, ByteBuffer> attributes) throws IOError,
-      IllegalArgument, TException {
+    ByteBuffer value, Mutation mput, Map<ByteBuffer, ByteBuffer> attributes) throws TException {
     Put put;
     try {
       put = new Put(getBytes(row), HConstants.LATEST_TIMESTAMP);
       addAttributes(put, attributes);
 
-      byte[][] famAndQf = CellUtil.parseColumn(getBytes(mput.column));
-      put.add(CellBuilderFactory.create(CellBuilderType.SHALLOW_COPY)
-          .setRow(put.getRow())
-          .setFamily(famAndQf[0])
-          .setQualifier(famAndQf[1])
-          .setTimestamp(put.getTimestamp())
-          .setType(Cell.Type.Put)
-          .setValue(mput.value != null ? getBytes(mput.value)
-              : HConstants.EMPTY_BYTE_ARRAY)
-          .build());
+      byte[][] famAndQf = KeyValue.parseColumn(getBytes(mput.column));
+
+      put.addImmutable(famAndQf[0], famAndQf[1], mput.value != null ? getBytes(mput.value)
+          : HConstants.EMPTY_BYTE_ARRAY);
+
       put.setDurability(mput.writeToWAL ? Durability.SYNC_WAL : Durability.SKIP_WAL);
-    } catch (IOException | IllegalArgumentException e) {
+    } catch (IllegalArgumentException e) {
       LOG.warn(e.getMessage(), e);
       throw new IllegalArgument(Throwables.getStackTraceAsString(e));
     }
@@ -1247,14 +1198,9 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      byte[][] famAndQf = CellUtil.parseColumn(getBytes(column));
-      Table.CheckAndMutateBuilder mutateBuilder =
-          table.checkAndMutate(getBytes(row), famAndQf[0]).qualifier(famAndQf[1]);
-      if (value != null) {
-        return mutateBuilder.ifEquals(getBytes(value)).thenPut(put);
-      } else {
-        return mutateBuilder.ifNotExists().thenPut(put);
-      }
+      byte[][] famAndQf = KeyValue.parseColumn(getBytes(column));
+      return table.checkAndPut(getBytes(row), famAndQf[0], famAndQf[1],
+          value != null ? getBytes(value) : HConstants.EMPTY_BYTE_ARRAY, put);
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
@@ -1267,13 +1213,8 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   @Override
-  public TThriftServerType getThriftServerType() {
+  public TThriftServerType getThriftServerType() throws TException {
     return TThriftServerType.ONE;
-  }
-
-  @Override
-  public String getClusterId() throws TException {
-    return connectionCache.getClusterId();
   }
 
   private static IOError getIOError(Throwable throwable) {
@@ -1290,19 +1231,18 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     if (attributes == null || attributes.isEmpty()) {
       return;
     }
-    for (Map.Entry<ByteBuffer, ByteBuffer> entry : attributes.entrySet()) {
+    for (Map.Entry<ByteBuffer, ByteBuffer> entry: attributes.entrySet()) {
       String name = Bytes.toStringBinary(getBytes(entry.getKey()));
-      byte[] value =  getBytes(entry.getValue());
+      byte[] value = getBytes(entry.getValue());
       op.setAttribute(name, value);
     }
   }
 
   protected static class ResultScannerWrapper {
-
     private final ResultScanner scanner;
     private final boolean sortColumns;
     public ResultScannerWrapper(ResultScanner resultScanner,
-        boolean sortResultColumns) {
+      boolean sortResultColumns) {
       scanner = resultScanner;
       sortColumns = sortResultColumns;
     }
@@ -1329,8 +1269,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
 
     @Override
     public boolean equals(Object other) {
-      if (super.equals(other) &&
-          other instanceof IOErrorWithCause) {
+      if (super.equals(other) && other instanceof IOErrorWithCause) {
         Throwable otherCause = ((IOErrorWithCause) other).getCause();
         if (this.getCause() != null) {
           return otherCause != null && this.getCause().equals(otherCause);
@@ -1348,6 +1287,4 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       return result;
     }
   }
-
-
 }

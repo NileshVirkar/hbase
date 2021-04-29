@@ -21,12 +21,15 @@ import static org.apache.hadoop.hbase.thrift.TestThriftServerCmdLine.createBound
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
+import com.google.common.base.Supplier;
+
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.function.Supplier;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
@@ -35,7 +38,6 @@ import org.apache.hadoop.hbase.thrift.generated.Hbase;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManagerTestHelper;
 import org.apache.hadoop.hbase.util.IncrementingEnvironmentEdge;
-import org.apache.hadoop.hbase.util.TableDescriptorChecker;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.transport.THttpClient;
@@ -43,15 +45,10 @@ import org.apache.thrift.transport.TTransportException;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.ExpectedException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 
 /**
  * Start the HBase Thrift HTTP server on a random port through the command-line
@@ -59,19 +56,15 @@ import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
  */
 @Category({ClientTests.class, LargeTests.class})
 public class TestThriftHttpServer {
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestThriftHttpServer.class);
 
-  private static final Logger LOG =
-      LoggerFactory.getLogger(TestThriftHttpServer.class);
+  private static final Log LOG =
+      LogFactory.getLog(TestThriftHttpServer.class);
 
   protected static final HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
 
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
     TEST_UTIL.getConfiguration().setBoolean(Constants.USE_HTTP_CONF_KEY, true);
-    TEST_UTIL.getConfiguration().setBoolean(TableDescriptorChecker.TABLE_SANITY_CHECKS, false);
     TEST_UTIL.startMiniCluster();
     //ensure that server time increments every time we do an operation, otherwise
     //successive puts having the same timestamp will override each other
@@ -86,7 +79,7 @@ public class TestThriftHttpServer {
 
   @Test
   public void testExceptionThrownWhenMisConfigured() throws IOException {
-    Configuration conf = new Configuration(TEST_UTIL.getConfiguration());
+    final Configuration conf = new Configuration(TEST_UTIL.getConfiguration());
     conf.set("hbase.thrift.security.qop", "privacy");
     conf.setBoolean("hbase.thrift.ssl.enabled", false);
     ExpectedException thrown = ExpectedException.none();
@@ -95,7 +88,11 @@ public class TestThriftHttpServer {
       thrown.expect(IllegalArgumentException.class);
       thrown.expectMessage("Thrift HTTP Server's QoP is privacy, " +
           "but hbase.thrift.ssl.enabled is false");
-      tsr = TestThriftServerCmdLine.createBoundServer(() -> new ThriftServer(conf));
+      tsr = TestThriftServerCmdLine.createBoundServer(new Supplier<ThriftServer>() {
+        @Override public ThriftServer get() {
+          return new ThriftServer(conf);
+        }
+      });
       fail("Thrift HTTP Server starts up even with wrong security configurations.");
     } catch (Exception e) {
       LOG.info("Expected!", e);
@@ -115,17 +112,21 @@ public class TestThriftHttpServer {
     try {
       runThriftServer(1024 * 63);
     } catch (TTransportException tex) {
-      assertFalse(tex.getMessage().equals("HTTP Response code: 431"));
+      assertFalse(tex.getMessage().equals("HTTP Response code: 413"));
     }
 
     // Test thrift server with HTTP header length more than 64k, expect an exception
     exception.expect(TTransportException.class);
-    exception.expectMessage("HTTP Response code: 431");
+    exception.expectMessage("HTTP Response code: 413");
     runThriftServer(1024 * 64);
   }
 
   protected Supplier<ThriftServer> getThriftServerSupplier() {
-    return () -> new ThriftServer(TEST_UTIL.getConfiguration());
+    return new Supplier<ThriftServer>() {
+      @Override public ThriftServer get() {
+        return new ThriftServer(TEST_UTIL.getConfiguration());
+      }
+    };
   }
 
   @Test
@@ -170,7 +171,7 @@ public class TestThriftHttpServer {
     conn.setRequestMethod("TRACE");
     conn.connect();
     Assert.assertEquals(conn.getResponseMessage(),
-      HttpURLConnection.HTTP_FORBIDDEN, conn.getResponseCode());
+        HttpURLConnection.HTTP_FORBIDDEN, conn.getResponseCode());
   }
 
   protected static volatile boolean tableCreated = false;

@@ -17,10 +17,11 @@
  */
 package org.apache.hadoop.hbase.thrift;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import java.io.Closeable;
 import java.io.IOException;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.util.StringUtils;
 
 /**
  * Run ThriftServer with passed arguments. Access the exception thrown after we complete run -- if
@@ -28,7 +29,7 @@ import java.io.IOException;
  * and hosted {@link ThriftServer}.
  */
 class ThriftServerRunner extends Thread implements Closeable {
-  private static final Logger LOG = LoggerFactory.getLogger(ThriftServerRunner.class);
+  private static final Log LOG = LogFactory.getLog(ThriftServerRunner.class);
   Exception exception = null;
   private final ThriftServer thriftServer;
   private final String [] args;
@@ -36,7 +37,8 @@ class ThriftServerRunner extends Thread implements Closeable {
   ThriftServerRunner(ThriftServer thriftServer, String [] args) {
     this.thriftServer = thriftServer;
     this.args = args;
-    LOG.info("thriftServer={}, args={}", getThriftServer(), args);
+    LOG.info(String.format("thriftServer=%s, args=%s", getThriftServer(),
+      StringUtils.join(" ", args)));
   }
 
   ThriftServer getThriftServer() {
@@ -60,7 +62,7 @@ class ThriftServerRunner extends Thread implements Closeable {
   }
 
   @Override public void close() throws IOException {
-    LOG.info("Stopping {}", this);
+    LOG.info(String.format("Stopping %s", this));
     this.thriftServer.stop();
   }
 }

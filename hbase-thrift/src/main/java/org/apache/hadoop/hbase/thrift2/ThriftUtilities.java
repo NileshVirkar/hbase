@@ -23,52 +23,45 @@ import static org.apache.hadoop.hbase.util.Bytes.getBytes;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
 import java.util.Set;
-import java.util.stream.Collectors;
+
+import org.apache.commons.collections.MapUtils;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.CellBuilderFactory;
-import org.apache.hadoop.hbase.CellBuilderType;
 import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.CompareOperator;
-import org.apache.hadoop.hbase.ExtendedCellBuilder;
-import org.apache.hadoop.hbase.ExtendedCellBuilderFactory;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.KeepDeletedCells;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
-import org.apache.hadoop.hbase.PrivateCellUtil;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Append;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Consistency;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Increment;
-import org.apache.hadoop.hbase.client.LogQueryFilter;
 import org.apache.hadoop.hbase.client.Mutation;
-import org.apache.hadoop.hbase.client.OnlineLogRecord;
 import org.apache.hadoop.hbase.client.OperationWithAttributes;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.RowMutations;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Scan.ReadType;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
+import org.apache.hadoop.hbase.filter.CompareFilter;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.ParseFilter;
 import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 import org.apache.hadoop.hbase.regionserver.BloomType;
 import org.apache.hadoop.hbase.security.visibility.Authorizations;
 import org.apache.hadoop.hbase.security.visibility.CellVisibility;
@@ -77,47 +70,35 @@ import org.apache.hadoop.hbase.thrift2.generated.TAuthorization;
 import org.apache.hadoop.hbase.thrift2.generated.TBloomFilterType;
 import org.apache.hadoop.hbase.thrift2.generated.TCellVisibility;
 import org.apache.hadoop.hbase.thrift2.generated.TColumn;
-import org.apache.hadoop.hbase.thrift2.generated.TColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.thrift2.generated.TColumnIncrement;
 import org.apache.hadoop.hbase.thrift2.generated.TColumnValue;
-import org.apache.hadoop.hbase.thrift2.generated.TCompareOperator;
+import org.apache.hadoop.hbase.thrift2.generated.TCompareOp;
 import org.apache.hadoop.hbase.thrift2.generated.TCompressionAlgorithm;
 import org.apache.hadoop.hbase.thrift2.generated.TConsistency;
 import org.apache.hadoop.hbase.thrift2.generated.TDataBlockEncoding;
 import org.apache.hadoop.hbase.thrift2.generated.TDelete;
 import org.apache.hadoop.hbase.thrift2.generated.TDeleteType;
 import org.apache.hadoop.hbase.thrift2.generated.TDurability;
-import org.apache.hadoop.hbase.thrift2.generated.TFilterByOperator;
 import org.apache.hadoop.hbase.thrift2.generated.TGet;
 import org.apache.hadoop.hbase.thrift2.generated.THRegionInfo;
 import org.apache.hadoop.hbase.thrift2.generated.THRegionLocation;
 import org.apache.hadoop.hbase.thrift2.generated.TIncrement;
 import org.apache.hadoop.hbase.thrift2.generated.TKeepDeletedCells;
-import org.apache.hadoop.hbase.thrift2.generated.TLogQueryFilter;
-import org.apache.hadoop.hbase.thrift2.generated.TLogType;
 import org.apache.hadoop.hbase.thrift2.generated.TMutation;
 import org.apache.hadoop.hbase.thrift2.generated.TNamespaceDescriptor;
-import org.apache.hadoop.hbase.thrift2.generated.TOnlineLogRecord;
 import org.apache.hadoop.hbase.thrift2.generated.TPut;
 import org.apache.hadoop.hbase.thrift2.generated.TReadType;
 import org.apache.hadoop.hbase.thrift2.generated.TResult;
 import org.apache.hadoop.hbase.thrift2.generated.TRowMutations;
 import org.apache.hadoop.hbase.thrift2.generated.TScan;
 import org.apache.hadoop.hbase.thrift2.generated.TServerName;
-import org.apache.hadoop.hbase.thrift2.generated.TTableDescriptor;
 import org.apache.hadoop.hbase.thrift2.generated.TTableName;
 import org.apache.hadoop.hbase.thrift2.generated.TTimeRange;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.yetus.audience.InterfaceAudience;
-
-import org.apache.hbase.thirdparty.org.apache.commons.collections4.CollectionUtils;
-import org.apache.hbase.thirdparty.org.apache.commons.collections4.MapUtils;
-
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.util.CollectionUtils;
 
 @InterfaceAudience.Private
-public final class ThriftUtilities {
+public class ThriftUtilities {
 
   private final static Cell[] EMPTY_CELL_ARRAY = new Cell[]{};
   private final static Result EMPTY_RESULT = Result.create(EMPTY_CELL_ARRAY);
@@ -145,13 +126,13 @@ public final class ThriftUtilities {
 
     // Timestamp overwrites time range if both are set
     if (in.isSetTimestamp()) {
-      out.setTimestamp(in.getTimestamp());
+      out.setTimeStamp(in.getTimestamp());
     } else if (in.isSetTimeRange()) {
       out.setTimeRange(in.getTimeRange().getMinStamp(), in.getTimeRange().getMaxStamp());
     }
 
     if (in.isSetMaxVersions()) {
-      out.readVersions(in.getMaxVersions());
+      out.setMaxVersions(in.getMaxVersions());
     }
 
     if (in.isSetFilterString()) {
@@ -243,9 +224,9 @@ public final class ThriftUtilities {
       col.setQualifier(CellUtil.cloneQualifier(kv));
       col.setTimestamp(kv.getTimestamp());
       col.setValue(CellUtil.cloneValue(kv));
-      col.setType(kv.getType().getCode());
+      col.setType(kv.getTypeByte());
       if (kv.getTagsLength() > 0) {
-        col.setTags(PrivateCellUtil.cloneTags(kv));
+        col.setTags(kv.getTagsArray());
       }
       columnValues.add(col);
     }
@@ -295,28 +276,13 @@ public final class ThriftUtilities {
     }
 
     for (TColumnValue columnValue : in.getColumnValues()) {
-      try {
-        if (columnValue.isSetTimestamp()) {
-          out.add(CellBuilderFactory.create(CellBuilderType.DEEP_COPY)
-              .setRow(out.getRow())
-              .setFamily(columnValue.getFamily())
-              .setQualifier(columnValue.getQualifier())
-              .setTimestamp(columnValue.getTimestamp())
-              .setType(Cell.Type.Put)
-              .setValue(columnValue.getValue())
-              .build());
-        } else {
-          out.add(CellBuilderFactory.create(CellBuilderType.DEEP_COPY)
-              .setRow(out.getRow())
-              .setFamily(columnValue.getFamily())
-              .setQualifier(columnValue.getQualifier())
-              .setTimestamp(out.getTimestamp())
-              .setType(Cell.Type.Put)
-              .setValue(columnValue.getValue())
-              .build());
-        }
-      } catch (IOException e) {
-        throw new IllegalArgumentException((e));
+      if (columnValue.isSetTimestamp()) {
+        out.addImmutable(
+            columnValue.getFamily(), columnValue.getQualifier(), columnValue.getTimestamp(),
+            columnValue.getValue());
+      } else {
+        out.addImmutable(
+            columnValue.getFamily(), columnValue.getQualifier(), columnValue.getValue());
       }
     }
 
@@ -393,7 +359,7 @@ public final class ThriftUtilities {
               }
               break;
             default:
-              throw new IllegalArgumentException("DeleteType is required for TDelete");
+              throw new IllegalArgumentException("Unknown DeleteType");
           }
         } else {
           throw new IllegalArgumentException("DeleteType is required for TDelete");
@@ -436,20 +402,21 @@ public final class ThriftUtilities {
     return out;
   }
 
-  public static TDeleteType deleteTypeFromHBase(Cell.Type type) {
+  public static TDeleteType deleteTypeFromHBase(KeyValue.Type type) {
     switch (type) {
       case Delete: return TDeleteType.DELETE_COLUMN;
       case DeleteColumn: return TDeleteType.DELETE_COLUMNS;
       case DeleteFamily: return TDeleteType.DELETE_FAMILY;
       case DeleteFamilyVersion: return TDeleteType.DELETE_FAMILY_VERSION;
       default: throw new IllegalArgumentException("Unknow delete type " + type);
-    }  }
+    }
+  }
 
   public static TDelete deleteFromHBase(Delete in) {
     TDelete out = new TDelete(ByteBuffer.wrap(in.getRow()));
 
     List<TColumn> columns = new ArrayList<>(in.getFamilyCellMap().entrySet().size());
-    long rowTimestamp = in.getTimestamp();
+    long rowTimestamp = in.getTimeStamp();
     if (rowTimestamp != HConstants.LATEST_TIMESTAMP) {
       out.setTimestamp(rowTimestamp);
     }
@@ -471,7 +438,8 @@ public final class ThriftUtilities {
       byte[] family = familyEntry.getKey();
       TColumn column = new TColumn(ByteBuffer.wrap(familyEntry.getKey()));
       for (Cell cell: familyEntry.getValue()) {
-        TDeleteType cellDeleteType = deleteTypeFromHBase(cell.getType());
+        TDeleteType cellDeleteType = deleteTypeFromHBase(
+            KeyValue.Type.codeToType(cell.getTypeByte()));
         if (type == null) {
           type = cellDeleteType;
         } else if (type != cellDeleteType){
@@ -481,9 +449,7 @@ public final class ThriftUtilities {
         byte[] qualifier = CellUtil.cloneQualifier(cell);
         long timestamp = cell.getTimestamp();
         column.setFamily(family);
-        if (qualifier != null) {
-          column.setQualifier(qualifier);
-        }
+        column.setQualifier(qualifier);
         if (timestamp != HConstants.LATEST_TIMESTAMP) {
           column.setTimestamp(timestamp);
         }
@@ -505,7 +471,7 @@ public final class ThriftUtilities {
    */
   public static RowMutations rowMutationsFromThrift(TRowMutations in) throws IOException {
     List<TMutation> mutations = in.getMutations();
-    RowMutations out = new RowMutations(in.getRow(), mutations.size());
+    RowMutations out = new RowMutations(in.getRow());
     for (TMutation mutation : mutations) {
       if (mutation.isSetPut()) {
         out.add(putFromThrift(mutation.getPut()));
@@ -520,17 +486,14 @@ public final class ThriftUtilities {
   public static Scan scanFromThrift(TScan in) throws IOException {
     Scan out = new Scan();
 
-    if (in.isSetStartRow()) {
-      out.withStartRow(in.getStartRow());
-    }
-    if (in.isSetStopRow()) {
-      out.withStopRow(in.getStopRow());
-    }
-    if (in.isSetCaching()) {
+    if (in.isSetStartRow())
+      out.setStartRow(in.getStartRow());
+    if (in.isSetStopRow())
+      out.setStopRow(in.getStopRow());
+    if (in.isSetCaching())
       out.setCaching(in.getCaching());
-    }
     if (in.isSetMaxVersions()) {
-      out.readVersions(in.getMaxVersions());
+      out.setMaxVersions(in.getMaxVersions());
     }
 
     if (in.isSetColumns()) {
@@ -710,7 +673,7 @@ public final class ThriftUtilities {
   public static Append appendFromThrift(TAppend append) throws IOException {
     Append out = new Append(append.getRow());
     for (TColumnValue column : append.getColumns()) {
-      out.addColumn(column.getFamily(), column.getQualifier(), column.getValue());
+      out.add(column.getFamily(), column.getQualifier(), column.getValue());
     }
 
     if (append.isSetAttributes()) {
@@ -733,7 +696,7 @@ public final class ThriftUtilities {
   }
 
   public static THRegionLocation regionLocationFromHBase(HRegionLocation hrl) {
-    RegionInfo hri = hrl.getRegion();
+    HRegionInfo hri = hrl.getRegionInfo();
     ServerName serverName = hrl.getServerName();
 
     THRegionInfo thRegionInfo = new THRegionInfo();
@@ -769,7 +732,7 @@ public final class ThriftUtilities {
    * Adds all the attributes into the Operation object
    */
   private static void addAttributes(OperationWithAttributes op,
-                                    Map<ByteBuffer, ByteBuffer> attributes) {
+      Map<ByteBuffer, ByteBuffer> attributes) {
     if (attributes == null || attributes.isEmpty()) {
       return;
     }
@@ -791,15 +754,15 @@ public final class ThriftUtilities {
     }
   }
 
-  public static CompareOperator compareOpFromThrift(TCompareOperator tCompareOp) {
+  public static CompareFilter.CompareOp compareOpFromThrift(TCompareOp tCompareOp) {
     switch (tCompareOp.getValue()) {
-      case 0: return CompareOperator.LESS;
-      case 1: return CompareOperator.LESS_OR_EQUAL;
-      case 2: return CompareOperator.EQUAL;
-      case 3: return CompareOperator.NOT_EQUAL;
-      case 4: return CompareOperator.GREATER_OR_EQUAL;
-      case 5: return CompareOperator.GREATER;
-      case 6: return CompareOperator.NO_OP;
+      case 0: return CompareFilter.CompareOp.LESS;
+      case 1: return CompareFilter.CompareOp.LESS_OR_EQUAL;
+      case 2: return CompareFilter.CompareOp.EQUAL;
+      case 3: return CompareFilter.CompareOp.NOT_EQUAL;
+      case 4: return CompareFilter.CompareOp.GREATER_OR_EQUAL;
+      case 5: return CompareFilter.CompareOp.GREATER;
+      case 6: return CompareFilter.CompareOp.NO_OP;
       default: return null;
     }
   }
@@ -891,7 +854,6 @@ public final class ThriftUtilities {
       case 0: return BloomType.NONE;
       case 1: return BloomType.ROW;
       case 2: return BloomType.ROWCOL;
-      case 3: return BloomType.ROWPREFIX_FIXED_LENGTH;
       default: return BloomType.ROW;
     }
   }
@@ -929,77 +891,6 @@ public final class ThriftUtilities {
     }
   }
 
-  public static ColumnFamilyDescriptor columnFamilyDescriptorFromThrift(
-      TColumnFamilyDescriptor in) {
-    ColumnFamilyDescriptorBuilder builder = ColumnFamilyDescriptorBuilder
-        .newBuilder(in.getName());
-
-    if (in.isSetAttributes()) {
-      for (Map.Entry<ByteBuffer, ByteBuffer> attribute : in.getAttributes().entrySet()) {
-        builder.setValue(attribute.getKey().array(), attribute.getValue().array());
-      }
-    }
-    if (in.isSetConfiguration()) {
-      for (Map.Entry<String, String> conf : in.getConfiguration().entrySet()) {
-        builder.setConfiguration(conf.getKey(), conf.getValue());
-      }
-    }
-    if (in.isSetBlockSize()) {
-      builder.setBlocksize(in.getBlockSize());
-    }
-    if (in.isSetBloomnFilterType()) {
-      builder.setBloomFilterType(bloomFilterFromThrift(in.getBloomnFilterType()));
-    }
-    if (in.isSetCompressionType()) {
-      builder.setCompressionType(compressionAlgorithmFromThrift(in.getCompressionType()));
-    }
-    if (in.isSetDfsReplication()) {
-      builder.setDFSReplication(in.getDfsReplication());
-    }
-    if (in.isSetDataBlockEncoding()) {
-      builder.setDataBlockEncoding(dataBlockEncodingFromThrift(in.getDataBlockEncoding()));
-    }
-    if (in.isSetKeepDeletedCells()) {
-      builder.setKeepDeletedCells(keepDeletedCellsFromThrift(in.getKeepDeletedCells()));
-    }
-    if (in.isSetMaxVersions()) {
-      builder.setMaxVersions(in.getMaxVersions());
-    }
-    if (in.isSetMinVersions()) {
-      builder.setMinVersions(in.getMinVersions());
-    }
-    if (in.isSetScope()) {
-      builder.setScope(in.getScope());
-    }
-    if (in.isSetTimeToLive()) {
-      builder.setTimeToLive(in.getTimeToLive());
-    }
-    if (in.isSetBlockCacheEnabled()) {
-      builder.setBlockCacheEnabled(in.isBlockCacheEnabled());
-    }
-    if (in.isSetCacheBloomsOnWrite()) {
-      builder.setCacheBloomsOnWrite(in.isCacheBloomsOnWrite());
-    }
-    if (in.isSetCacheDataOnWrite()) {
-      builder.setCacheDataOnWrite(in.isCacheDataOnWrite());
-    }
-    if (in.isSetCacheIndexesOnWrite()) {
-      builder.setCacheIndexesOnWrite(in.isCacheIndexesOnWrite());
-    }
-    if (in.isSetCompressTags()) {
-      builder.setCompressTags(in.isCompressTags());
-    }
-    if (in.isSetEvictBlocksOnClose()) {
-      builder.setEvictBlocksOnClose(in.isEvictBlocksOnClose());
-    }
-    if (in.isSetInMemory()) {
-      builder.setInMemory(in.isInMemory());
-    }
-
-
-    return builder.build();
-  }
-
   public static NamespaceDescriptor namespaceDescriptorFromThrift(TNamespaceDescriptor in) {
     NamespaceDescriptor.Builder builder = NamespaceDescriptor.create(in.getName());
     if (in.isSetConfiguration()) {
@@ -1028,31 +919,6 @@ public final class ThriftUtilities {
     return out;
   }
 
-  public static TableDescriptor tableDescriptorFromThrift(TTableDescriptor in) {
-    TableDescriptorBuilder builder = TableDescriptorBuilder
-        .newBuilder(tableNameFromThrift(in.getTableName()));
-    for (TColumnFamilyDescriptor column : in.getColumns()) {
-      builder.setColumnFamily(columnFamilyDescriptorFromThrift(column));
-    }
-    if (in.isSetAttributes()) {
-      for (Map.Entry<ByteBuffer, ByteBuffer> attribute : in.getAttributes().entrySet()) {
-        builder.setValue(attribute.getKey().array(), attribute.getValue().array());
-      }
-    }
-    if (in.isSetDurability()) {
-      builder.setDurability(durabilityFromThrift(in.getDurability()));
-    }
-    return builder.build();
-  }
-
-  public static List<TableDescriptor> tableDescriptorsFromThrift(List<TTableDescriptor> in) {
-    List<TableDescriptor> out = new ArrayList<>();
-    for (TTableDescriptor tableDescriptor : in) {
-      out.add(tableDescriptorFromThrift(tableDescriptor));
-    }
-    return out;
-  }
-
   private static TDurability durabilityFromHBase(Durability durability) {
     switch (durability) {
       case USE_DEFAULT: return TDurability.USE_DEFAULT;
@@ -1064,44 +930,12 @@ public final class ThriftUtilities {
     }
   }
 
-  public static TTableDescriptor tableDescriptorFromHBase(TableDescriptor in) {
-    TTableDescriptor out = new TTableDescriptor();
-    out.setTableName(tableNameFromHBase(in.getTableName()));
-    Map<Bytes, Bytes> attributes = in.getValues();
-    for (Map.Entry<Bytes, Bytes> attribute : attributes.entrySet()) {
-      out.putToAttributes(ByteBuffer.wrap(attribute.getKey().get()),
-          ByteBuffer.wrap(attribute.getValue().get()));
-    }
-    for (ColumnFamilyDescriptor column : in.getColumnFamilies()) {
-      out.addToColumns(columnFamilyDescriptorFromHBase(column));
-    }
-    out.setDurability(durabilityFromHBase(in.getDurability()));
-    return out;
-  }
-
-  public static List<TTableDescriptor> tableDescriptorsFromHBase(List<TableDescriptor> in) {
-    List<TTableDescriptor> out = new ArrayList<>(in.size());
-    for (TableDescriptor descriptor : in) {
-      out.add(tableDescriptorFromHBase(descriptor));
-    }
-    return out;
-  }
-
-  public static List<TTableDescriptor> tableDescriptorsFromHBase(TableDescriptor[] in) {
-    List<TTableDescriptor> out = new ArrayList<>(in.length);
-    for (TableDescriptor descriptor : in) {
-      out.add(tableDescriptorFromHBase(descriptor));
-    }
-    return out;
-  }
 
 
   public static TBloomFilterType bloomFilterFromHBase(BloomType in) {
     switch (in) {
       case NONE: return TBloomFilterType.NONE;
-      case ROW: return TBloomFilterType.ROW;
       case ROWCOL: return TBloomFilterType.ROWCOL;
-      case ROWPREFIX_FIXED_LENGTH: return TBloomFilterType.ROWPREFIX_FIXED_LENGTH;
       default: return TBloomFilterType.ROW;
     }
   }
@@ -1138,38 +972,6 @@ public final class ThriftUtilities {
       default: return TKeepDeletedCells.FALSE;
     }
   }
-
-  public static TColumnFamilyDescriptor columnFamilyDescriptorFromHBase(
-      ColumnFamilyDescriptor in) {
-    TColumnFamilyDescriptor out = new TColumnFamilyDescriptor();
-    out.setName(in.getName());
-    for (Map.Entry<Bytes, Bytes> attribute : in.getValues().entrySet()) {
-      out.putToAttributes(ByteBuffer.wrap(attribute.getKey().get()),
-          ByteBuffer.wrap(attribute.getValue().get()));
-    }
-    for (Map.Entry<String, String> conf : in.getConfiguration().entrySet()) {
-      out.putToConfiguration(conf.getKey(), conf.getValue());
-    }
-    out.setBlockSize(in.getBlocksize());
-    out.setBloomnFilterType(bloomFilterFromHBase(in.getBloomFilterType()));
-    out.setCompressionType(compressionAlgorithmFromHBase(in.getCompressionType()));
-    out.setDfsReplication(in.getDFSReplication());
-    out.setDataBlockEncoding(dataBlockEncodingFromHBase(in.getDataBlockEncoding()));
-    out.setKeepDeletedCells(keepDeletedCellsFromHBase(in.getKeepDeletedCells()));
-    out.setMaxVersions(in.getMaxVersions());
-    out.setMinVersions(in.getMinVersions());
-    out.setScope(in.getScope());
-    out.setTimeToLive(in.getTimeToLive());
-    out.setBlockCacheEnabled(in.isBlockCacheEnabled());
-    out.setCacheBloomsOnWrite(in.isCacheBloomsOnWrite());
-    out.setCacheDataOnWrite(in.isCacheDataOnWrite());
-    out.setCacheIndexesOnWrite(in.isCacheIndexesOnWrite());
-    out.setCompressTags(in.isCompressTags());
-    out.setEvictBlocksOnClose(in.isEvictBlocksOnClose());
-    out.setInMemory(in.isInMemory());
-    return out;
-  }
-
 
   private static TConsistency consistencyFromHBase(Consistency consistency) {
     switch (consistency) {
@@ -1233,23 +1035,13 @@ public final class ThriftUtilities {
     return out;
   }
 
-  public static Cell toCell(ExtendedCellBuilder cellBuilder, byte[] row, TColumnValue columnValue) {
-    return cellBuilder.clear()
-        .setRow(row)
-        .setFamily(columnValue.getFamily())
-        .setQualifier(columnValue.getQualifier())
-        .setTimestamp(columnValue.getTimestamp())
-        .setType(columnValue.getType())
-        .setValue(columnValue.getValue())
-        .setTags(columnValue.getTags())
-        .build();
+  public static Cell toCell(byte[] row, TColumnValue columnValue) {
+    return
+        new KeyValue(row, columnValue.getFamily(),
+            columnValue.getQualifier(), columnValue.getTimestamp(),
+            KeyValue.Type.codeToType(columnValue.getType()),
+            columnValue.getValue(), columnValue.getTags());
   }
-
-
-
-
-
-
 
   public static Result resultFromThrift(TResult in) {
     if (in == null) {
@@ -1259,9 +1051,8 @@ public final class ThriftUtilities {
       return in.isStale() ? EMPTY_RESULT_STALE : EMPTY_RESULT;
     }
     List<Cell> cells = new ArrayList<>(in.getColumnValues().size());
-    ExtendedCellBuilder builder = ExtendedCellBuilderFactory.create(CellBuilderType.SHALLOW_COPY);
     for (TColumnValue columnValue : in.getColumnValues()) {
-      cells.add(toCell(builder, in.getRow(), columnValue));
+      cells.add(toCell(in.getRow(), columnValue));
     }
     return Result.create(cells, null, in.isStale(), in.isPartial());
   }
@@ -1269,8 +1060,8 @@ public final class ThriftUtilities {
   public static TPut putFromHBase(Put in) {
     TPut out = new TPut();
     out.setRow(in.getRow());
-    if (in.getTimestamp() != HConstants.LATEST_TIMESTAMP) {
-      out.setTimestamp(in.getTimestamp());
+    if (in.getTimeStamp() != HConstants.LATEST_TIMESTAMP) {
+      out.setTimestamp(in.getTimeStamp());
     }
     if (in.getDurability() != Durability.USE_DEFAULT) {
       out.setDurability(durabilityFromHBase(in.getDurability()));
@@ -1281,11 +1072,11 @@ public final class ThriftUtilities {
         TColumnValue columnValue = new TColumnValue();
         columnValue.setFamily(family)
             .setQualifier(CellUtil.cloneQualifier(cell))
-            .setType(cell.getType().getCode())
+            .setType(cell.getTypeByte())
             .setTimestamp(cell.getTimestamp())
             .setValue(CellUtil.cloneValue(cell));
         if (cell.getTagsLength() != 0) {
-          columnValue.setTags(PrivateCellUtil.cloneTags(cell));
+          columnValue.setTags(cell.getTagsArray());
         }
         out.addToColumnValues(columnValue);
       }
@@ -1346,11 +1137,11 @@ public final class ThriftUtilities {
         TColumnValue columnValue = new TColumnValue();
         columnValue.setFamily(family)
             .setQualifier(CellUtil.cloneQualifier(cell))
-            .setType(cell.getType().getCode())
+            .setType(cell.getTypeByte())
             .setTimestamp(cell.getTimestamp())
             .setValue(CellUtil.cloneValue(cell));
         if (cell.getTagsLength() != 0) {
-          columnValue.setTags(PrivateCellUtil.cloneTags(cell));
+          columnValue.setTags(cell.getTagsArray());
         }
         out.addToColumns(columnValue);
       }
@@ -1426,15 +1217,15 @@ public final class ThriftUtilities {
     return tRowMutations;
   }
 
-  public static TCompareOperator compareOpFromHBase(CompareOperator compareOp) {
+  public static TCompareOp compareOpFromHBase(CompareFilter.CompareOp compareOp) {
     switch (compareOp) {
-      case LESS: return TCompareOperator.LESS;
-      case LESS_OR_EQUAL: return TCompareOperator.LESS_OR_EQUAL;
-      case EQUAL: return TCompareOperator.EQUAL;
-      case NOT_EQUAL: return TCompareOperator.NOT_EQUAL;
-      case GREATER_OR_EQUAL: return TCompareOperator.GREATER_OR_EQUAL;
-      case GREATER: return TCompareOperator.GREATER;
-      case NO_OP: return TCompareOperator.NO_OP;
+      case LESS: return TCompareOp.LESS;
+      case LESS_OR_EQUAL: return TCompareOp.LESS_OR_EQUAL;
+      case EQUAL: return TCompareOp.EQUAL;
+      case NOT_EQUAL: return TCompareOp.NOT_EQUAL;
+      case GREATER_OR_EQUAL: return TCompareOp.GREATER_OR_EQUAL;
+      case GREATER: return TCompareOp.GREATER;
+      case NO_OP: return TCompareOp.NO_OP;
       default: return null;
     }
   }
@@ -1466,183 +1257,40 @@ public final class ThriftUtilities {
     return out;
   }
 
+  public static TServerName getServerNamesHelper(ServerName serverName) {
+    TServerName tServerName = new TServerName();
+    tServerName.setHostName(serverName.getHostname());
+    tServerName.setPort(serverName.getPort());
+    tServerName.setStartCode(serverName.getStartcode());
+    return tServerName;
+  }
+
   public static Set<TServerName> getServerNamesFromHBase(Set<ServerName> serverNames) {
+    Set<TServerName> result = new java.util.HashSet<>();
     if (CollectionUtils.isEmpty(serverNames)) {
-      return Collections.emptySet();
+      return result;
     }
-    return serverNames.stream().map(serverName -> {
+    for (ServerName serverName: serverNames) {
       TServerName tServerName = new TServerName();
       tServerName.setHostName(serverName.getHostname());
       tServerName.setPort(serverName.getPort());
       tServerName.setStartCode(serverName.getStartcode());
-      return tServerName;
-    }).collect(Collectors.toSet());
+      result.add(tServerName);
+    }
+    return result;
   }
 
   public static Set<ServerName> getServerNamesFromThrift(Set<TServerName> tServerNames) {
+    Set<ServerName> result = new java.util.HashSet<>();
     if (CollectionUtils.isEmpty(tServerNames)) {
-      return Collections.emptySet();
+      return result;
     }
-    return tServerNames.stream().map(tServerName ->
-      ServerName.valueOf(tServerName.getHostName(),
-        tServerName.getPort(),
-        tServerName.getStartCode()))
-      .collect(Collectors.toSet());
-  }
-
-  public static TLogQueryFilter getSlowLogQueryFromHBase(
-      LogQueryFilter logQueryFilter) {
-    TLogQueryFilter tLogQueryFilter = new TLogQueryFilter();
-    tLogQueryFilter.setRegionName(logQueryFilter.getRegionName());
-    tLogQueryFilter.setClientAddress(logQueryFilter.getClientAddress());
-    tLogQueryFilter.setTableName(logQueryFilter.getTableName());
-    tLogQueryFilter.setUserName(logQueryFilter.getUserName());
-    tLogQueryFilter.setLimit(logQueryFilter.getLimit());
-    TLogType tLogType = gettLogTypeFromHBase(logQueryFilter);
-    tLogQueryFilter.setLogType(tLogType);
-    TFilterByOperator tFilterByOperator = getTFilterByFromHBase(logQueryFilter);
-    tLogQueryFilter.setFilterByOperator(tFilterByOperator);
-    return tLogQueryFilter;
-  }
-
-  private static TLogType gettLogTypeFromHBase(final LogQueryFilter logQueryFilter) {
-    TLogType tLogType;
-    switch (logQueryFilter.getType()) {
-      case SLOW_LOG: {
-        tLogType = TLogType.SLOW_LOG;
-        break;
-      }
-      case LARGE_LOG: {
-        tLogType = TLogType.LARGE_LOG;
-        break;
-      }
-      default: {
-        tLogType = TLogType.SLOW_LOG;
-      }
+    for (TServerName tServerName: tServerNames) {
+      ServerName serverName = ServerName.valueOf(tServerName.getHostName(),
+          tServerName.getPort(),
+          tServerName.getStartCode());
+      result.add(serverName);
     }
-    return tLogType;
+    return result;
   }
-
-  private static TFilterByOperator getTFilterByFromHBase(final LogQueryFilter logQueryFilter) {
-    TFilterByOperator tFilterByOperator;
-    switch (logQueryFilter.getFilterByOperator()) {
-      case AND: {
-        tFilterByOperator = TFilterByOperator.AND;
-        break;
-      }
-      case OR: {
-        tFilterByOperator = TFilterByOperator.OR;
-        break;
-      }
-      default: {
-        tFilterByOperator = TFilterByOperator.OR;
-      }
-    }
-    return tFilterByOperator;
-  }
-
-  public static LogQueryFilter getSlowLogQueryFromThrift(
-      TLogQueryFilter tLogQueryFilter) {
-    LogQueryFilter logQueryFilter = new LogQueryFilter();
-    logQueryFilter.setRegionName(tLogQueryFilter.getRegionName());
-    logQueryFilter.setClientAddress(tLogQueryFilter.getClientAddress());
-    logQueryFilter.setTableName(tLogQueryFilter.getTableName());
-    logQueryFilter.setUserName(tLogQueryFilter.getUserName());
-    logQueryFilter.setLimit(tLogQueryFilter.getLimit());
-    LogQueryFilter.Type type = getLogTypeFromThrift(tLogQueryFilter);
-    logQueryFilter.setType(type);
-    LogQueryFilter.FilterByOperator filterByOperator = getFilterByFromThrift(tLogQueryFilter);
-    logQueryFilter.setFilterByOperator(filterByOperator);
-    return logQueryFilter;
-  }
-
-  private static LogQueryFilter.Type getLogTypeFromThrift(
-      final TLogQueryFilter tSlowLogQueryFilter) {
-    LogQueryFilter.Type type;
-    switch (tSlowLogQueryFilter.getLogType()) {
-      case SLOW_LOG: {
-        type = LogQueryFilter.Type.SLOW_LOG;
-        break;
-      }
-      case LARGE_LOG: {
-        type = LogQueryFilter.Type.LARGE_LOG;
-        break;
-      }
-      default: {
-        type = LogQueryFilter.Type.SLOW_LOG;
-      }
-    }
-    return type;
-  }
-
-  private static LogQueryFilter.FilterByOperator getFilterByFromThrift(
-      final TLogQueryFilter tLogQueryFilter) {
-    LogQueryFilter.FilterByOperator filterByOperator;
-    switch (tLogQueryFilter.getFilterByOperator()) {
-      case AND: {
-        filterByOperator = LogQueryFilter.FilterByOperator.AND;
-        break;
-      }
-      case OR: {
-        filterByOperator = LogQueryFilter.FilterByOperator.OR;
-        break;
-      }
-      default: {
-        filterByOperator = LogQueryFilter.FilterByOperator.OR;
-      }
-    }
-    return filterByOperator;
-  }
-
-  public static List<TOnlineLogRecord> getSlowLogRecordsFromHBase(
-      List<OnlineLogRecord> onlineLogRecords) {
-    if (CollectionUtils.isEmpty(onlineLogRecords)) {
-      return Collections.emptyList();
-    }
-    return onlineLogRecords.stream()
-      .map(slowLogRecord -> {
-        TOnlineLogRecord tOnlineLogRecord = new TOnlineLogRecord();
-        tOnlineLogRecord.setCallDetails(slowLogRecord.getCallDetails());
-        tOnlineLogRecord.setClientAddress(slowLogRecord.getClientAddress());
-        tOnlineLogRecord.setMethodName(slowLogRecord.getMethodName());
-        tOnlineLogRecord.setMultiGetsCount(slowLogRecord.getMultiGetsCount());
-        tOnlineLogRecord.setMultiMutationsCount(slowLogRecord.getMultiMutationsCount());
-        tOnlineLogRecord.setMultiServiceCalls(slowLogRecord.getMultiServiceCalls());
-        tOnlineLogRecord.setParam(slowLogRecord.getParam());
-        tOnlineLogRecord.setProcessingTime(slowLogRecord.getProcessingTime());
-        tOnlineLogRecord.setQueueTime(slowLogRecord.getQueueTime());
-        tOnlineLogRecord.setRegionName(slowLogRecord.getRegionName());
-        tOnlineLogRecord.setResponseSize(slowLogRecord.getResponseSize());
-        tOnlineLogRecord.setServerClass(slowLogRecord.getServerClass());
-        tOnlineLogRecord.setStartTime(slowLogRecord.getStartTime());
-        tOnlineLogRecord.setUserName(slowLogRecord.getUserName());
-        return tOnlineLogRecord;
-      }).collect(Collectors.toList());
-  }
-
-  public static List<OnlineLogRecord> getSlowLogRecordsFromThrift(
-      List<TOnlineLogRecord> tOnlineLogRecords) {
-    if (CollectionUtils.isEmpty(tOnlineLogRecords)) {
-      return Collections.emptyList();
-    }
-    return tOnlineLogRecords.stream()
-      .map(tSlowLogRecord -> new OnlineLogRecord.OnlineLogRecordBuilder()
-        .setCallDetails(tSlowLogRecord.getCallDetails())
-        .setClientAddress(tSlowLogRecord.getClientAddress())
-        .setMethodName(tSlowLogRecord.getMethodName())
-        .setMultiGetsCount(tSlowLogRecord.getMultiGetsCount())
-        .setMultiMutationsCount(tSlowLogRecord.getMultiMutationsCount())
-        .setMultiServiceCalls(tSlowLogRecord.getMultiServiceCalls())
-        .setParam(tSlowLogRecord.getParam())
-        .setProcessingTime(tSlowLogRecord.getProcessingTime())
-        .setQueueTime(tSlowLogRecord.getQueueTime())
-        .setRegionName(tSlowLogRecord.getRegionName())
-        .setResponseSize(tSlowLogRecord.getResponseSize())
-        .setServerClass(tSlowLogRecord.getServerClass())
-        .setStartTime(tSlowLogRecord.getStartTime())
-        .setUserName(tSlowLogRecord.getUserName())
-        .build())
-      .collect(Collectors.toList());
-  }
-
 }

@@ -17,10 +17,10 @@
  */
 package org.apache.hadoop.hbase.thrift;
 
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
 /**
- * Thrift related constants
+ * Thrift related constants.
  */
 @InterfaceAudience.Private
 public final class Constants {
@@ -28,8 +28,7 @@ public final class Constants {
 
   public static final int DEFAULT_HTTP_MAX_HEADER_SIZE = 64 * 1024; // 64k
 
-  public static final String SERVER_TYPE_CONF_KEY =
-      "hbase.regionserver.thrift.server.type";
+  public static final String SERVER_TYPE_CONF_KEY = "hbase.regionserver.thrift.server.type";
 
   public static final String COMPACT_CONF_KEY = "hbase.regionserver.thrift.compact";
   public static final boolean COMPACT_CONF_DEFAULT = false;
@@ -66,7 +65,6 @@ public final class Constants {
   public static final String THRIFT_SSL_INCLUDE_PROTOCOLS_KEY =
       "hbase.thrift.ssl.include.protocols";
 
-
   public static final String THRIFT_SUPPORT_PROXYUSER_KEY = "hbase.thrift.support.proxyuser";
 
   //kerberos related configs
@@ -85,7 +83,6 @@ public final class Constants {
   public static final String THRIFT_SERVER_SOCKET_READ_TIMEOUT_KEY =
       "hbase.thrift.server.socket.read.timeout";
   public static final int THRIFT_SERVER_SOCKET_READ_TIMEOUT_DEFAULT = 60000;
-
 
   /**
    * Thrift quality of protection configuration key. Valid values can be:
@@ -154,6 +151,4 @@ public final class Constants {
 
   public static final String HBASE_THRIFT_CLIENT_BUIDLER_CLASS =
       "hbase.thrift.client.builder.class";
-
-
 }

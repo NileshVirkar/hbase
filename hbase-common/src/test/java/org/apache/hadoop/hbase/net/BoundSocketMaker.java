@@ -17,14 +17,14 @@
  */
 package org.apache.hadoop.hbase.net;
 
+import com.google.common.base.Supplier;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.util.function.Supplier;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 /**
  * Utility to generate a bound socket. Useful testing for BindException.
@@ -34,7 +34,7 @@ import org.slf4j.LoggerFactory;
  * {@link #close()} when done to shut down the Socket.
  */
 public final class BoundSocketMaker implements Closeable {
-  private static final Logger LOG = LoggerFactory.getLogger(BoundSocketMaker.class);
+  private static final Log LOG = LogFactory.getLog(BoundSocketMaker.class);
   private final ServerSocket socket;
 
   private BoundSocketMaker() {

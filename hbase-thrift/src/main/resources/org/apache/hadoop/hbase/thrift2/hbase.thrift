@@ -223,8 +223,8 @@ struct TIncrement {
   7: optional bool returnResults
 }
 
-/* 
- * Used to perform append operation 
+/*
+ * Used to perform append operation
  */
 struct TAppend {
   1: required binary row,
@@ -306,9 +306,9 @@ struct THRegionLocation {
 
 /**
  * Thrift wrapper around
- * org.apache.hadoop.hbase.CompareOperator.
+ * org.apache.hadoop.hbase.filter.CompareFilter$CompareOp.
  */
-enum TCompareOperator {
+enum TCompareOp {
   LESS = 0,
   LESS_OR_EQUAL = 1,
   EQUAL = 2,
@@ -837,7 +837,7 @@ service THBaseService {
     4: required binary qualifier,
 
     /** comparison to make on the value */
-    5: required TCompareOperator compareOperator,
+    5: required TCompareOp compareOp,
 
     /** the expected value to be compared against, if not provided the
         check is for the non-existence of the column in question */
@@ -1098,11 +1098,6 @@ service THBaseService {
    * @return the type of this thrift server
    */
   TThriftServerType getThriftServerType()
-
-  /**
-   * Returns the cluster ID for this cluster.
-   */
-  string getClusterId()
 
   /**
    * Retrieves online slow RPC logs from the provided list of

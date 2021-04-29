@@ -20,20 +20,19 @@
 package org.apache.hadoop.hbase.thrift;
 
 import java.util.Locale;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.thrift.server.TThreadedSelectorServer;
 import org.apache.thrift.transport.TNonblockingServerTransport;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * A TThreadedSelectorServer.Args that reads hadoop configuration
  */
 @InterfaceAudience.Private
 public class HThreadedSelectorServerArgs extends TThreadedSelectorServer.Args {
-  private static final Logger LOG = LoggerFactory.getLogger(TThreadedSelectorServer.class);
+  private static final Log LOG = LogFactory.getLog(TThreadedSelectorServer.class);
 
   /**
    * Number of selector threads for reading and writing socket

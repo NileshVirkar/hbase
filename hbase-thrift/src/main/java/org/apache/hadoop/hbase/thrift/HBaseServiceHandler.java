@@ -23,12 +23,13 @@ import java.nio.ByteBuffer;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ConnectionCache;
-import org.apache.yetus.audience.InterfaceAudience;
+
 
 /**
  * abstract class for HBase handler
@@ -82,7 +83,9 @@ public abstract class HBaseServiceHandler {
     return connectionCache.getTable(table);
   }
 
-  protected Table getTable(final ByteBuffer tableName) throws IOException {
+  protected  Table getTable(final ByteBuffer tableName) throws IOException {
     return getTable(Bytes.getBytes(tableName));
   }
+
+
 }

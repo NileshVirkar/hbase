@@ -24,9 +24,15 @@ import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_READONLY_ENABLED_D
 
 import java.io.IOException;
 
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Options;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.thrift.HBaseServiceHandler;
 import org.apache.hadoop.hbase.thrift.HbaseHandlerMetricsProxy;
@@ -35,25 +41,17 @@ import org.apache.hadoop.hbase.thrift2.generated.THBaseService;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.thrift.TProcessor;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.HelpFormatter;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.Options;
 
 /**
- * ThriftServer - this class starts up a Thrift server which implements the HBase API specified in
- * the HbaseClient.thrift IDL file.
+ * ThriftServer - this class starts up a Thrift server which implements the HBase API specified in the
+ * HbaseClient.thrift IDL file.
  */
 @edu.umd.cs.findbugs.annotations.SuppressWarnings(value = "NM_SAME_SIMPLE_NAME_AS_SUPERCLASS",
-    justification = "Change the name will be an incompatible change, will do it later")
+  justification = "Change the name will be an incompatible change, will do it later")
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.TOOLS)
 @SuppressWarnings({ "rawtypes", "unchecked" })
 public class ThriftServer extends org.apache.hadoop.hbase.thrift.ThriftServer {
-  private static final Logger log = LoggerFactory.getLogger(ThriftServer.class);
-
+  private static final Log log = LogFactory.getLog(ThriftServer.class);
 
   public ThriftServer(Configuration conf) {
     super(conf);
@@ -86,7 +84,7 @@ public class ThriftServer extends org.apache.hadoop.hbase.thrift.ThriftServer {
   @Override
   protected TProcessor createProcessor() {
     return new THBaseService.Processor<>(HbaseHandlerMetricsProxy
-        .newInstance((THBaseService.Iface) hbaseServiceHandler, metrics, conf));
+        .newInstance((THBaseService.Iface) hBaseServiceHandler, metrics, conf));
   }
 
   @Override
@@ -115,5 +113,4 @@ public class ThriftServer extends org.apache.hadoop.hbase.thrift.ThriftServer {
     final int status = ToolRunner.run(conf, new ThriftServer(conf), args);
     System.exit(status);
   }
-
 }

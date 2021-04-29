@@ -24,9 +24,10 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.thrift.generated.Hbase;
 import org.apache.hadoop.hbase.thrift2.generated.THBaseService;
-import org.apache.yetus.audience.InterfaceAudience;
+
 
 /**
  * Converts a Hbase.Iface using InvocationHandler so that it reports process
@@ -54,11 +55,12 @@ public final class HbaseHandlerMetricsProxy implements InvocationHandler {
     return (THBaseService.Iface) Proxy.newProxyInstance(
         handler.getClass().getClassLoader(),
         new Class[]{THBaseService.Iface.class},
-        new HbaseHandlerMetricsProxy(handler, metrics, conf));
+        new HbaseHandlerMetricsProxy(handler, metrics, conf)
+    );
   }
 
-  private HbaseHandlerMetricsProxy(
-      Object handler, ThriftMetrics metrics, Configuration conf) {
+  private HbaseHandlerMetricsProxy(Object handler, ThriftMetrics metrics,
+      Configuration conf) {
     this.handler = handler;
     this.metrics = metrics;
   }

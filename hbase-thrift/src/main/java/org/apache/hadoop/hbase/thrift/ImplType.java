@@ -1,4 +1,5 @@
-/*
+/**
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,18 +24,17 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.OptionGroup;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.thrift.server.THsHaServer;
 import org.apache.thrift.server.TNonblockingServer;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TThreadedSelectorServer;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.Option;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.OptionGroup;
 
 /** An enum of server implementation selections */
 @InterfaceAudience.Private
@@ -44,9 +44,8 @@ public enum ImplType {
   THREAD_POOL("threadpool", false, TBoundedThreadPoolServer.class, true),
   THREADED_SELECTOR("threadedselector", true, TThreadedSelectorServer.class, true);
 
-  private static final Logger LOG = LoggerFactory.getLogger(ImplType.class);
+  private static final Log LOG = LogFactory.getLog(ImplType.class);
   public static final ImplType DEFAULT = THREAD_POOL;
-
 
   final String option;
   final boolean isAlwaysFramed;
@@ -80,7 +79,7 @@ public enum ImplType {
   public String getDescription() {
     StringBuilder sb = new StringBuilder("Use the " +
         serverClass.getSimpleName());
-    if (isAlwaysFramed) {
+    if (isAlwaysFramed){
       sb.append(" This implies the framed transport.");
     }
     if (this == DEFAULT) {
@@ -90,8 +89,8 @@ public enum ImplType {
   }
 
   static OptionGroup createOptionGroup() {
-    OptionGroup group = new OptionGroup();
-    for (ImplType t : values()) {
+    OptionGroup group  = new OptionGroup();
+    for (ImplType t: values()) {
       group.addOption(new Option(t.option, t.getDescription()));
     }
     return group;
@@ -99,29 +98,29 @@ public enum ImplType {
 
   public static ImplType getServerImpl(Configuration conf) {
     String confType = conf.get(SERVER_TYPE_CONF_KEY, THREAD_POOL.option);
-    for (ImplType t : values()) {
-      if (confType.equals(t.option)) {
+    for (ImplType t: values()) {
+      if (confType.equals(t.option)){
         return t;
       }
     }
-    throw new AssertionError("Unknown server ImplType.option:" + confType);
+    throw new AssertionError("Unkown server ImplType.option:" + confType);
   }
 
   static void setServerImpl(CommandLine cmd, Configuration conf) {
     ImplType chosenType = null;
     int numChosen = 0;
-    for (ImplType t : values()) {
+    for (ImplType t: values()) {
       if (cmd.hasOption(t.option)) {
         chosenType = t;
         ++numChosen;
       }
     }
     if (numChosen < 1) {
-      LOG.info("Using default thrift server type");
+      LOG.info("Using default thrift server type.");
       chosenType = DEFAULT;
     } else if (numChosen > 1) {
       throw new AssertionError("Exactly one option out of " +
-          Arrays.toString(values()) + " has to be specified");
+          Arrays.toString(values()) + " has to be specified.");
     }
     LOG.info("Using thrift server type " + chosenType.option);
     conf.set(SERVER_TYPE_CONF_KEY, chosenType.option);
@@ -133,7 +132,7 @@ public enum ImplType {
 
   public static List<String> serversThatCannotSpecifyBindIP() {
     List<String> l = new ArrayList<>();
-    for (ImplType t : values()) {
+    for (ImplType t: values()) {
       if (!t.canSpecifyBindIP) {
         l.add(t.simpleClassName());
       }

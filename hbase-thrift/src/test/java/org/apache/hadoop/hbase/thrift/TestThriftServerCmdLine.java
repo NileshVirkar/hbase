@@ -22,16 +22,19 @@ import static org.apache.hadoop.hbase.thrift.Constants.COMPACT_OPTION;
 import static org.apache.hadoop.hbase.thrift.Constants.FRAMED_OPTION;
 import static org.apache.hadoop.hbase.thrift.Constants.INFOPORT_OPTION;
 import static org.apache.hadoop.hbase.thrift.Constants.PORT_OPTION;
+import static org.apache.hadoop.util.StringUtils.join;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+
+import com.google.common.base.Supplier;
 import java.io.IOException;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.function.Supplier;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.net.BoundSocketMaker;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
@@ -40,26 +43,21 @@ import org.apache.hadoop.hbase.thrift.generated.Hbase;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManagerTestHelper;
 import org.apache.hadoop.hbase.util.IncrementingEnvironmentEdge;
-import org.apache.hadoop.hbase.util.TableDescriptorChecker;
 import org.apache.hadoop.hbase.util.Threads;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TCompactProtocol;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.server.TServer;
+import org.apache.thrift.transport.TFramedTransport;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
-import org.apache.thrift.transport.layered.TFramedTransport;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 
 /**
  * Start the HBase Thrift server on a random port through the command-line
@@ -69,12 +67,8 @@ import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 @RunWith(Parameterized.class)
 public class TestThriftServerCmdLine {
 
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestThriftServerCmdLine.class);
-
-  private static final Logger LOG =
-      LoggerFactory.getLogger(TestThriftServerCmdLine.class);
+  private static final Log LOG =
+      LogFactory.getLog(TestThriftServerCmdLine.class);
 
   protected final ImplType implType;
   protected boolean specifyFramed;
@@ -94,9 +88,8 @@ public class TestThriftServerCmdLine {
             continue;
           }
           for (boolean specifyCompact : new boolean[] {false, true}) {
-            parameters.add(new Object[] {
-              implType, specifyFramed, specifyBindIP, specifyCompact
-            });
+            parameters.add(new Object[]{implType, specifyFramed,
+                specifyBindIP, specifyCompact});
           }
         }
       }
@@ -122,7 +115,6 @@ public class TestThriftServerCmdLine {
 
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
-    TEST_UTIL.getConfiguration().setBoolean(TableDescriptorChecker.TABLE_SANITY_CHECKS, false);
     TEST_UTIL.startMiniCluster();
     //ensure that server time increments every time we do an operation, otherwise
     //successive puts having the same timestamp will override each other
@@ -137,7 +129,7 @@ public class TestThriftServerCmdLine {
 
   static ThriftServerRunner startCmdLineThread(Supplier<ThriftServer> supplier,
       final String[] args) {
-    LOG.info("Starting HBase Thrift server with command line: " + Joiner.on(" ").join(args));
+    LOG.info("Starting HBase Thrift server with command line: " + join(" ", args));
     ThriftServerRunner tsr = new ThriftServerRunner(supplier.get(), args);
     tsr.setName(ThriftServer.class.getSimpleName() + "-cmdline");
     tsr.start();
@@ -149,7 +141,11 @@ public class TestThriftServerCmdLine {
   }
 
   protected Supplier<ThriftServer> getThriftServerSupplier() {
-    return () -> new ThriftServer(TEST_UTIL.getConfiguration());
+    return new Supplier<ThriftServer>() {
+      @Override public ThriftServer get() {
+        return new ThriftServer(TEST_UTIL.getConfiguration());
+      }
+    };
   }
 
   static ThriftServerRunner createBoundServer(Supplier<ThriftServer> thriftServerSupplier)
@@ -160,20 +156,20 @@ public class TestThriftServerCmdLine {
   static ThriftServerRunner createBoundServer(Supplier<ThriftServer> thriftServerSupplier,
       boolean protocolPortClash, boolean infoPortClash) throws Exception {
     return createBoundServer(thriftServerSupplier, null, false, false,
-      false, protocolPortClash, infoPortClash);
+        false, protocolPortClash, infoPortClash);
   }
 
   static ThriftServerRunner createBoundServer(Supplier<ThriftServer> thriftServerSupplier,
       ImplType implType, boolean specifyFramed, boolean specifyCompact, boolean specifyBindIP)
       throws Exception {
     return createBoundServer(thriftServerSupplier, implType, specifyFramed, specifyCompact,
-      specifyBindIP, false, false);
+        specifyBindIP, false, false);
   }
 
   /**
    * @param protocolPortClash This param is just so we can manufacture a port clash so we can test
    *   the code does the right thing when this happens during actual test runs. Ugly but works.
-   * @see TestBindExceptionHandling#testProtocolPortClash()
+   *
    */
   static ThriftServerRunner createBoundServer(Supplier<ThriftServer> thriftServerSupplier,
       ImplType implType, boolean specifyFramed, boolean specifyCompact, boolean specifyBindIP,
@@ -197,7 +193,11 @@ public class TestThriftServerCmdLine {
       if (testClashOfFirstProtocolPort) {
         // Test what happens if already something bound to the socket.
         // Occupy the random port we just pulled.
-        bsm = new BoundSocketMaker(() -> getRandomPort());
+        bsm = new BoundSocketMaker(new Supplier<Integer>() {
+          @Override public Integer get() {
+            return getRandomPort();
+          }
+        });
         port = bsm.getPort();
         testClashOfFirstProtocolPort = false;
       } else {
@@ -208,7 +208,11 @@ public class TestThriftServerCmdLine {
       args.add("-" + INFOPORT_OPTION);
       int infoPort;
       if (testClashOfFirstInfoPort) {
-        bsm = new BoundSocketMaker(() -> getRandomPort());
+        bsm = new BoundSocketMaker(new Supplier<Integer>() {
+          @Override public Integer get() {
+            return getRandomPort();
+          }
+        });
         infoPort = bsm.getPort();
         testClashOfFirstInfoPort = false;
       } else {
@@ -258,7 +262,7 @@ public class TestThriftServerCmdLine {
     }
     if (tsr.getThriftServer().tserver != null) {
       Class<? extends TServer> expectedClass =
-        implType != null ? implType.serverClass : TBoundedThreadPoolServer.class;
+          implType != null ? implType.serverClass : TBoundedThreadPoolServer.class;
       assertEquals(expectedClass, tsr.getThriftServer().tserver.getClass());
     }
     return tsr;
@@ -285,7 +289,7 @@ public class TestThriftServerCmdLine {
     for (int i = 0; i < 10; i++) {
       clientSideException =  null;
       ThriftServerRunner thriftServerRunner = createBoundServer(getThriftServerSupplier(),
-        this.implType, this.specifyFramed, this.specifyCompact, this.specifyBindIP);
+          this.implType, this.specifyFramed, this.specifyCompact, this.specifyBindIP);
       try {
         talkToThriftServer(thriftServerRunner.getThriftServer().listenPort);
         break;
@@ -298,14 +302,15 @@ public class TestThriftServerCmdLine {
         thriftServerRunner.join();
         if (thriftServerRunner.getRunException() != null) {
           LOG.error("Command-line invocation of HBase Thrift server threw exception",
-            thriftServerRunner.getRunException());
+              thriftServerRunner.getRunException());
           throw thriftServerRunner.getRunException();
         }
       }
     }
 
     if (clientSideException != null) {
-      LOG.error("Thrift Client; parameters={}", getParametersString(), clientSideException);
+      LOG.error(String.format("Thrift Client; parameters=%s", getParametersString()),
+        clientSideException);
       throw new Exception(clientSideException);
     }
   }
@@ -313,7 +318,7 @@ public class TestThriftServerCmdLine {
   protected static volatile boolean tableCreated = false;
 
   protected void talkToThriftServer(int port) throws Exception {
-    LOG.info("Talking to port={}", port);
+    LOG.info(String.format("Talking to port=%d", port));
     TSocket sock = new TSocket(InetAddress.getLoopbackAddress().getHostName(), port);
     TTransport transport = sock;
     if (specifyFramed || implType.isAlwaysFramed) {
@@ -341,4 +346,3 @@ public class TestThriftServerCmdLine {
     }
   }
 }
-

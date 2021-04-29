@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,13 +20,16 @@ package org.apache.hadoop.hbase.thrift;
 
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
-import java.util.Base64;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.security.SecurityUtil;
+import org.apache.hadoop.hbase.util.Base64;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.authorize.ProxyUsers;
@@ -34,16 +37,12 @@ import org.apache.http.HttpHeaders;
 import org.apache.thrift.TProcessor;
 import org.apache.thrift.protocol.TProtocolFactory;
 import org.apache.thrift.server.TServlet;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.ietf.jgss.GSSContext;
 import org.ietf.jgss.GSSCredential;
 import org.ietf.jgss.GSSException;
 import org.ietf.jgss.GSSManager;
 import org.ietf.jgss.GSSName;
 import org.ietf.jgss.Oid;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import static org.apache.hadoop.hbase.http.ProxyUserAuthenticationFilter.getDoasFromHeader;
 
 /**
  * Thrift Http Servlet is used for performing Kerberos authentication if security is enabled and
@@ -52,19 +51,19 @@ import static org.apache.hadoop.hbase.http.ProxyUserAuthenticationFilter.getDoas
 @InterfaceAudience.Private
 public class ThriftHttpServlet extends TServlet {
   private static final long serialVersionUID = 1L;
-  private static final Logger LOG = LoggerFactory.getLogger(ThriftHttpServlet.class.getName());
+  private static final Log LOG = LogFactory.getLog(ThriftHttpServlet.class.getName());
   private final transient UserGroupInformation serviceUGI;
   private final transient UserGroupInformation httpUGI;
   private final transient HBaseServiceHandler handler;
-  private final boolean doAsEnabled;
   private final boolean securityEnabled;
+  private final boolean doAsEnabled;
 
   // HTTP Header related constants.
   public static final String NEGOTIATE = "Negotiate";
 
   public ThriftHttpServlet(TProcessor processor, TProtocolFactory protocolFactory,
-      UserGroupInformation serviceUGI, UserGroupInformation httpUGI,
-      HBaseServiceHandler handler, boolean securityEnabled, boolean doAsEnabled) {
+      UserGroupInformation serviceUGI, UserGroupInformation httpUGI, HBaseServiceHandler handler,
+      boolean securityEnabled, boolean doAsEnabled) {
     super(processor, protocolFactory);
     this.serviceUGI = serviceUGI;
     this.httpUGI = httpUGI;
@@ -85,7 +84,7 @@ public class ThriftHttpServlet extends TServlet {
        */
       String authHeader = request.getHeader(HttpHeaders.AUTHORIZATION);
       if (authHeader == null || authHeader.isEmpty()) {
-        // Send a 401 to the client
+        // Send a 401 to client
         response.addHeader(HttpHeaders.WWW_AUTHENTICATE, NEGOTIATE);
         response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
         return;
@@ -102,18 +101,18 @@ public class ThriftHttpServlet extends TServlet {
       } catch (HttpAuthenticationException e) {
         LOG.error("Kerberos Authentication failed", e);
         // Send a 401 to the client
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.addHeader(HttpHeaders.WWW_AUTHENTICATE, NEGOTIATE);
-        response.sendError(HttpServletResponse.SC_UNAUTHORIZED,
-            "Authentication Error: " + e.getMessage());
+        response.getWriter().println("Authentication Error: " + e.getMessage());
         return;
       }
     }
 
-    if(effectiveUser == null) {
+    if (effectiveUser == null) {
       effectiveUser = serviceUGI.getShortUserName();
     }
 
-    String doAsUserFromQuery = getDoasFromHeader(request);
+    String doAsUserFromQuery = request.getHeader("doAs");
     if (doAsUserFromQuery != null) {
       if (!doAsEnabled) {
         throw new ServletException("Support for proxyuser is not configured");
@@ -138,17 +137,17 @@ public class ThriftHttpServlet extends TServlet {
 
   /**
    * Do the GSS-API kerberos authentication.
-   * We already have a logged in subject in the form of httpUGI,
+   * We already have a logged in subject in the form of serviceUGI,
    * which GSS-API will extract information from.
    */
   private RemoteUserIdentity doKerberosAuth(HttpServletRequest request)
-    throws HttpAuthenticationException {
+      throws HttpAuthenticationException {
     HttpKerberosServerAction action = new HttpKerberosServerAction(request, httpUGI);
     try {
       String principal = httpUGI.doAs(action);
       return new RemoteUserIdentity(principal, action.outToken);
     } catch (Exception e) {
-      LOG.info("Failed to authenticate with {} kerberos principal", httpUGI.getUserName());
+      LOG.error("Failed to perform authentication");
       throw new HttpAuthenticationException(e);
     }
   }
@@ -200,10 +199,10 @@ public class ThriftHttpServlet extends TServlet {
         gssContext = manager.createContext(serverCreds);
         // Get service ticket from the authorization header
         String serviceTicketBase64 = getAuthHeader(request);
-        byte[] inToken = Base64.getDecoder().decode(serviceTicketBase64);
+        byte[] inToken = Base64.decode(serviceTicketBase64);
         byte[] res = gssContext.acceptSecContext(inToken, 0, inToken.length);
         if(res != null) {
-          outToken = Base64.getEncoder().encodeToString(res).replace("\n", "");
+          outToken = Base64.encodeBytes(res).replace("\n", "");
         }
         // Authenticate or deny based on its context completion
         if (!gssContext.isEstablished()) {
@@ -242,7 +241,7 @@ public class ThriftHttpServlet extends TServlet {
       int beginIndex = (NEGOTIATE + " ").length();
       authHeaderBase64String = authHeader.substring(beginIndex);
       // Authorization header must have a payload
-      if (authHeaderBase64String.isEmpty()) {
+      if (authHeaderBase64String == null || authHeaderBase64String.isEmpty()) {
         throw new HttpAuthenticationException("Authorization header received " +
             "from the client does not contain any data.");
       }

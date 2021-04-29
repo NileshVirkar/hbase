@@ -64,10 +64,6 @@ import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SERVER_SOCKET_READ
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SPNEGO_KEYTAB_FILE_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SPNEGO_PRINCIPAL_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_ENABLED_KEY;
-import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_EXCLUDE_CIPHER_SUITES_KEY;
-import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_EXCLUDE_PROTOCOLS_KEY;
-import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_INCLUDE_CIPHER_SUITES_KEY;
-import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_INCLUDE_PROTOCOLS_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_KEYSTORE_KEYPASSWORD_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_KEYSTORE_PASSWORD_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_KEYSTORE_STORE_KEY;
@@ -78,6 +74,8 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
@@ -89,19 +87,30 @@ import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.UnsupportedCallbackException;
 import javax.security.sasl.AuthorizeCallback;
 import javax.security.sasl.SaslServer;
-import org.apache.commons.lang3.ArrayUtils;
+
+import org.apache.commons.cli.BasicParser;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Options;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.filter.ParseFilter;
-import org.apache.hadoop.hbase.http.HttpServerUtil;
 import org.apache.hadoop.hbase.http.InfoServer;
+import org.apache.hadoop.hbase.jetty.SslSelectChannelConnectorSecure;
 import org.apache.hadoop.hbase.security.SaslUtil;
 import org.apache.hadoop.hbase.security.SecurityUtil;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.thrift.generated.Hbase;
+
 import org.apache.hadoop.hbase.util.DNS;
+import org.apache.hadoop.hbase.util.HttpServerUtil;
 import org.apache.hadoop.hbase.util.JvmPauseMonitor;
 import org.apache.hadoop.hbase.util.Strings;
 import org.apache.hadoop.hbase.util.VersionInfo;
@@ -111,45 +120,38 @@ import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.util.Shell.ExitCodeException;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
+import org.apache.thrift.TException;
 import org.apache.thrift.TProcessor;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TCompactProtocol;
+import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.protocol.TProtocolFactory;
 import org.apache.thrift.server.THsHaServer;
 import org.apache.thrift.server.TNonblockingServer;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TServlet;
 import org.apache.thrift.server.TThreadedSelectorServer;
+import org.apache.thrift.transport.TFramedTransport;
 import org.apache.thrift.transport.TNonblockingServerSocket;
 import org.apache.thrift.transport.TNonblockingServerTransport;
 import org.apache.thrift.transport.TSaslServerTransport;
 import org.apache.thrift.transport.TServerSocket;
 import org.apache.thrift.transport.TServerTransport;
 import org.apache.thrift.transport.TTransportFactory;
-import org.apache.thrift.transport.layered.TFramedTransport;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
-import org.apache.hbase.thirdparty.com.google.common.base.Splitter;
-import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLineParser;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.DefaultParser;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.HelpFormatter;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.Options;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.http.HttpVersion;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.HttpConfiguration;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.HttpConnectionFactory;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SecureRequestCustomizer;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.Server;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.ServerConnector;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SslConnectionFactory;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletContextHandler;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletHolder;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.util.thread.QueuedThreadPool;
+import org.mortbay.jetty.Connector;
+import org.mortbay.jetty.Server;
+import org.mortbay.jetty.nio.SelectChannelConnector;
+
+import org.mortbay.jetty.servlet.Context;
+import org.mortbay.jetty.servlet.ServletHolder;
+import org.mortbay.thread.QueuedThreadPool;
+
+import com.google.common.base.Joiner;
+import com.google.common.base.Splitter;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+
+
 
 /**
  * ThriftServer- this class starts up a Thrift server which implements the
@@ -157,11 +159,9 @@ import org.apache.hbase.thirdparty.org.eclipse.jetty.util.thread.QueuedThreadPoo
  * independent process.
  */
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.TOOLS)
-public class ThriftServer  extends Configured implements Tool {
+public class ThriftServer extends Configured implements Tool{
 
-  private static final Logger LOG = LoggerFactory.getLogger(ThriftServer.class);
-
-
+  private static final Log LOG = LogFactory.getLog(ThriftServer.class);
 
   protected Configuration conf;
 
@@ -170,15 +170,14 @@ public class ThriftServer  extends Configured implements Tool {
   protected TProcessor processor;
 
   protected ThriftMetrics metrics;
-  protected HBaseServiceHandler hbaseServiceHandler;
+  protected HBaseServiceHandler hBaseServiceHandler;
   protected UserGroupInformation serviceUGI;
   protected UserGroupInformation httpUGI;
-  protected boolean httpEnabled;
+  protected boolean httpEnable;
 
   protected SaslUtil.QualityOfProtection qop;
   protected String host;
   protected int listenPort;
-
 
   protected boolean securityEnabled;
   protected boolean doAsEnabled;
@@ -187,7 +186,6 @@ public class ThriftServer  extends Configured implements Tool {
 
   protected volatile TServer tserver;
   protected volatile Server httpServer;
-
 
   //
   // Main program and support routines
@@ -201,7 +199,7 @@ public class ThriftServer  extends Configured implements Tool {
     return new ThriftMetrics(conf, ThriftMetrics.ThriftServerType.ONE);
   }
 
-  protected void setupParamters() throws IOException {
+  protected void setupParameters() throws IOException {
     // login the server principal (if using secure Hadoop)
     UserProvider userProvider = UserProvider.instantiate(conf);
     securityEnabled = userProvider.isHadoopSecurityEnabled()
@@ -218,7 +216,7 @@ public class ThriftServer  extends Configured implements Tool {
       UserGroupInformation.setConfiguration(conf);
       // login the SPNEGO principal using UGI to avoid polluting the login user
       this.httpUGI = UserGroupInformation.loginUserFromKeytabAndReturnUGI(spnegoPrincipal,
-        spnegoKeytab);
+          spnegoKeytab);
     }
     this.serviceUGI = userProvider.getCurrent().getUGI();
     if (httpUGI == null) {
@@ -228,14 +226,14 @@ public class ThriftServer  extends Configured implements Tool {
     this.listenPort = conf.getInt(PORT_CONF_KEY, DEFAULT_LISTEN_PORT);
     this.metrics = createThriftMetrics(conf);
     this.pauseMonitor = new JvmPauseMonitor(conf, this.metrics.getSource());
-    this.hbaseServiceHandler = createHandler(conf, userProvider);
-    this.hbaseServiceHandler.initMetrics(metrics);
+    this.hBaseServiceHandler = createHandler(conf, userProvider);
+    this.hBaseServiceHandler.initMetrics(metrics);
     this.processor = createProcessor();
 
-    httpEnabled = conf.getBoolean(USE_HTTP_CONF_KEY, false);
+    httpEnable = conf.getBoolean(USE_HTTP_CONF_KEY, false);
     doAsEnabled = conf.getBoolean(THRIFT_SUPPORT_PROXYUSER_KEY, false);
-    if (doAsEnabled && !httpEnabled) {
-      LOG.warn("Fail to enable the doAs feature. " + USE_HTTP_CONF_KEY + " is not configured");
+    if (doAsEnabled && !httpEnable) {
+      LOG.warn("Fail to enable the doAs feature." + USE_HTTP_CONF_KEY + " is not configured.");
     }
 
     String strQop = conf.get(THRIFT_QOP_KEY);
@@ -269,8 +267,8 @@ public class ThriftServer  extends Configured implements Tool {
       // communication. The preference should be to use the THRIFT_SPNEGO_PRINCIPAL_KEY
       // config so that THRIFT_KERBEROS_PRINCIPAL_KEY doesn't control both backend
       // Kerberos principal and SPNEGO principal.
-      LOG.info("Using deprecated {} config for SPNEGO principal. Use {} instead.",
-        THRIFT_KERBEROS_PRINCIPAL_KEY, THRIFT_SPNEGO_PRINCIPAL_KEY);
+      LOG.info(String.format("Using deprecated %s config for SPNEGO principal. Use %s instead.",
+          THRIFT_KERBEROS_PRINCIPAL_KEY, THRIFT_SPNEGO_PRINCIPAL_KEY));
       principal = conf.get(THRIFT_KERBEROS_PRINCIPAL_KEY);
     }
     // Handle _HOST in principal value
@@ -285,8 +283,8 @@ public class ThriftServer  extends Configured implements Tool {
       // communication. The preference should be to use the THRIFT_SPNEGO_KEYTAB_FILE_KEY
       // config so that THRIFT_KEYTAB_FILE_KEY doesn't control both backend
       // Kerberos keytab and SPNEGO keytab.
-      LOG.info("Using deprecated {} config for SPNEGO keytab. Use {} instead.",
-        THRIFT_KEYTAB_FILE_KEY, THRIFT_SPNEGO_KEYTAB_FILE_KEY);
+      LOG.info(String.format("Using deprecated %s config for SPNEGO keytab. Use %s instead.",
+          THRIFT_KEYTAB_FILE_KEY, THRIFT_SPNEGO_KEYTAB_FILE_KEY));
       keytab = conf.get(THRIFT_KEYTAB_FILE_KEY);
     }
     return keytab;
@@ -294,7 +292,7 @@ public class ThriftServer  extends Configured implements Tool {
 
   protected void startInfoServer() throws IOException {
     // Put up info server.
-    int port = conf.getInt(THRIFT_INFO_SERVER_PORT , THRIFT_INFO_SERVER_PORT_DEFAULT);
+    int port = conf.getInt(THRIFT_INFO_SERVER_PORT, THRIFT_INFO_SERVER_PORT_DEFAULT);
 
     if (port >= 0) {
       conf.setLong("startcode", System.currentTimeMillis());
@@ -304,6 +302,7 @@ public class ThriftServer  extends Configured implements Tool {
       infoServer.setAttribute("hbase.conf", conf);
       infoServer.setAttribute("hbase.thrift.server.type", metrics.getThriftServerType().name());
       infoServer.start();
+
     }
   }
 
@@ -323,7 +322,7 @@ public class ThriftServer  extends Configured implements Tool {
 
   protected TProcessor createProcessor() {
     return new Hbase.Processor<>(
-        HbaseHandlerMetricsProxy.newInstance((Hbase.Iface) hbaseServiceHandler, metrics, conf));
+        HbaseHandlerMetricsProxy.newInstance((Hbase.Iface) hBaseServiceHandler, metrics, conf));
   }
 
   /**
@@ -349,9 +348,9 @@ public class ThriftServer  extends Configured implements Tool {
     HelpFormatter formatter = new HelpFormatter();
     formatter.printHelp("Thrift", null, options,
         "To start the Thrift server run 'hbase-daemon.sh start thrift' or " +
-        "'hbase thrift'\n" +
-        "To shutdown the thrift server run 'hbase-daemon.sh stop " +
-        "thrift' or send a kill signal to the thrift server pid",
+            "'hbase thrift'\n" +
+            "To shutdown the thrift server run 'hbase-daemon.sh stop " +
+            "thrift' or send a kill signal to the thrift server pid",
         true);
     throw new ExitCodeException(exitCode, "");
   }
@@ -363,7 +362,7 @@ public class ThriftServer  extends Configured implements Tool {
    */
   protected TServlet createTServlet(TProtocolFactory protocolFactory) {
     return new ThriftHttpServlet(processor, protocolFactory, serviceUGI, httpUGI,
-        hbaseServiceHandler, securityEnabled, doAsEnabled);
+        hBaseServiceHandler, securityEnabled, doAsEnabled);
   }
 
   /**
@@ -388,79 +387,47 @@ public class ThriftServer  extends Configured implements Tool {
             HTTP_MAX_THREADS_KEY_DEFAULT));
     QueuedThreadPool threadPool = new QueuedThreadPool(maxThreads);
     threadPool.setMinThreads(minThreads);
-    httpServer = new Server(threadPool);
+    httpServer = new Server();
+    httpServer.setThreadPool(threadPool);
+    httpServer.setSendServerVersion(false);
+    httpServer.setSendDateHeader(false);
+    httpServer.setStopAtShutdown(true);
 
     // Context handler
-    ServletContextHandler ctxHandler = new ServletContextHandler(httpServer, "/",
-        ServletContextHandler.SESSIONS);
-    ctxHandler.addServlet(new ServletHolder(thriftHttpServlet), "/*");
-    HttpServerUtil.constrainHttpMethods(ctxHandler,
+    Context context =
+        new Context(httpServer, "/", Context.SESSIONS);
+    context.addServlet(new ServletHolder(thriftHttpServlet), "/*");
+    HttpServerUtil.constrainHttpMethods(context,
         conf.getBoolean(THRIFT_HTTP_ALLOW_OPTIONS_METHOD,
             THRIFT_HTTP_ALLOW_OPTIONS_METHOD_DEFAULT));
 
     // set up Jetty and run the embedded server
-    HttpConfiguration httpConfig = new HttpConfiguration();
-    httpConfig.setSecureScheme("https");
-    httpConfig.setSecurePort(listenPort);
-    httpConfig.setHeaderCacheSize(DEFAULT_HTTP_MAX_HEADER_SIZE);
-    httpConfig.setRequestHeaderSize(DEFAULT_HTTP_MAX_HEADER_SIZE);
-    httpConfig.setResponseHeaderSize(DEFAULT_HTTP_MAX_HEADER_SIZE);
-    httpConfig.setSendServerVersion(false);
-    httpConfig.setSendDateHeader(false);
-
-    ServerConnector serverConnector;
+    Connector connector = new SelectChannelConnector();
     if(conf.getBoolean(THRIFT_SSL_ENABLED_KEY, false)) {
-      HttpConfiguration httpsConfig = new HttpConfiguration(httpConfig);
-      httpsConfig.addCustomizer(new SecureRequestCustomizer());
-
-      SslContextFactory sslCtxFactory = new SslContextFactory();
+      // directly use https protocol.
+      SslSelectChannelConnectorSecure sslConnector = new SslSelectChannelConnectorSecure();
       String keystore = conf.get(THRIFT_SSL_KEYSTORE_STORE_KEY);
       String password = HBaseConfiguration.getPassword(conf,
           THRIFT_SSL_KEYSTORE_PASSWORD_KEY, null);
       String keyPassword = HBaseConfiguration.getPassword(conf,
           THRIFT_SSL_KEYSTORE_KEYPASSWORD_KEY, password);
-      sslCtxFactory.setKeyStorePath(keystore);
-      sslCtxFactory.setKeyStorePassword(password);
-      sslCtxFactory.setKeyManagerPassword(keyPassword);
-
-      String[] excludeCiphers = conf.getStrings(
-          THRIFT_SSL_EXCLUDE_CIPHER_SUITES_KEY, ArrayUtils.EMPTY_STRING_ARRAY);
-      if (excludeCiphers.length != 0) {
-        sslCtxFactory.setExcludeCipherSuites(excludeCiphers);
-      }
-      String[] includeCiphers = conf.getStrings(
-          THRIFT_SSL_INCLUDE_CIPHER_SUITES_KEY, ArrayUtils.EMPTY_STRING_ARRAY);
-      if (includeCiphers.length != 0) {
-        sslCtxFactory.setIncludeCipherSuites(includeCiphers);
-      }
-
-      // Disable SSLv3 by default due to "Poodle" Vulnerability - CVE-2014-3566
-      String[] excludeProtocols = conf.getStrings(
-          THRIFT_SSL_EXCLUDE_PROTOCOLS_KEY, "SSLv3");
-      if (excludeProtocols.length != 0) {
-        sslCtxFactory.setExcludeProtocols(excludeProtocols);
-      }
-      String[] includeProtocols = conf.getStrings(
-          THRIFT_SSL_INCLUDE_PROTOCOLS_KEY, ArrayUtils.EMPTY_STRING_ARRAY);
-      if (includeProtocols.length != 0) {
-        sslCtxFactory.setIncludeProtocols(includeProtocols);
-      }
-
-      serverConnector = new ServerConnector(httpServer,
-          new SslConnectionFactory(sslCtxFactory, HttpVersion.HTTP_1_1.toString()),
-          new HttpConnectionFactory(httpsConfig));
-    } else {
-      serverConnector = new ServerConnector(httpServer, new HttpConnectionFactory(httpConfig));
+      sslConnector.setKeystore(keystore);
+      sslConnector.setPassword(password);
+      sslConnector.setKeyPassword(keyPassword);
+      sslConnector.setNeedClientAuth(true);
+      connector = sslConnector;
     }
-    serverConnector.setPort(listenPort);
-    serverConnector.setHost(getBindAddress(conf).getHostAddress());
-    httpServer.addConnector(serverConnector);
-    httpServer.setStopAtShutdown(true);
+    String host = getBindAddress(conf).getHostAddress();
+    connector.setPort(listenPort);
+    connector.setHost(host);
+    connector.setHeaderBufferSize(DEFAULT_HTTP_MAX_HEADER_SIZE);
+    httpServer.addConnector(connector);
 
     if (doAsEnabled) {
       ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
     }
-    LOG.info("Starting Thrift HTTP Server on {}", Integer.toString(listenPort));
+
+    LOG.info("Starting Thrift HTTP Server on " + listenPort);
   }
 
   /**
@@ -477,11 +444,11 @@ public class ThriftServer  extends Configured implements Tool {
     TTransportFactory transportFactory;
     if (conf.getBoolean(FRAMED_CONF_KEY, FRAMED_CONF_DEFAULT) || implType.isAlwaysFramed) {
       if (qop != null) {
-        throw new RuntimeException("Thrift server authentication"
-            + " doesn't work with framed transport yet");
+        throw new RuntimeException("Thrift server authentication "
+          + "doesn't work with framed transport yet");
       }
       transportFactory = new TFramedTransport.Factory(
-        conf.getInt(MAX_FRAME_SIZE_CONF_KEY, MAX_FRAME_SIZE_CONF_DEFAULT) * 1024 * 1024);
+          conf.getInt(MAX_FRAME_SIZE_CONF_KEY, MAX_FRAME_SIZE_CONF_DEFAULT) * 1024 * 1024);
       LOG.debug("Using framed transport");
     } else if (qop == null) {
       transportFactory = new TTransportFactory();
@@ -496,9 +463,7 @@ public class ThriftServer  extends Configured implements Tool {
       TSaslServerTransport.Factory saslFactory = new TSaslServerTransport.Factory();
       saslFactory.addServerDefinition("GSSAPI", name, host, saslProperties,
           new SaslRpcServer.SaslGssCallbackHandler() {
-            @Override
-            public void handle(Callback[] callbacks)
-                throws UnsupportedCallbackException {
+            @Override public void handle(Callback[] callbacks) throws UnsupportedCallbackException {
               AuthorizeCallback ac = null;
               for (Callback callback : callbacks) {
                 if (callback instanceof AuthorizeCallback) {
@@ -516,35 +481,34 @@ public class ThriftServer  extends Configured implements Tool {
                 } else {
                   ac.setAuthorized(true);
                   String userName = SecurityUtil.getUserFromPrincipal(authzid);
-                  LOG.info("Effective user: {}", userName);
+                  LOG.info("Effective user: " + userName);
                   ac.setAuthorizedID(userName);
                 }
               }
             }
           });
       transportFactory = saslFactory;
-
       // Create a processor wrapper, to get the caller
-      processorToUse = (inProt, outProt) -> {
-        TSaslServerTransport saslServerTransport =
-            (TSaslServerTransport)inProt.getTransport();
-        SaslServer saslServer = saslServerTransport.getSaslServer();
-        String principal = saslServer.getAuthorizationID();
-        hbaseServiceHandler.setEffectiveUser(principal);
-        processor.process(inProt, outProt);
+      processorToUse = new TProcessor() {
+        @Override public void process(TProtocol inProt, TProtocol outProt) throws TException {
+          TSaslServerTransport saslServerTransport = (TSaslServerTransport) inProt.getTransport();
+          SaslServer saslServer = saslServerTransport.getSaslServer();
+          String principal = saslServer.getAuthorizationID();
+          hBaseServiceHandler.setEffectiveUser(principal);
+          processor.process(inProt, outProt);
+        }
       };
     }
-
     if (conf.get(BIND_CONF_KEY) != null && !implType.canSpecifyBindIP) {
-      LOG.error("Server types {} don't support IP address binding at the moment. See " +
-              "https://issues.apache.org/jira/browse/HBASE-2155 for details.",
-          Joiner.on(", ").join(ImplType.serversThatCannotSpecifyBindIP()));
+      LOG.error(String.format("Server types %s don't support IP address binding at the moment. See "
+              + "https://issues.apache.org/jira/browse/HBASE-2155 for details.",
+          Joiner.on(", ").join(ImplType.serversThatCannotSpecifyBindIP())));
       throw new RuntimeException("-" + BIND_CONF_KEY + " not supported with " + implType);
     }
 
     InetSocketAddress inetSocketAddress = new InetSocketAddress(getBindAddress(conf), listenPort);
     if (implType == ImplType.HS_HA || implType == ImplType.NONBLOCKING ||
-        implType == ImplType.THREADED_SELECTOR) {
+      implType == ImplType.THREADED_SELECTOR) {
       TNonblockingServerTransport serverTransport = new TNonblockingServerSocket(inetSocketAddress);
       if (implType == ImplType.NONBLOCKING) {
         tserver = getTNonBlockingServer(serverTransport, protocolFactory, processorToUse,
@@ -556,21 +520,21 @@ public class ThriftServer  extends Configured implements Tool {
         tserver = getTThreadedSelectorServer(serverTransport, protocolFactory, processorToUse,
             transportFactory, inetSocketAddress);
       }
-      LOG.info("starting HBase {} server on {}", implType.simpleClassName(),
-          Integer.toString(listenPort));
+      LOG.info(String.format("starting HBase %s server on %s", implType.simpleClassName(),
+          Integer.toString(listenPort)));
     } else if (implType == ImplType.THREAD_POOL) {
       this.tserver = getTThreadPoolServer(protocolFactory, processorToUse, transportFactory,
           inetSocketAddress);
     } else {
       throw new AssertionError("Unsupported Thrift server implementation: " +
-          implType.simpleClassName());
+        implType.simpleClassName());
     }
 
     // A sanity check that we instantiated the right type of server.
     if (tserver.getClass() != implType.serverClass) {
-      throw new AssertionError("Expected to create Thrift server class " +
-          implType.serverClass.getName() + " but got " +
-          tserver.getClass().getName());
+      throw new AssertionError(
+          "Expected to create Thrift server class " + implType.serverClass.getName() + " but got "
+              + tserver.getClass().getName());
     }
   }
 
@@ -592,7 +556,8 @@ public class ThriftServer  extends Configured implements Tool {
     THsHaServer.Args serverArgs = new THsHaServer.Args(serverTransport);
     int queueSize = conf.getInt(TBoundedThreadPoolServer.MAX_QUEUED_REQUESTS_CONF_KEY,
         TBoundedThreadPoolServer.DEFAULT_MAX_QUEUED_REQUESTS);
-    CallQueue callQueue = new CallQueue(new LinkedBlockingQueue<>(queueSize), metrics);
+    CallQueue callQueue =
+      new CallQueue(new LinkedBlockingQueue<CallQueue.Call>(queueSize), metrics);
     int workerThread = conf.getInt(TBoundedThreadPoolServer.MAX_WORKER_THREADS_CONF_KEY,
         serverArgs.getMaxWorkerThreads());
     ExecutorService executorService = createExecutor(
@@ -610,7 +575,8 @@ public class ThriftServer  extends Configured implements Tool {
         new HThreadedSelectorServerArgs(serverTransport, conf);
     int queueSize = conf.getInt(TBoundedThreadPoolServer.MAX_QUEUED_REQUESTS_CONF_KEY,
         TBoundedThreadPoolServer.DEFAULT_MAX_QUEUED_REQUESTS);
-    CallQueue callQueue = new CallQueue(new LinkedBlockingQueue<>(queueSize), metrics);
+    CallQueue callQueue =
+      new CallQueue(new LinkedBlockingQueue<CallQueue.Call>(queueSize), metrics);
     int workerThreads = conf.getInt(TBoundedThreadPoolServer.MAX_WORKER_THREADS_CONF_KEY,
         serverArgs.getWorkerThreads());
     int selectorThreads = conf.getInt(THRIFT_SELECTOR_NUM, serverArgs.getSelectorThreads());
@@ -672,14 +638,16 @@ public class ThriftServer  extends Configured implements Tool {
     return InetAddress.getByName(bindAddressStr);
   }
 
-
   public static void registerFilters(Configuration conf) {
     String[] filters = conf.getStrings(THRIFT_FILTERS);
     Splitter splitter = Splitter.on(':');
-    if(filters != null) {
-      for(String filterClass: filters) {
-        List<String> filterPart = splitter.splitToList(filterClass);
-        if(filterPart.size() != 2) {
+    if (filters != null) {
+      List<String> filterPart = new ArrayList<String>();
+      for (String filterClass : filters) {
+        for (String part: splitter.split(filterClass)) {
+          filterPart.add(part);
+        }
+        if (filterPart.size() != 2) {
           LOG.warn("Invalid filter specification " + filterClass + " - skipping");
         } else {
           ParseFilter.registerFilter(filterPart.get(0), filterPart.get(1));
@@ -718,7 +686,6 @@ public class ThriftServer  extends Configured implements Tool {
     options.addOption("k", KEEP_ALIVE_SEC_OPTION, true,
         "The amount of time in secods to keep a thread alive when idle in " +
             ImplType.THREAD_POOL.simpleClassName());
-
     options.addOption("t", READ_TIMEOUT_OPTION, true,
         "Amount of time in milliseconds before a server thread will timeout " +
             "waiting for client to send data on a connected socket. Currently, " +
@@ -757,8 +724,8 @@ public class ThriftServer  extends Configured implements Tool {
         conf, TBoundedThreadPoolServer.MAX_WORKER_THREADS_CONF_KEY);
     optionToConf(cmd, MAX_QUEUE_SIZE_OPTION,
         conf, TBoundedThreadPoolServer.MAX_QUEUED_REQUESTS_CONF_KEY);
-    optionToConf(cmd, KEEP_ALIVE_SEC_OPTION,
-        conf, TBoundedThreadPoolServer.THREAD_KEEP_ALIVE_TIME_SEC_CONF_KEY);
+    optionToConf(cmd, KEEP_ALIVE_SEC_OPTION, conf,
+      TBoundedThreadPoolServer.THREAD_KEEP_ALIVE_TIME_SEC_CONF_KEY);
     optionToConf(cmd, READ_TIMEOUT_OPTION, conf, THRIFT_SERVER_SOCKET_READ_TIMEOUT_KEY);
     optionToConf(cmd, SELECTOR_NUM_OPTION, conf, THRIFT_SELECTOR_NUM);
 
@@ -786,7 +753,7 @@ public class ThriftServer  extends Configured implements Tool {
     Options options = new Options();
     addOptions(options);
 
-    CommandLineParser parser = new DefaultParser();
+    CommandLineParser parser = new BasicParser();
     CommandLine cmd = parser.parse(options, args);
 
     if (cmd.hasOption("help")) {
@@ -843,9 +810,9 @@ public class ThriftServer  extends Configured implements Tool {
   @Override
   public int run(String[] strings) throws Exception {
     processOptions(strings);
-    setupParamters();
+    setupParameters();
     startInfoServer();
-    if (httpEnabled) {
+    if (httpEnable) {
       setupHTTPServer();
       httpServer.start();
       httpServer.join();

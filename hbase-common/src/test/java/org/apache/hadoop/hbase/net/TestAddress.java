@@ -18,31 +18,37 @@
 package org.apache.hadoop.hbase.net;
 
 import static org.junit.Assert.assertEquals;
-
-import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 @Category({ MiscTests.class, SmallTests.class })
 public class TestAddress {
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestAddress.class);
 
   @Test
   public void testGetHostWithoutDomain() {
     assertEquals("a:123",
-        Address.fromParts("a.b.c", 123).toStringWithoutDomain());
+        toStringWithoutDomain(Address.fromParts("a.b.c", 123)));
     assertEquals("1:123",
-        Address.fromParts("1.b.c", 123).toStringWithoutDomain());
+        toStringWithoutDomain(Address.fromParts("1.b.c", 123)));
     assertEquals("123.456.789.1:123",
-        Address.fromParts("123.456.789.1", 123).toStringWithoutDomain());
+        toStringWithoutDomain(Address.fromParts("123.456.789.1", 123)));
     assertEquals("[2001:db8::1]:80",
-        Address.fromParts("[2001:db8::1]:", 80).toStringWithoutDomain());
-    assertEquals("[2001:db8::1]:80",
-        Address.fromParts("[2001:db8::1]:", 80).toStringWithoutDomain());
+        toStringWithoutDomain(Address.fromParts("[2001:db8::1]", 80)));
+  }
+
+  private String toStringWithoutDomain(Address address) {
+    String hostname = address.getHostname();
+    String[] parts = hostname.split("\\.");
+    if (parts.length > 1) {
+      for (String part: parts) {
+        if (!StringUtils.isNumeric(part)) {
+          return Address.fromParts(parts[0], address.getPort()).toString();
+        }
+      }
+    }
+    return address.toString();
   }
 }

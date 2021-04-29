@@ -22,16 +22,17 @@ import static org.apache.hadoop.hbase.thrift.Constants.INFOPORT_OPTION;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.thrift.ThriftMetrics.ThriftServerType;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.util.StringUtils;
+
 
 public class HBaseThriftTestingUtility {
 
-  private static final Logger LOG = LoggerFactory.getLogger(HBaseThriftTestingUtility.class);
+  private static final Log LOG = LogFactory.getLog(HBaseThriftTestingUtility.class);
   private Thread thriftServerThread;
   private volatile Exception thriftServerException;
   private ThriftServer thriftServer;
@@ -56,23 +57,26 @@ public class HBaseThriftTestingUtility {
     int infoPort = HBaseTestingUtility.randomFreePort();
     args.add(String.valueOf(infoPort));
 
-    LOG.info("Starting Thrift Server {} on port: {} ", type, port);
+    LOG.info(String.format("Starting Thrift Server %s on port: %d ", type.toString(), port));
     thriftServer = createThriftServer(conf, type);
     startThriftServerThread(args.toArray(new String[args.size()]));
     // wait up to 10s for the server to start
     waitForThriftServer();
-    LOG.info("Started Thrift Server {} on port {}", type, port);
+    LOG.info(String.format("Starting Thrift Server %s on port: %d ", type.toString(), port));
   }
 
   private void startThriftServerThread(final String[] args) {
-    LOG.info("Starting HBase Thrift server with command line: " + Joiner.on(" ").join(args));
+
+    LOG.info("Starting HBase Thrift server with command line:" + StringUtils.join(" ", args));
 
     thriftServerException = null;
-    thriftServerThread = new Thread(() -> {
-      try {
-        thriftServer.run(args);
-      } catch (Exception e) {
-        thriftServerException = e;
+    thriftServerThread = new Thread(new Runnable() {
+      @Override public void run() {
+        try {
+          thriftServer.run(args);
+        } catch (Exception e) {
+          thriftServerException = e;
+        }
       }
     });
     thriftServerThread.setName(ThriftServer.class.getSimpleName());
