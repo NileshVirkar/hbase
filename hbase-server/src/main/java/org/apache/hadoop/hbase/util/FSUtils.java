@@ -87,11 +87,11 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Throwables;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterators;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 import org.apache.hbase.thirdparty.com.google.common.primitives.Ints;
-import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.FSProtos;
@@ -107,7 +107,7 @@ public final class FSUtils {
   private static final int DEFAULT_THREAD_POOLSIZE = 2;
 
   /** Set to true on Windows platforms */
-  // currently only used in testing. TODO refactor into a test class
+  @VisibleForTesting // currently only used in testing. TODO refactor into a test class
   public static final boolean WINDOWS = System.getProperty("os.name").startsWith("Windows");
 
   private FSUtils() {
@@ -746,7 +746,7 @@ public final class FSUtils {
       String[] hosts = bl.getHosts();
       long len = bl.getLength();
       StorageType[] storageTypes = bl.getStorageTypes();
-      blocksDistribution.addHostsAndBlockWeight(hosts, len, storageTypes);
+      blocksDistribution.addHostsAndBlockWeight(hosts, len ,storageTypes);
     }
   }
 
@@ -1657,8 +1657,7 @@ public final class FSUtils {
 
     // run in multiple threads
     final ExecutorService tpe = Executors.newFixedThreadPool(threadPoolSize,
-      new ThreadFactoryBuilder().setNameFormat("FSRegionQuery-pool-%d").setDaemon(true)
-        .setUncaughtExceptionHandler(Threads.LOGGING_EXCEPTION_HANDLER).build());
+      Threads.newDaemonThreadFactory("FSRegionQuery"));
     try {
       // ignore all file status items that are not of interest
       for (FileStatus regionStatus : statusList) {
