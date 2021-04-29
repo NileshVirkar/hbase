@@ -19,6 +19,7 @@
 package org.apache.hadoop.hbase.master;
 
 import static org.apache.hadoop.hbase.master.MetricsMaster.convertToProcedureMetrics;
+import static org.apache.hadoop.hbase.master.MetricsMaster.convertToProcedureMetricsForMasterUI;
 
 import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
 import org.apache.hadoop.hbase.procedure2.ProcedureMetrics;
@@ -41,12 +42,18 @@ public class MetricsAssignmentManager {
     assignmentManagerSource = CompatibilitySingletonFactory.getInstance(
         MetricsAssignmentManagerSource.class);
 
-    assignProcMetrics = convertToProcedureMetrics(assignmentManagerSource.getAssignMetrics());
-    unassignProcMetrics = convertToProcedureMetrics(assignmentManagerSource.getUnassignMetrics());
-    moveProcMetrics = convertToProcedureMetrics(assignmentManagerSource.getMoveMetrics());
-    reopenProcMetrics = convertToProcedureMetrics(assignmentManagerSource.getReopenMetrics());
-    openProcMetrics = convertToProcedureMetrics(assignmentManagerSource.getOpenMetrics());
-    closeProcMetrics = convertToProcedureMetrics(assignmentManagerSource.getCloseMetrics());
+    assignProcMetrics = convertToProcedureMetricsForMasterUI(
+      assignmentManagerSource.getAssignMetrics());
+    unassignProcMetrics = convertToProcedureMetricsForMasterUI(
+      assignmentManagerSource.getUnassignMetrics());
+    moveProcMetrics = convertToProcedureMetricsForMasterUI(
+      assignmentManagerSource.getMoveMetrics());
+    reopenProcMetrics = convertToProcedureMetricsForMasterUI(
+      assignmentManagerSource.getReopenMetrics());
+    openProcMetrics = convertToProcedureMetricsForMasterUI(
+      assignmentManagerSource.getOpenMetrics());
+    closeProcMetrics = convertToProcedureMetricsForMasterUI(
+      assignmentManagerSource.getCloseMetrics());
     splitProcMetrics = convertToProcedureMetrics(assignmentManagerSource.getSplitMetrics());
     mergeProcMetrics = convertToProcedureMetrics(assignmentManagerSource.getMergeMetrics());
   }
@@ -102,34 +109,6 @@ public class MetricsAssignmentManager {
 
   public void updateUnknownServerOpenRegions(int unknownRegions) {
     assignmentManagerSource.updateUnknownServerOpenRegions(unknownRegions);
-  }
-
-  public void updateOrphanRegionsOnRs(int orphanRegionsOnRs) {
-    assignmentManagerSource.setOrphanRegionsOnRs(orphanRegionsOnRs);
-  }
-
-  public void updateOrphanRegionsOnFs(int orphanRegionsOnFs) {
-    assignmentManagerSource.setOrphanRegionsOnFs(orphanRegionsOnFs);
-  }
-
-  public void updateInconsistentRegions(int inconsistentRegions) {
-    assignmentManagerSource.setInconsistentRegions(inconsistentRegions);
-  }
-
-  public void updateHoles(int holes) {
-    assignmentManagerSource.setHoles(holes);
-  }
-
-  public void updateOverlaps(int overlaps) {
-    assignmentManagerSource.setOverlaps(overlaps);
-  }
-
-  public void updateUnknownServerRegions(int unknownServerRegions) {
-    assignmentManagerSource.setUnknownServerRegions(unknownServerRegions);
-  }
-
-  public void updateEmptyRegionInfoRegions(int emptyRegionInfoRegions) {
-    assignmentManagerSource.setEmptyRegionInfoRegions(emptyRegionInfoRegions);
   }
 
   /**
