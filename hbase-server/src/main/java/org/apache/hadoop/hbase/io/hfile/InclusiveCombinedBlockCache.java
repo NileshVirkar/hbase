@@ -19,13 +19,13 @@
 
 package org.apache.hadoop.hbase.io.hfile;
 
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.HBaseInterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
-@InterfaceAudience.Private
-public class InclusiveCombinedBlockCache extends CombinedBlockCache {
+@InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.CONFIG)
+public class InclusiveCombinedBlockCache extends CombinedBlockCache implements BlockCache {
   public InclusiveCombinedBlockCache(FirstLevelBlockCache l1, BlockCache l2) {
     super(l1,l2);
-    l1.setVictimCache(l2);
   }
 
   @Override
@@ -43,21 +43,16 @@ public class InclusiveCombinedBlockCache extends CombinedBlockCache {
    * @param buf The block contents wrapped in a ByteBuffer.
    * @param inMemory Whether block should be treated as in-memory. This parameter is only useful for
    *                 the L1 lru cache.
+   * @param cacheDataInL1 This is totally ignored.
    */
   @Override
-  public void cacheBlock(BlockCacheKey cacheKey, Cacheable buf, boolean inMemory) {
+  public void cacheBlock(BlockCacheKey cacheKey, Cacheable buf, boolean inMemory,
+                         final boolean cacheDataInL1) {
     // This is the inclusive part of the combined block cache.
     // Every block is placed into both block caches.
-    l1Cache.cacheBlock(cacheKey, buf, inMemory);
+    l1Cache.cacheBlock(cacheKey, buf, inMemory, true);
 
     // This assumes that insertion into the L2 block cache is either async or very fast.
-    l2Cache.cacheBlock(cacheKey, buf, inMemory);
-  }
-
-  @Override
-  public boolean evictBlock(BlockCacheKey cacheKey) {
-    boolean l1Result = this.l1Cache.evictBlock(cacheKey);
-    boolean l2Result = this.l2Cache.evictBlock(cacheKey);
-    return l1Result || l2Result;
+    l2Cache.cacheBlock(cacheKey, buf, inMemory, true);
   }
 }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hbase.io.hfile;
 
+import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.io.HeapSize;
-import org.apache.yetus.audience.InterfaceAudience;
 
 /**
  * In-memory BlockCache that may be backed by secondary layer(s).
@@ -29,7 +29,7 @@ public interface FirstLevelBlockCache extends ResizableBlockCache, HeapSize {
   /**
    * Whether the cache contains the block with specified cacheKey
    *
-   * @param cacheKey cache key for the block
+   * @param cacheKey block key
    * @return true if it contains the block
    */
   boolean containsBlock(BlockCacheKey cacheKey);

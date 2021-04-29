@@ -1,4 +1,5 @@
 /**
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,38 +19,30 @@
 package org.apache.hadoop.hbase.io.hfile;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryUsage;
 import java.nio.ByteBuffer;
+import java.util.Map;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
-import org.apache.hadoop.hbase.io.ByteBuffAllocator;
-import org.apache.hadoop.hbase.io.hfile.BlockType.BlockCategory;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.io.hfile.bucket.BucketCache;
-import org.apache.hadoop.hbase.io.util.MemorySizeUtil;
-import org.apache.hadoop.hbase.nio.ByteBuff;
-import org.apache.hadoop.hbase.testclassification.IOTests;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.io.util.HeapMemorySizeUtil;
 import org.apache.hadoop.hbase.util.Threads;
+import org.junit.After;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Tests that {@link CacheConfig} does as expected.
@@ -58,14 +51,9 @@ import org.slf4j.LoggerFactory;
 // (seconds).  It is large because it depends on being able to reset the global
 // blockcache instance which is in a global variable.  Experience has it that
 // tests clash on the global variable if this test is run as small sized test.
-@Category({IOTests.class, MediumTests.class})
+@Category(LargeTests.class)
 public class TestCacheConfig {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestCacheConfig.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestCacheConfig.class);
+  private static final Log LOG = LogFactory.getLog(TestCacheConfig.class);
   private Configuration conf;
 
   static class Deserializer implements CacheableDeserializer<Cacheable> {
@@ -78,17 +66,22 @@ public class TestCacheConfig {
     }
 
     @Override
-    public int getDeserializerIdentifier() {
+    public int getDeserialiserIdentifier() {
       return deserializedIdentifier;
     }
 
     @Override
-    public Cacheable deserialize(ByteBuff b, ByteBuffAllocator alloc)
-        throws IOException {
+    public Cacheable deserialize(ByteBuffer b, boolean reuse) throws IOException {
+      LOG.info("Deserialized " + b + ", reuse=" + reuse);
+      return cacheable;
+    }
+
+    @Override
+    public Cacheable deserialize(ByteBuffer b) throws IOException {
       LOG.info("Deserialized " + b);
       return cacheable;
     }
-  }
+  };
 
   static class IndexCacheEntry extends DataCacheEntry {
     private static IndexCacheEntry SINGLETON = new IndexCacheEntry();
@@ -119,7 +112,7 @@ public class TestCacheConfig {
     @Override
     public String toString() {
       return "size=" + SIZE + ", type=" + getBlockType();
-    }
+    };
 
     @Override
     public long heapSize() {
@@ -132,7 +125,7 @@ public class TestCacheConfig {
     }
 
     @Override
-    public void serialize(ByteBuffer destination, boolean includeNextBlockMetadata) {
+    public void serialize(ByteBuffer destination, boolean includeNextBlockOnDiskSize) {
       LOG.info("Serialized " + this + " to " + destination);
     }
 
@@ -145,7 +138,7 @@ public class TestCacheConfig {
     public BlockType getBlockType() {
       return BlockType.DATA;
     }
-  }
+  };
 
   static class MetaCacheEntry extends DataCacheEntry {
     @Override
@@ -156,32 +149,40 @@ public class TestCacheConfig {
 
   @Before
   public void setUp() throws Exception {
+    CacheConfig.clearGlobalInstances();
     this.conf = HBaseConfiguration.create();
   }
 
+  @After
+  public void tearDown() throws Exception {
+    // Let go of current block cache.
+    CacheConfig.clearGlobalInstances();
+  }
+
   /**
-   * @param bc The block cache instance.
-   * @param cc Cache config.
+   * @param cc
    * @param doubling If true, addition of element ups counter by 2, not 1, because element added
    * to onheap and offheap caches.
    * @param sizing True if we should run sizing test (doesn't always apply).
    */
-  void basicBlockCacheOps(final BlockCache bc, final CacheConfig cc, final boolean doubling,
+  void basicBlockCacheOps(final CacheConfig cc, final boolean doubling,
       final boolean sizing) {
+    assertTrue(cc.isBlockCacheEnabled());
     assertTrue(CacheConfig.DEFAULT_IN_MEMORY == cc.isInMemory());
+    BlockCache bc = cc.getBlockCache();
     BlockCacheKey bck = new BlockCacheKey("f", 0);
     Cacheable c = new DataCacheEntry();
     // Do asserts on block counting.
     long initialBlockCount = bc.getBlockCount();
-    bc.cacheBlock(bck, c, cc.isInMemory());
-    assertEquals(doubling ? 2 : 1, bc.getBlockCount() - initialBlockCount);
+    bc.cacheBlock(bck, c, cc.isInMemory(), cc.isCacheDataInL1());
+    assertEquals(doubling? 2: 1, bc.getBlockCount() - initialBlockCount);
     bc.evictBlock(bck);
     assertEquals(initialBlockCount, bc.getBlockCount());
     // Do size accounting.  Do it after the above 'warm-up' because it looks like some
     // buffers do lazy allocation so sizes are off on first go around.
     if (sizing) {
       long originalSize = bc.getCurrentSize();
-      bc.cacheBlock(bck, c, cc.isInMemory());
+      bc.cacheBlock(bck, c, cc.isInMemory(), cc.isCacheDataInL1());
       assertTrue(bc.getCurrentSize() > originalSize);
       bc.evictBlock(bck);
       long size = bc.getCurrentSize();
@@ -189,82 +190,26 @@ public class TestCacheConfig {
     }
   }
 
-  @Test
-  public void testDisableCacheDataBlock() throws IOException {
-    Configuration conf = HBaseConfiguration.create();
-    CacheConfig cacheConfig = new CacheConfig(conf);
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.DATA));
-    assertFalse(cacheConfig.shouldCacheCompressed(BlockCategory.DATA));
-    assertFalse(cacheConfig.shouldCacheDataCompressed());
-    assertFalse(cacheConfig.shouldCacheDataOnWrite());
-    assertTrue(cacheConfig.shouldCacheDataOnRead());
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.INDEX));
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.META));
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.BLOOM));
-    assertFalse(cacheConfig.shouldCacheBloomsOnWrite());
-    assertFalse(cacheConfig.shouldCacheIndexesOnWrite());
-
-    conf.setBoolean(CacheConfig.CACHE_BLOCKS_ON_WRITE_KEY, true);
-    conf.setBoolean(CacheConfig.CACHE_DATA_BLOCKS_COMPRESSED_KEY, true);
-    conf.setBoolean(CacheConfig.CACHE_BLOOM_BLOCKS_ON_WRITE_KEY, true);
-    conf.setBoolean(CacheConfig.CACHE_INDEX_BLOCKS_ON_WRITE_KEY, true);
-
-    cacheConfig = new CacheConfig(conf);
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.DATA));
-    assertTrue(cacheConfig.shouldCacheCompressed(BlockCategory.DATA));
-    assertTrue(cacheConfig.shouldCacheDataCompressed());
-    assertTrue(cacheConfig.shouldCacheDataOnWrite());
-    assertTrue(cacheConfig.shouldCacheDataOnRead());
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.INDEX));
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.META));
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.BLOOM));
-    assertTrue(cacheConfig.shouldCacheBloomsOnWrite());
-    assertTrue(cacheConfig.shouldCacheIndexesOnWrite());
-
-    conf.setBoolean(CacheConfig.CACHE_DATA_ON_READ_KEY, false);
-    conf.setBoolean(CacheConfig.CACHE_BLOCKS_ON_WRITE_KEY, false);
-
-    cacheConfig = new CacheConfig(conf);
-    assertFalse(cacheConfig.shouldCacheBlockOnRead(BlockCategory.DATA));
-    assertFalse(cacheConfig.shouldCacheCompressed(BlockCategory.DATA));
-    assertFalse(cacheConfig.shouldCacheDataCompressed());
-    assertFalse(cacheConfig.shouldCacheDataOnWrite());
-    assertFalse(cacheConfig.shouldCacheDataOnRead());
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.INDEX));
-    assertFalse(cacheConfig.shouldCacheBlockOnRead(BlockCategory.META));
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.BLOOM));
-    assertTrue(cacheConfig.shouldCacheBloomsOnWrite());
-    assertTrue(cacheConfig.shouldCacheIndexesOnWrite());
-
-    conf.setBoolean(CacheConfig.CACHE_DATA_ON_READ_KEY, true);
-    conf.setBoolean(CacheConfig.CACHE_BLOCKS_ON_WRITE_KEY, false);
-
-    ColumnFamilyDescriptor columnFamilyDescriptor =
-      ColumnFamilyDescriptorBuilder
-        .newBuilder(Bytes.toBytes("testDisableCacheDataBlock"))
-        .setBlockCacheEnabled(false)
-        .build();
-
-    cacheConfig = new CacheConfig(conf, columnFamilyDescriptor, null, ByteBuffAllocator.HEAP);
-    assertFalse(cacheConfig.shouldCacheBlockOnRead(BlockCategory.DATA));
-    assertFalse(cacheConfig.shouldCacheCompressed(BlockCategory.DATA));
-    assertFalse(cacheConfig.shouldCacheDataCompressed());
-    assertFalse(cacheConfig.shouldCacheDataOnWrite());
-    assertFalse(cacheConfig.shouldCacheDataOnRead());
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.INDEX));
-    assertFalse(cacheConfig.shouldCacheBlockOnRead(BlockCategory.META));
-    assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.BLOOM));
-    assertTrue(cacheConfig.shouldCacheBloomsOnWrite());
-    assertTrue(cacheConfig.shouldCacheIndexesOnWrite());
+  /**
+   * @param cc
+   * @param filename
+   * @return
+   */
+  private long cacheDataBlock(final CacheConfig cc, final String filename) {
+    BlockCacheKey bck = new BlockCacheKey(filename, 0);
+    Cacheable c = new DataCacheEntry();
+    // Do asserts on block counting.
+    cc.getBlockCache().cacheBlock(bck, c, cc.isInMemory(), cc.isCacheDataInL1());
+    return cc.getBlockCache().getBlockCount();
   }
 
   @Test
   public void testCacheConfigDefaultLRUBlockCache() {
     CacheConfig cc = new CacheConfig(this.conf);
+    assertTrue(cc.isBlockCacheEnabled());
     assertTrue(CacheConfig.DEFAULT_IN_MEMORY == cc.isInMemory());
-    BlockCache blockCache = BlockCacheFactory.createBlockCache(this.conf);
-    basicBlockCacheOps(blockCache, cc, false, true);
-    assertTrue(blockCache instanceof LruBlockCache);
+    basicBlockCacheOps(cc, false, true);
+    assertTrue(cc.getBlockCache() instanceof LruBlockCache);
   }
 
   /**
@@ -273,6 +218,12 @@ public class TestCacheConfig {
   @Test
   public void testOffHeapBucketCacheConfig() {
     this.conf.set(HConstants.BUCKET_CACHE_IOENGINE_KEY, "offheap");
+    doBucketCacheConfigTest();
+  }
+
+  @Test
+  public void testOnHeapBucketCacheConfig() {
+    this.conf.set(HConstants.BUCKET_CACHE_IOENGINE_KEY, "heap");
     doBucketCacheConfigTest();
   }
 
@@ -294,17 +245,17 @@ public class TestCacheConfig {
     final int bcSize = 100;
     this.conf.setInt(HConstants.BUCKET_CACHE_SIZE_KEY, bcSize);
     CacheConfig cc = new CacheConfig(this.conf);
-    BlockCache blockCache = BlockCacheFactory.createBlockCache(this.conf);
-    basicBlockCacheOps(blockCache, cc, false, false);
-    assertTrue(blockCache instanceof CombinedBlockCache);
+    basicBlockCacheOps(cc, false, false);
+    assertTrue(cc.getBlockCache() instanceof CombinedBlockCache);
     // TODO: Assert sizes allocated are right and proportions.
-    CombinedBlockCache cbc = (CombinedBlockCache) blockCache;
-    BlockCache[] bcs = cbc.getBlockCaches();
+    CombinedBlockCache cbc = (CombinedBlockCache)cc.getBlockCache();
+    BlockCache [] bcs = cbc.getBlockCaches();
     assertTrue(bcs[0] instanceof LruBlockCache);
-    LruBlockCache lbc = (LruBlockCache) bcs[0];
-    assertEquals(MemorySizeUtil.getOnHeapCacheSize(this.conf), lbc.getMaxSize());
+    LruBlockCache lbc = (LruBlockCache)bcs[0];
+    assertEquals(HeapMemorySizeUtil.getFirstLevelCacheSize(this.conf,
+      ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getMax()), lbc.getMaxSize());
     assertTrue(bcs[1] instanceof BucketCache);
-    BucketCache bc = (BucketCache) bcs[1];
+    BucketCache bc = (BucketCache)bcs[1];
     // getMaxSize comes back in bytes but we specified size in MB
     assertEquals(bcSize, bc.getMaxSize() / (1024 * 1024));
   }
@@ -313,27 +264,26 @@ public class TestCacheConfig {
    * Assert that when BUCKET_CACHE_COMBINED_KEY is false, the non-default, that we deploy
    * LruBlockCache as L1 with a BucketCache for L2.
    */
-  @Test
+  @Test (timeout=10000)
   public void testBucketCacheConfigL1L2Setup() {
     this.conf.set(HConstants.BUCKET_CACHE_IOENGINE_KEY, "offheap");
     // Make lru size is smaller than bcSize for sure.  Need this to be true so when eviction
     // from L1 happens, it does not fail because L2 can't take the eviction because block too big.
     this.conf.setFloat(HConstants.HFILE_BLOCK_CACHE_SIZE_KEY, 0.001f);
-    MemoryUsage mu = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
-    long lruExpectedSize = MemorySizeUtil.getOnHeapCacheSize(this.conf);
+    long lruExpectedSize = HeapMemorySizeUtil.getFirstLevelCacheSize(this.conf,
+      ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getMax());
     final int bcSize = 100;
     long bcExpectedSize = 100 * 1024 * 1024; // MB.
     assertTrue(lruExpectedSize < bcExpectedSize);
     this.conf.setInt(HConstants.BUCKET_CACHE_SIZE_KEY, bcSize);
+    this.conf.setBoolean(CacheConfig.BUCKET_CACHE_COMBINED_KEY, false);
     CacheConfig cc = new CacheConfig(this.conf);
-    BlockCache blockCache = BlockCacheFactory.createBlockCache(this.conf);
-    basicBlockCacheOps(blockCache, cc, false, false);
-    assertTrue(blockCache instanceof CombinedBlockCache);
+    basicBlockCacheOps(cc, false, false);
+    assertTrue(cc.getBlockCache() instanceof LruBlockCache);
     // TODO: Assert sizes allocated are right and proportions.
-    CombinedBlockCache cbc = (CombinedBlockCache) blockCache;
-    FirstLevelBlockCache lbc = cbc.l1Cache;
+    LruBlockCache lbc = (LruBlockCache)cc.getBlockCache();
     assertEquals(lruExpectedSize, lbc.getMaxSize());
-    BlockCache bc = cbc.l2Cache;
+    BlockCache bc = lbc.getVictimHandler();
     // getMaxSize comes back in bytes but we specified size in MB
     assertEquals(bcExpectedSize, ((BucketCache) bc).getMaxSize());
     // Test the L1+L2 deploy works as we'd expect with blocks evicted from L1 going to L2.
@@ -341,11 +291,11 @@ public class TestCacheConfig {
     long initialL2BlockCount = bc.getBlockCount();
     Cacheable c = new DataCacheEntry();
     BlockCacheKey bck = new BlockCacheKey("bck", 0);
-    lbc.cacheBlock(bck, c, false);
+    lbc.cacheBlock(bck, c, false, false);
     assertEquals(initialL1BlockCount + 1, lbc.getBlockCount());
     assertEquals(initialL2BlockCount, bc.getBlockCount());
     // Force evictions by putting in a block too big.
-    final long justTooBigSize = ((LruBlockCache)lbc).acceptableSize() + 1;
+    final long justTooBigSize = lbc.acceptableSize() + 1;
     lbc.cacheBlock(new BlockCacheKey("bck2", 0), new DataCacheEntry() {
       @Override
       public long heapSize() {
@@ -360,18 +310,51 @@ public class TestCacheConfig {
     // The eviction thread in lrublockcache needs to run.
     while (initialL1BlockCount != lbc.getBlockCount()) Threads.sleep(10);
     assertEquals(initialL1BlockCount, lbc.getBlockCount());
+    long count = bc.getBlockCount();
+    assertTrue(initialL2BlockCount + 1 <= count);
+  }
+
+  /**
+   * Test the cacheDataInL1 flag.  When set, data blocks should be cached in the l1 tier, up in
+   * LruBlockCache when using CombinedBlockCcahe.
+   */
+  @Test
+  public void testCacheDataInL1() {
+    this.conf.set(HConstants.BUCKET_CACHE_IOENGINE_KEY, "offheap");
+    this.conf.setInt(HConstants.BUCKET_CACHE_SIZE_KEY, 100);
+    CacheConfig cc = new CacheConfig(this.conf);
+    assertTrue(cc.getBlockCache() instanceof CombinedBlockCache);
+    CombinedBlockCache cbc = (CombinedBlockCache)cc.getBlockCache();
+    // Add a data block.  Should go into L2, into the Bucket Cache, not the LruBlockCache.
+    cacheDataBlock(cc, "1");
+    LruBlockCache lrubc = (LruBlockCache)cbc.getBlockCaches()[0];
+    assertDataBlockCount(lrubc, 0);
+    // Enable our test flag.
+    cc.setCacheDataInL1(true);
+    cacheDataBlock(cc, "2");
+    assertDataBlockCount(lrubc, 1);
+    cc.setCacheDataInL1(false);
+    cacheDataBlock(cc, "3");
+    assertDataBlockCount(lrubc, 1);
   }
 
   @Test
   public void testL2CacheWithInvalidBucketSize() {
     Configuration c = new Configuration(this.conf);
     c.set(HConstants.BUCKET_CACHE_IOENGINE_KEY, "offheap");
-    c.set(BlockCacheFactory.BUCKET_CACHE_BUCKETS_KEY, "256,512,1024,2048,4000,4096");
+    c.set(CacheConfig.BUCKET_CACHE_BUCKETS_KEY, "256,512,1024,2048,4000,4096");
     c.setFloat(HConstants.BUCKET_CACHE_SIZE_KEY, 1024);
     try {
-      BlockCacheFactory.createBlockCache(c);
+      CacheConfig.getL2(c);
       fail("Should throw IllegalArgumentException when passing illegal value for bucket size");
     } catch (IllegalArgumentException e) {
     }
+  }
+
+  private void assertDataBlockCount(final LruBlockCache bc, final int expected) {
+    Map<BlockType, Integer> blocks = bc.getBlockTypeCountsForTest();
+    assertEquals(expected, blocks == null? 0:
+      blocks.get(BlockType.DATA) == null? 0:
+      blocks.get(BlockType.DATA).intValue());
   }
 }
