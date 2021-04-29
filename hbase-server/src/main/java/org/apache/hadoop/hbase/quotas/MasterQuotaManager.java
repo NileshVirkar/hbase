@@ -28,15 +28,18 @@ import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
 import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
+import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.RegionStateListener;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.master.procedure.ProcedurePrepareLatch;
 import org.apache.hadoop.hbase.master.procedure.SwitchRpcThrottleProcedure;
@@ -48,6 +51,7 @@ import org.apache.yetus.audience.InterfaceStability;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.collect.HashMultimap;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 import org.apache.hbase.thirdparty.com.google.protobuf.TextFormat;
@@ -102,7 +106,8 @@ public class MasterQuotaManager implements RegionStateListener {
     }
 
     // Create the quota table if missing
-    if (!masterServices.getTableDescriptors().exists(QuotaUtil.QUOTA_TABLE_NAME)) {
+    if (!MetaTableAccessor.tableExists(masterServices.getConnection(),
+          QuotaUtil.QUOTA_TABLE_NAME)) {
       LOG.info("Quota table not found. Creating...");
       createQuotaTable();
     }
@@ -280,6 +285,9 @@ public class MasterQuotaManager implements RegionStateListener {
         SpaceQuotaSnapshot currSnapshotOfTable =
             QuotaTableUtil.getCurrentSnapshotFromQuotaTable(masterServices.getConnection(), table);
         QuotaUtil.deleteTableQuota(masterServices.getConnection(), table);
+        // Removes the tableName from the current state in QuotaObserverChore
+        QuotaObserverChore quotaChore = masterServices.getQuotaObserverChore();
+        quotaChore.removeTableQuotasnapshot(table);
         if (currSnapshotOfTable != null) {
           SpaceQuotaStatus quotaStatus = currSnapshotOfTable.getQuotaStatus();
           if (SpaceViolationPolicy.DISABLE == quotaStatus.getPolicy().orElse(null)
@@ -675,6 +683,7 @@ public class MasterQuotaManager implements RegionStateListener {
     }
   }
 
+  @VisibleForTesting
   void initializeRegionSizes() {
     assert regionSizes == null;
     this.regionSizes = new ConcurrentHashMap<>();

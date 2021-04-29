@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.master;
 
 import static org.mockito.Mockito.mock;
+
 import java.io.IOException;
 import java.util.List;
 import org.apache.hadoop.conf.Configuration;
@@ -31,26 +32,24 @@ import org.apache.hadoop.hbase.client.AsyncClusterConnection;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.MasterSwitchType;
-import org.apache.hadoop.hbase.client.NormalizeTableFilterParams;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.executor.ExecutorService;
 import org.apache.hadoop.hbase.favored.FavoredNodesManager;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
-import org.apache.hadoop.hbase.master.janitor.CatalogJanitor;
 import org.apache.hadoop.hbase.master.locking.LockManager;
-import org.apache.hadoop.hbase.master.normalizer.RegionNormalizerManager;
+import org.apache.hadoop.hbase.master.normalizer.RegionNormalizer;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
 import org.apache.hadoop.hbase.master.replication.ReplicationPeerManager;
 import org.apache.hadoop.hbase.master.replication.SyncReplicationReplayWALManager;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
-import org.apache.hadoop.hbase.master.zksyncer.MetaLocationSyncer;
 import org.apache.hadoop.hbase.procedure.MasterProcedureManagerHost;
 import org.apache.hadoop.hbase.procedure2.LockedResource;
 import org.apache.hadoop.hbase.procedure2.Procedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureEvent;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.quotas.MasterQuotaManager;
+import org.apache.hadoop.hbase.quotas.QuotaObserverChore;
 import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeerDescription;
@@ -59,6 +58,7 @@ import org.apache.hadoop.hbase.rsgroup.RSGroupInfoManager;
 import org.apache.hadoop.hbase.security.access.AccessChecker;
 import org.apache.hadoop.hbase.security.access.ZKPermissionWatcher;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
+
 import org.apache.hbase.thirdparty.com.google.protobuf.Service;
 
 public class MockNoopMasterServices implements MasterServices {
@@ -110,6 +110,11 @@ public class MockNoopMasterServices implements MasterServices {
   }
 
   @Override
+  public RegionNormalizer getRegionNormalizer() {
+    return null;
+  }
+
+  @Override
   public CatalogJanitor getCatalogJanitor() {
     return null;
   }
@@ -131,10 +136,6 @@ public class MockNoopMasterServices implements MasterServices {
 
   @Override
   public MasterQuotaManager getMasterQuotaManager() {
-    return null;
-  }
-
-  @Override public RegionNormalizerManager getRegionNormalizerManager() {
     return null;
   }
 
@@ -340,10 +341,6 @@ public class MockNoopMasterServices implements MasterServices {
     return false;
   }
 
-  @Override public boolean skipRegionManagementAction(String action) {
-    return false;
-  }
-
   @Override
   public long getLastMajorCompactionTimestamp(TableName table) throws IOException {
     return 0;
@@ -511,13 +508,7 @@ public class MockNoopMasterServices implements MasterServices {
     return false;
   }
 
-  @Override
-  public boolean normalizeRegions(NormalizeTableFilterParams ntfp, boolean isHighPriority) {
-    return false;
-  }
-
-  @Override
-  public MetaLocationSyncer getMetaLocationSyncer() {
+  @Override public QuotaObserverChore getQuotaObserverChore() {
     return null;
   }
 }

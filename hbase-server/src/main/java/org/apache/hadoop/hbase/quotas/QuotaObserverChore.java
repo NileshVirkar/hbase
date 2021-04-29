@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.Stoppable;
@@ -40,11 +41,10 @@ import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.collect.HashMultimap;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
 import org.apache.hbase.thirdparty.com.google.common.collect.Multimap;
-
 import org.apache.hadoop.hbase.shaded.protobuf.generated.QuotaProtos.SpaceQuota;
 
 /**
@@ -521,10 +521,12 @@ public class QuotaObserverChore extends ScheduledChore {
     }
   }
 
+  @VisibleForTesting
   QuotaSnapshotStore<TableName> getTableSnapshotStore() {
     return tableSnapshotStore;
   }
 
+  @VisibleForTesting
   QuotaSnapshotStore<String> getNamespaceSnapshotStore() {
     return namespaceSnapshotStore;
   }
@@ -548,7 +550,7 @@ public class QuotaObserverChore extends ScheduledChore {
   /**
    * Fetches the {@link SpaceQuotaSnapshot} for the given table.
    */
-  SpaceQuotaSnapshot getTableQuotaSnapshot(TableName table) {
+  synchronized SpaceQuotaSnapshot getTableQuotaSnapshot(TableName table) {
     SpaceQuotaSnapshot state = this.tableQuotaSnapshots.get(table);
     if (state == null) {
       // No tracked state implies observance.
@@ -560,8 +562,15 @@ public class QuotaObserverChore extends ScheduledChore {
   /**
    * Stores the quota state for the given table.
    */
-  void setTableQuotaSnapshot(TableName table, SpaceQuotaSnapshot snapshot) {
+  synchronized void setTableQuotaSnapshot(TableName table, SpaceQuotaSnapshot snapshot) {
     this.tableQuotaSnapshots.put(table, snapshot);
+  }
+
+  /**
+   * Removes the quota state for the given table.
+   */
+  synchronized void removeTableQuotasnapshot(TableName table) {
+    this.tableQuotaSnapshots.remove(table);
   }
 
   /**
