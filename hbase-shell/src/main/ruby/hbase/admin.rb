@@ -534,7 +534,7 @@ module Hbase
           File.foreach(splits_file) do |line|
             arg[SPLITS].push(line.chomp)
           end
-          tdb.setValue(SPLITS_FILE, splits_file)
+          tdb.setValue(SPLITS_FILE, arg[SPLITS_FILE])
         end
 
         if arg.key?(SPLITS)
@@ -591,6 +591,10 @@ module Hbase
     #----------------------------------------------------------------------------------------------
     # Move a region
     def move(encoded_region_name, server = nil)
+      if encoded_region_name == 'hbase:meta'
+        meta_region_location = @connection.getRegionLocator(org.apache.hadoop.hbase.TableName::META_TABLE_NAME).getAllRegionLocations.to_a
+        encoded_region_name = meta_region_location[0].getRegion().getEncodedName()
+      end
       @admin.move(encoded_region_name.to_java_bytes, server ? server.to_java_bytes : nil)
     end
 
@@ -1152,22 +1156,6 @@ module Hbase
           raise(ArgumentError, "Compression #{compression} is not supported. Use one of " + org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.join(' '))
         end
       end
-      if arg.include?(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT_MAJOR)
-        compression = arg.delete(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT_MAJOR).upcase.to_sym
-        if org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.include?(compression)
-          cfdb.setMajorCompactionCompressionType(org.apache.hadoop.hbase.io.compress.Compression::Algorithm.valueOf(compression))
-        else
-          raise(ArgumentError, "Compression #{compression} is not supported. Use one of " + org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.join(' '))
-        end
-      end
-      if arg.include?(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT_MINOR)
-        compression = arg.delete(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT_MINOR).upcase.to_sym
-        if org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.include?(compression)
-          cfdb.setMinorCompactionCompressionType(org.apache.hadoop.hbase.io.compress.Compression::Algorithm.valueOf(compression))
-        else
-          raise(ArgumentError, "Compression #{compression} is not supported. Use one of " + org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.join(' '))
-        end
-      end
       if arg.include?(ColumnFamilyDescriptorBuilder::STORAGE_POLICY)
         storage_policy = arg.delete(ColumnFamilyDescriptorBuilder::STORAGE_POLICY).upcase
         cfdb.setStoragePolicy(storage_policy)
@@ -1222,9 +1210,6 @@ module Hbase
           ttl = ttl ? ttl.to_java(:long) : -1
           snapshot_props = java.util.HashMap.new
           snapshot_props.put("TTL", ttl)
-          max_filesize = arg[MAX_FILESIZE]
-          max_filesize = max_filesize ? max_filesize.to_java(:long) : -1
-          snapshot_props.put("MAX_FILESIZE", max_filesize)
           if arg[SKIP_FLUSH] == true
             @admin.snapshot(snapshot_name, table_name,
                             org.apache.hadoop.hbase.client.SnapshotType::SKIPFLUSH, snapshot_props)
