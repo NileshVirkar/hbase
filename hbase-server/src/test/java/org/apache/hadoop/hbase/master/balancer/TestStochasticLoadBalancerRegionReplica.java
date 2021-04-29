@@ -19,12 +19,14 @@ package org.apache.hadoop.hbase.master.balancer;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.TreeMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
@@ -33,7 +35,9 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionReplicaUtil;
+import org.apache.hadoop.hbase.master.MockNoopMasterServices;
 import org.apache.hadoop.hbase.master.RackManager;
+import org.apache.hadoop.hbase.master.balancer.BaseLoadBalancer.Cluster;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.junit.ClassRule;
@@ -41,19 +45,54 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 @Category({ MasterTests.class, LargeTests.class })
-public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerTestBase {
+public class TestStochasticLoadBalancerRegionReplica extends BalancerTestBase {
 
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestStochasticLoadBalancerRegionReplica.class);
 
+  // Mapping of locality test -> expected locality
+  private float[] expectedLocalities = {1.0f, 0.5f};
+
+  /**
+   * Data set for testLocalityCost:
+   * [test][0][0] = mapping of server to number of regions it hosts
+   * [test][region + 1][0] = server that region is hosted on
+   * [test][region + 1][server + 1] = locality for region on server
+   */
+
+  private int[][][] clusterRegionLocationMocks = new int[][][]{
+
+    // Test 1: each region is entirely on server that hosts it, except the replica region
+    new int[][]{
+      new int[]{2, 1, 1},
+      new int[]{0, 25, 75, 0},   // region 0 is hosted at server 0, 25% at server 0 and 75%
+                                 // at server 1, a replica region.
+      new int[]{2, 0, 0, 100},   // region 1 is hosted and entirely on server 2
+      new int[]{0, 100, 0, 0},   // region 2 is hosted and entirely on server 0
+      new int[]{1, 0, 100, 0},   // region 3 is hosted and entirely on server 1
+    },
+    // Test 2: each region is 25% local on the server that hosts it (and 50% locality is possible)
+    new int[][]{
+      new int[]{1, 2, 1},
+      new int[]{0, 25, 0, 60},   // region 0 is hosted at server 0, 25% at server 0 and 60%
+                                 // at server 1, a replica region.
+      new int[]{1, 50, 25, 0},   // region 1 is hosted at server 1, 25% at server 1 and 50%
+                                 // at server 0
+      new int[]{1, 50, 25, 0},   // region 2 is hosted at server 1, 25% at server 1 and 50%
+                                 // at server 0
+      new int[]{2, 0, 50, 25},   // region 3 is hosted at server 2, 25% at server 2 and 50%
+                                 // at server 1
+    }
+  };
+
   @Test
   public void testReplicaCost() {
     Configuration conf = HBaseConfiguration.create();
-    CostFunction costFunction =
-        new RegionReplicaHostCostFunction(conf);
+    StochasticLoadBalancer.CostFunction costFunction =
+        new StochasticLoadBalancer.RegionReplicaHostCostFunction(conf);
     for (int[] mockCluster : clusterStateMocks) {
-      BalancerClusterState cluster = mockCluster(mockCluster);
+      BaseLoadBalancer.Cluster cluster = mockCluster(mockCluster);
       costFunction.init(cluster);
       double cost = costFunction.cost();
       assertTrue(cost >= 0);
@@ -64,15 +103,15 @@ public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerT
   @Test
   public void testReplicaCostForReplicas() {
     Configuration conf = HBaseConfiguration.create();
-    CostFunction costFunction =
-        new RegionReplicaHostCostFunction(conf);
+    StochasticLoadBalancer.CostFunction costFunction =
+        new StochasticLoadBalancer.RegionReplicaHostCostFunction(conf);
 
     int[] servers = new int[] { 3, 3, 3, 3, 3 };
     TreeMap<ServerName, List<RegionInfo>> clusterState = mockClusterServers(servers);
 
-    BalancerClusterState cluster;
+    BaseLoadBalancer.Cluster cluster;
 
-    cluster = new BalancerClusterState(clusterState, null, null, null);
+    cluster = new BaseLoadBalancer.Cluster(clusterState, null, null, null);
     costFunction.init(cluster);
     double costWithoutReplicas = costFunction.cost();
     assertEquals(0, costWithoutReplicas, 0);
@@ -82,7 +121,7 @@ public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerT
         RegionReplicaUtil.getRegionInfoForReplica(clusterState.firstEntry().getValue().get(0), 1);
     clusterState.lastEntry().getValue().add(replica1);
 
-    cluster = new BalancerClusterState(clusterState, null, null, null);
+    cluster = new BaseLoadBalancer.Cluster(clusterState, null, null, null);
     costFunction.init(cluster);
     double costWith1ReplicaDifferentServer = costFunction.cost();
 
@@ -92,7 +131,7 @@ public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerT
     RegionInfo replica2 = RegionReplicaUtil.getRegionInfoForReplica(replica1, 2);
     clusterState.lastEntry().getValue().add(replica2);
 
-    cluster = new BalancerClusterState(clusterState, null, null, null);
+    cluster = new BaseLoadBalancer.Cluster(clusterState, null, null, null);
     costFunction.init(cluster);
     double costWith1ReplicaSameServer = costFunction.cost();
 
@@ -101,8 +140,8 @@ public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerT
     // test with replication = 4 for following:
 
     RegionInfo replica3;
-    Iterator<Map.Entry<ServerName, List<RegionInfo>>> it;
-    Map.Entry<ServerName, List<RegionInfo>> entry;
+    Iterator<Entry<ServerName, List<RegionInfo>>> it;
+    Entry<ServerName, List<RegionInfo>> entry;
 
     clusterState = mockClusterServers(servers);
     it = clusterState.entrySet().iterator();
@@ -115,7 +154,7 @@ public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerT
     entry.getValue().add(replica2);
     it.next().getValue().add(replica3); // 2nd server
 
-    cluster = new BalancerClusterState(clusterState, null, null, null);
+    cluster = new BaseLoadBalancer.Cluster(clusterState, null, null, null);
     costFunction.init(cluster);
     double costWith3ReplicasSameServer = costFunction.cost();
 
@@ -129,7 +168,7 @@ public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerT
     clusterState.lastEntry().getValue().add(replica2);
     clusterState.lastEntry().getValue().add(replica3);
 
-    cluster = new BalancerClusterState(clusterState, null, null, null);
+    cluster = new BaseLoadBalancer.Cluster(clusterState, null, null, null);
     costFunction.init(cluster);
     double costWith2ReplicasOnTwoServers = costFunction.cost();
 
@@ -150,7 +189,7 @@ public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerT
     regions = randomRegions(1);
     map.put(s2, regions);
     assertTrue(loadBalancer.needsBalance(HConstants.ENSEMBLE_TABLE_NAME,
-      new BalancerClusterState(map, null, null, null)));
+      new Cluster(map, null, null, null)));
     // check for the case where there are two hosts on the same rack and there are two racks
     // and both the replicas are on the same rack
     map.clear();
@@ -163,7 +202,24 @@ public class TestStochasticLoadBalancerRegionReplica extends StochasticBalancerT
     map.put(ServerName.valueOf("host2", 1000, 11111), randomRegions(1));
     assertTrue(
       loadBalancer.needsBalance(HConstants.ENSEMBLE_TABLE_NAME,
-        new BalancerClusterState(map, null, null, new ForTestRackManagerOne())));
+        new Cluster(map, null, null, new ForTestRackManagerOne())));
+  }
+
+  @Test
+  public void testLocalityCost() throws Exception {
+    Configuration conf = HBaseConfiguration.create();
+    MockNoopMasterServices master = new MockNoopMasterServices();
+    StochasticLoadBalancer.CostFunction
+      costFunction = new StochasticLoadBalancer.ServerLocalityCostFunction(conf, master);
+
+    for (int test = 0; test < clusterRegionLocationMocks.length; test++) {
+      int[][] clusterRegionLocations = clusterRegionLocationMocks[test];
+      MockCluster cluster = new MockCluster(clusterRegionLocations, true);
+      costFunction.init(cluster);
+      double cost = costFunction.cost();
+      double expected = 1 - expectedLocalities[test];
+      assertEquals(expected, cost, 0.001);
+    }
   }
 
   @Test
