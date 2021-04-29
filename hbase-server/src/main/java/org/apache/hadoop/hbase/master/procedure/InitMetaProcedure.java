@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,26 +17,25 @@
  */
 package org.apache.hadoop.hbase.master.procedure;
 
-import static org.apache.hadoop.hbase.NamespaceDescriptor.DEFAULT_NAMESPACE;
-import static org.apache.hadoop.hbase.NamespaceDescriptor.SYSTEM_NAMESPACE;
-import static org.apache.hadoop.hbase.master.TableNamespaceManager.insertNamespaceToMeta;
-import static org.apache.hadoop.hbase.master.procedure.AbstractStateMachineNamespaceProcedure.createDirectory;
-
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.master.assignment.TransitRegionStateProcedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureStateSerializer;
 import org.apache.hadoop.hbase.procedure2.ProcedureSuspendedException;
 import org.apache.hadoop.hbase.procedure2.ProcedureUtil;
 import org.apache.hadoop.hbase.procedure2.ProcedureYieldException;
 import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSTableDescriptors;
 import org.apache.hadoop.hbase.util.RetryCounter;
@@ -75,7 +74,7 @@ public class InitMetaProcedure extends AbstractStateMachineTableProcedure<InitMe
     LOG.info("BOOTSTRAP: creating hbase:meta region");
     FileSystem fs = rootDir.getFileSystem(conf);
     Path tableDir = CommonFSUtils.getTableDir(rootDir, TableName.META_TABLE_NAME);
-    if (fs.exists(tableDir) && !fs.delete(tableDir, true)) {
+    if (fs.exists(tableDir) && !deleteMetaTableDirectoryIfPartial(fs, tableDir)) {
       LOG.warn("Can not delete partial created meta table, continue...");
     }
     // Bootstrapping, make sure blockcache is off. Else, one will be
@@ -107,18 +106,6 @@ public class InitMetaProcedure extends AbstractStateMachineTableProcedure<InitMe
           LOG.info("Going to assign meta");
           addChildProcedure(env.getAssignmentManager()
             .createAssignProcedures(Arrays.asList(RegionInfoBuilder.FIRST_META_REGIONINFO)));
-          setNextState(InitMetaState.INIT_META_CREATE_NAMESPACES);
-          return Flow.HAS_MORE_STATE;
-        case INIT_META_CREATE_NAMESPACES:
-          LOG.info("Going to create {} and {} namespaces", DEFAULT_NAMESPACE, SYSTEM_NAMESPACE);
-          createDirectory(env, DEFAULT_NAMESPACE);
-          createDirectory(env, SYSTEM_NAMESPACE);
-          // here the TableNamespaceManager has not been initialized yet, so we have to insert the
-          // record directly into meta table, later the TableNamespaceManager will load these two
-          // namespaces when starting.
-          insertNamespaceToMeta(env.getMasterServices().getConnection(), DEFAULT_NAMESPACE);
-          insertNamespaceToMeta(env.getMasterServices().getConnection(), SYSTEM_NAMESPACE);
-
           return Flow.NO_MORE_STATE;
         default:
           throw new UnsupportedOperationException("unhandled state=" + state);
@@ -139,13 +126,6 @@ public class InitMetaProcedure extends AbstractStateMachineTableProcedure<InitMe
   @Override
   protected boolean waitInitialized(MasterProcedureEnv env) {
     // we do not need to wait for master initialized, we are part of the initialization.
-    return false;
-  }
-
-  @Override
-  protected synchronized boolean setTimeoutFailure(MasterProcedureEnv env) {
-    setState(ProcedureProtos.ProcedureState.RUNNABLE);
-    env.getProcedureScheduler().addFront(this);
     return false;
   }
 
@@ -189,5 +169,36 @@ public class InitMetaProcedure extends AbstractStateMachineTableProcedure<InitMe
 
   public void await() throws InterruptedException {
     latch.await();
+  }
+
+  private static boolean deleteMetaTableDirectoryIfPartial(FileSystem rootDirectoryFs,
+    Path metaTableDir) throws IOException {
+    boolean isPartial = true;
+    try {
+      TableDescriptor metaDescriptor =
+        FSTableDescriptors.getTableDescriptorFromFs(rootDirectoryFs, metaTableDir);
+      // when entering the state of INIT_META_WRITE_FS_LAYOUT, if a meta table directory is found,
+      // the meta table should not have any useful data and considers as partial.
+      // if we find any valid HFiles, operator should fix the meta e.g. via HBCK.
+      if (metaDescriptor != null && metaDescriptor.getColumnFamilyCount() > 0) {
+        RemoteIterator<LocatedFileStatus> iterator = rootDirectoryFs.listFiles(metaTableDir, true);
+        while (iterator.hasNext()) {
+          LocatedFileStatus status = iterator.next();
+          if (StoreFileInfo.isHFile(status.getPath()) && HFile
+            .isHFileFormat(rootDirectoryFs, status.getPath())) {
+            isPartial = false;
+            break;
+          }
+        }
+      }
+    } finally {
+      if (!isPartial) {
+        throw new IOException("Meta table is not partial, please sideline this meta directory "
+          + "or run HBCK to fix this meta table, e.g. rebuild the server hostname in ZNode for the "
+          + "meta region");
+      }
+      return rootDirectoryFs.delete(metaTableDir, true);
+    }
+
   }
 }
