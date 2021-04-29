@@ -166,28 +166,6 @@ public class HRegionFileSystem {
   }
 
   /**
-   * @param tabledir {@link Path} to where the table is being stored
-   * @param hri {@link RegionInfo} for the region.
-   * @param family {@link ColumnFamilyDescriptor} describing the column family
-   * @return Path to family/Store home directory.
-   */
-  public static Path getStoreHomedir(final Path tabledir,
-    final RegionInfo hri, final byte[] family) {
-    return getStoreHomedir(tabledir, hri.getEncodedName(), family);
-  }
-
-  /**
-   * @param tabledir {@link Path} to where the table is being stored
-   * @param encodedName Encoded region name.
-   * @param family {@link ColumnFamilyDescriptor} describing the column family
-   * @return Path to family/Store home directory.
-   */
-  public static Path getStoreHomedir(final Path tabledir,
-    final String encodedName, final byte[] family) {
-    return new Path(tabledir, new Path(encodedName, Bytes.toString(family)));
-  }
-
-  /**
    * Create the store directory for the specified family name
    * @param familyName Column Family Name
    * @return {@link Path} to the directory of the specified family
@@ -703,9 +681,9 @@ public class HRegionFileSystem {
       // If it is outside the range, return directly.
       f.initReader();
       try {
+        Cell splitKey = PrivateCellUtil.createFirstOnRow(splitRow);
         if (top) {
           //check if larger than last key.
-          Cell splitKey = PrivateCellUtil.createFirstOnRow(splitRow);
           Optional<Cell> lastKey = f.getLastKey();
           // If lastKey is null means storefile is empty.
           if (!lastKey.isPresent()) {
@@ -716,7 +694,6 @@ public class HRegionFileSystem {
           }
         } else {
           //check if smaller than first key
-          Cell splitKey = PrivateCellUtil.createLastOnRow(splitRow);
           Optional<Cell> firstKey = f.getFirstKey();
           // If firstKey is null means storefile is empty.
           if (!firstKey.isPresent()) {
