@@ -29,13 +29,9 @@ import org.slf4j.LoggerFactory;
  *
  * This ensures that a region is not split "inside" a prefix of a row key.
  * I.e. rows can be co-located in a region by their prefix.
- *
- * @deprecated since 3.0.0 and will be removed in 4.0.0. Use {@link RegionSplitRestriction},
- *   instead.
  */
-@Deprecated
 @InterfaceAudience.Private
-public class KeyPrefixRegionSplitPolicy extends IncreasingToUpperBoundRegionSplitPolicy {
+public class KeyPrefixRegionSplitPolicy extends SteppingSplitPolicy {
   private static final Logger LOG = LoggerFactory
       .getLogger(KeyPrefixRegionSplitPolicy.class);
   @Deprecated
@@ -43,12 +39,6 @@ public class KeyPrefixRegionSplitPolicy extends IncreasingToUpperBoundRegionSpli
   public static final String PREFIX_LENGTH_KEY = "KeyPrefixRegionSplitPolicy.prefix_length";
 
   private int prefixLength = 0;
-
-  @Override
-  public String toString() {
-    return "KeyPrefixRegionSplitPolicy{" + "prefixLength=" + prefixLength + ", " +
-      super.toString() + '}';
-  }
 
   @Override
   protected void configureForRegion(HRegion region) {
