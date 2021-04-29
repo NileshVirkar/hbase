@@ -756,18 +756,6 @@ Maximum retries. This is a maximum number of iterations
 `10`
 
 
-[[hbase.compaction.after.bulkload.enable]]
-*`hbase.compaction.after.bulkload.enable`*::
-+
-.Description
-Request Compaction after bulkload immediately.
-If bulkload is continuous, the triggered compactions may increase load,
-bring about performance side effect.
-(For HBase-2.x, the default value for "hbase.compaction.after.bulkload.enable" is true)
-+
-.Default
-`false`
-
 [[hbase.balancer.period
     ]]
 *`hbase.balancer.period
@@ -899,25 +887,11 @@ Time to sleep in between searches for work (in milliseconds).
 +
 .Description
 
-    Maximum file size. If the sum of the sizes of a region's HFiles has
-    grown to exceed this value, the region is split in two. There are two choices of
-    how this option works, the first is when any store's size exceed the threshold
-    then split, and the other is overall region's size exceed the threshold then split,
-    it can be configed by hbase.hregion.split.overallfiles.
+    Maximum HFile size. If the sum of the sizes of a region's HFiles has grown to exceed this
+    value, the region is split in two.
 +
 .Default
 `10737418240`
-
-
-[[hbase.hregion.split.overallfiles]]
-*`hbase.hregion.split.overallfiles`*::
-+
-.Description
-
-    If we should sum overall region files size when check to split.
-+
-.Default
-`true`
 
 
 [[hbase.hregion.majorcompaction]]
@@ -1254,7 +1228,6 @@ Whether or not the bucketcache is used in league with the LRU
 .Description
 Used along with bucket cache, this is a float that EITHER represents a percentage of total heap
    memory size to give to the cache (if < 1.0) OR, it is the capacity in megabytes of the cache.
-   (After HBase-2.0, "hbase.bucketcache.size" cannot be between 0-1)
 +
 .Default
 `0` when specified as a float
@@ -2235,106 +2208,29 @@ The percent of region server RPC threads failed to abort RS.
 `-1`
 
 
-[[hbase.regionserver.slowlog.ringbuffer.size]]
-*`hbase.regionserver.slowlog.ringbuffer.size`*::
+[[hbase.hstore.file.force.archive]]
+*`hbase.hstore.file.force.archive`*::
 +
 .Description
 
-      Default size of ringbuffer to be maintained by each RegionServer in order
-      to store online slowlog responses. This is an in-memory ring buffer of
-      requests that were judged to be too slow in addition to the responseTooSlow
-      logging. The in-memory representation would be complete.
-      For more details, please look into Doc Section:
-      <<slow_log_responses, slow_log_responses>>
-
-
-+
-.Default
-`256`
-
-
-
-[[hbase.regionserver.slowlog.buffer.enabled]]
-*`hbase.regionserver.slowlog.buffer.enabled`*::
-+
-.Description
-
-      Indicates whether RegionServers have ring buffer running for storing
-      Online Slow logs in FIFO manner with limited entries. The size of
-      the ring buffer is indicated by config: hbase.regionserver.slowlog.ringbuffer.size
-      The default value is false, turn this on and get latest slowlog
-      responses with complete data.
-      For more details, please look into Doc Section:
-      <<slow_log_responses, slow_log_responses>>
-
+      We might have open scanners on compacted away store files which
+      could prevent archival of compacted store files. refCount as
+      low as 1 could also prevent the archival. In order to deal with
+      such situation, if this config value is true (enabled), discharger
+      thread would try notifying all readers to reset the current
+      scanners. Subsequent next(), seek() for existing scanner would
+      reset the current scanners and update heap with new ones.
+      Client should not face issues while scanning the file.
+      After reset, we would expect ongoing scans to use
+      new HFiles instead of compacted ones. If this
+      config is false (default), we would not notify readers for scanner reset
+      and hence a buggy client/coprocessor holding reader reference
+      on compacted away files could prevent archival for indefinite
+      time. It is recommended to keep this config value to true if we
+      are worried about client/coprocessor not closing scanners on
+      compacted away store files and preventing archival and causing
+      space issues.
 
 +
 .Default
 `false`
-
-
-[[hbase.regionserver.slowlog.systable.enabled]]
-*`hbase.regionserver.slowlog.systable.enabled`*::
-+
-.Description
-
-      Should be enabled only if hbase.regionserver.slowlog.buffer.enabled is enabled.
-      If enabled (true), all slow/large RPC logs would be persisted to system table
-      hbase:slowlog (in addition to in-memory ring buffer at each RegionServer).
-      The records are stored in increasing order of time.
-      Operators can scan the table with various combination of ColumnValueFilter and
-      time range.
-      More details are provided in the doc section:
-      "Get Slow/Large Response Logs from System table hbase:slowlog"
-
-+
-.Default
-`false`
-
-
-[[hbase.master.metafixer.max.merge.count]]
-*`hbase.master.metafixer.max.merge.count`*::
-+
-.Description
-
-      Maximum regions to merge at a time when we fix overlaps noted in
-      CJ consistency report, but avoid merging 100 regions in one go!
-
-+
-.Default
-`64`
-
-
-[[hbase.rpc.rows.size.threshold.reject]]
-*`hbase.rpc.rows.size.threshold.reject`*::
-+
-.Description
-
-      If value is true, RegionServer will abort batch requests of
-      Put/Delete with number of rows in a batch operation exceeding
-      threshold defined by value of config:
-      hbase.rpc.rows.warning.threshold.
-      The default value is false and hence, by default, only
-      warning will be logged. This config should be turned on to
-      prevent RegionServer from serving
-      very large batch size of rows and this way we can improve
-      CPU usages by discarding too large batch request.
-
-+
-.Default
-`false`
-
-[[hbase.master.balancer.decision.buffer.enabled]]
-*`hbase.master.balancer.decision.buffer.enabled`*::
-+
-.Description
-
-      Indicates whether active HMaster has ring buffer running for storing
-      balancer decisions in FIFO manner with limited entries. The size of
-      the ring buffer is indicated by config:
-      hbase.master.balancer.decision.queue.size
-
-+
-.Default
-`false`
-
