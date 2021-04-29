@@ -23,6 +23,8 @@ import java.util.List;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+
 /**
  * Simple scheduler for procedures
  */
@@ -41,10 +43,11 @@ public class SimpleProcedureScheduler extends AbstractProcedureScheduler {
   }
 
   @Override
-  protected Procedure dequeue() {
+  protected Procedure dequeue(boolean highPriority) {
     return runnables.poll();
   }
 
+  @VisibleForTesting
   @Override
   public void clear() {
     schedLock();
