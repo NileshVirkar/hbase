@@ -35,6 +35,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.conf.ConfigurationManager;
 import org.apache.hadoop.hbase.conf.PropagatingConfigurationObserver;
@@ -54,7 +55,7 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
@@ -192,7 +193,7 @@ public class CompactSplit implements CompactionRequester, PropagatingConfigurati
     HRegion hr = (HRegion)r;
     try {
       if (shouldSplitRegion() && hr.getCompactPriority() >= PRIORITY_USER) {
-        byte[] midKey = hr.checkSplit().orElse(null);
+        byte[] midKey = hr.checkSplit();
         if (midKey != null) {
           requestSplit(r, midKey);
           return true;
@@ -217,6 +218,9 @@ public class CompactSplit implements CompactionRequester, PropagatingConfigurati
     if (midKey == null) {
       LOG.debug("Region " + r.getRegionInfo().getRegionNameAsString() +
         " not splittable because midkey=null");
+      if (((HRegion)r).shouldForceSplit()) {
+        ((HRegion)r).clearSplit();
+      }
       return;
     }
     try {
@@ -740,12 +744,24 @@ public class CompactSplit implements CompactionRequester, PropagatingConfigurati
       }
     }
 
-    ThroughputController old = this.compactionThroughputController;
-    if (old != null) {
-      old.stop("configuration change");
+    String newCompactClass = newConf.get(
+        CompactionThroughputControllerFactory.HBASE_THROUGHPUT_CONTROLLER_KEY,
+        CompactionThroughputControllerFactory.DEFAULT_THROUGHPUT_CONTROLLER_CLASS
+            .getName());
+
+    String oldCompactClass =
+        compactionThroughputController.getClass().getName();
+
+    if (oldCompactClass.equals(newCompactClass)) {
+      compactionThroughputController.updateConfig(newConf, server);
+    } else {
+      LOG.info(
+          CompactionThroughputControllerFactory.HBASE_THROUGHPUT_CONTROLLER_KEY
+              + " is changed from " + oldCompactClass + " to "
+              + newCompactClass);
+      this.compactionThroughputController =
+          CompactionThroughputControllerFactory.create(server, newConf);
     }
-    this.compactionThroughputController =
-        CompactionThroughputControllerFactory.create(server, newConf);
 
     // We change this atomically here instead of reloading the config in order that upstream
     // would be the only one with the flexibility to reload the config.
@@ -780,10 +796,12 @@ public class CompactSplit implements CompactionRequester, PropagatingConfigurati
     // No children to register
   }
 
+  @VisibleForTesting
   public ThroughputController getCompactionThroughputController() {
     return compactionThroughputController;
   }
 
+  @VisibleForTesting
   /**
    * Shutdown the long compaction thread pool.
    * Should only be used in unit test to prevent long compaction thread pool from stealing job
