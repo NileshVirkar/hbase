@@ -71,12 +71,12 @@ Options:
   -t [tag]     tag for the hbase-rm docker image to use for building (default: "latest").
   -j [path]    path to local JDK installation to use building. By default the script will
                use openjdk8 installed in the docker image.
+  -m [volume]  named volume to use for maven artifact caching
   -p [project] project to build, such as 'hbase' or 'hbase-thirdparty'; defaults to $PROJECT env var
   -r [repo]    git repo to use for remote git operations. defaults to ASF gitbox for project.
   -s [step]    runs a single step of the process; valid steps are: tag|publish-dist|publish-release.
                If none specified, runs tag, then publish-dist, and then publish-release.
                'publish-snapshot' is also an allowed, less used, option.
-  -x           debug. Does less clean up (env file, gpg forwarding on mac)
 EOF
   exit 1
 }
@@ -86,16 +86,17 @@ IMGTAG=latest
 JAVA=
 RELEASE_STEP=
 GIT_REPO=
-while getopts "d:fhj:p:r:s:t:x" opt; do
+MAVEN_VOLUME=
+while getopts "d:fhj:m:p:r:s:t:" opt; do
   case $opt in
     d) WORKDIR="$OPTARG" ;;
     f) DRY_RUN=0 ;;
     t) IMGTAG="$OPTARG" ;;
     j) JAVA="$OPTARG" ;;
+    m) MAVEN_VOLUME="$OPTARG" ;;
     p) PROJECT="$OPTARG" ;;
     r) GIT_REPO="$OPTARG" ;;
     s) RELEASE_STEP="$OPTARG" ;;
-    x) DEBUG=1 ;;
     h) usage ;;
     ?) error "Invalid option. Run with -h for help." ;;
   esac
@@ -104,7 +105,6 @@ shift $((OPTIND-1))
 if (( $# > 0 )); then
   error "Arguments can only be provided with option flags, invalid args: $*"
 fi
-export DEBUG
 
 if [ -z "$WORKDIR" ] || [ ! -d "$WORKDIR" ]; then
   error "Work directory (-d) must be defined and exist. Run with -h for help."
@@ -117,25 +117,11 @@ if [ -d "$WORKDIR/output" ]; then
   fi
 fi
 
-if [ -f "${WORKDIR}/gpg-proxy.ssh.pid" ] || \
-   [ -f "${WORKDIR}/gpg-proxy.cid" ] || \
-   [ -f "${WORKDIR}/release.cid" ]; then
-  read -r -p "container/pid files from prior run exists. Overwrite and continue? [y/n] " ANSWER
-  if [ "$ANSWER" != "y" ]; then
-    error "Exiting."
-  fi
-fi
-
 cd "$WORKDIR"
 rm -rf "$WORKDIR/output"
-rm -rf "${WORKDIR}/gpg-proxy.ssh.pid" "${WORKDIR}/gpg-proxy.cid" "${WORKDIR}/release.cid"
 mkdir "$WORKDIR/output"
 
-banner "Gathering release details."
-HOST_OS="$(get_host_os)"
 get_release_info
-
-banner "Setup"
 
 # Place all RM scripts and necessary data in a local directory that must be defined in the command
 # line. This directory is mounted into the image. Its WORKDIR, the arg passed with -d.
@@ -145,64 +131,24 @@ for f in "$SELF"/*; do
   fi
 done
 
-# We need to import that public key in the container in order to use the private key via the agent.
-GPG_KEY_FILE="$WORKDIR/gpg.key.public"
-log "Exporting public key for ${GPG_KEY}"
+GPG_KEY_FILE="$WORKDIR/gpg.key"
 fcreate_secure "$GPG_KEY_FILE"
-$GPG "${GPG_ARGS[@]}" --export "${GPG_KEY}" > "${GPG_KEY_FILE}"
-
-function cleanup {
-  local id
-  banner "Release Cleanup"
-  if is_debug; then
-    log "skipping due to debug run"
-    return 0
-  fi
-  log "details in cleanup.log"
-  if [ -f "${ENVFILE}" ]; then
-    rm -f "$ENVFILE"
-  fi
-  rm -f "$GPG_KEY_FILE"
-  if [ -f "${WORKDIR}/gpg-proxy.ssh.pid" ]; then
-    id=$(cat "${WORKDIR}/gpg-proxy.ssh.pid")
-    echo "Stopping ssh tunnel for gpg-agent at PID ${id}" | tee -a cleanup.log
-    kill -9 "${id}" >>cleanup.log 2>&1 || true
-    rm -f "${WORKDIR}/gpg-proxy.ssh.pid" >>cleanup.log 2>&1
-  fi
-  if [ -f "${WORKDIR}/gpg-proxy.cid" ]; then
-    id=$(cat "${WORKDIR}/gpg-proxy.cid")
-    echo "Stopping gpg-proxy container with ID ${id}" | tee -a cleanup.log
-    docker kill "${id}" >>cleanup.log 2>&1 || true
-    rm -f "${WORKDIR}/gpg-proxy.cid" >>cleanup.log 2>&1
-    # TODO we should remove the gpgagent volume?
-  fi
-  if [ -f "${WORKDIR}/release.cid" ]; then
-    id=$(cat "${WORKDIR}/release.cid")
-    echo "Stopping release container with ID ${id}" | tee -a cleanup.log
-    docker kill "${id}" >>cleanup.log 2>&1 || true
-    rm -f "${WORKDIR}/release.cid" >>cleanup.log 2>&1
-  fi
-}
-
-trap cleanup EXIT
-
-log "Host OS: ${HOST_OS}"
-if [ "${HOST_OS}" == "DARWIN" ]; then
-  run_silent "Building gpg-agent-proxy image with tag ${IMGTAG}..." "docker-proxy-build.log" \
-    docker build --build-arg "UID=${UID}" --build-arg "RM_USER=${USER}" \
-        --tag "org.apache.hbase/gpg-agent-proxy:${IMGTAG}" "${SELF}/mac-sshd-gpg-agent"
-fi
+$GPG --passphrase "$GPG_PASSPHRASE" --export-secret-key --armor "$GPG_KEY" > "$GPG_KEY_FILE"
 
 run_silent "Building hbase-rm image with tag $IMGTAG..." "docker-build.log" \
-  docker build --tag "org.apache.hbase/hbase-rm:$IMGTAG" --build-arg "UID=$UID" \
-      --build-arg "RM_USER=${USER}" "$SELF/hbase-rm"
+  docker build -t "hbase-rm:$IMGTAG" --build-arg UID=$UID "$SELF/hbase-rm"
 
-banner "Final prep for container launch."
-log "Writing out environment for container."
 # Write the release information to a file with environment variables to be used when running the
 # image.
 ENVFILE="$WORKDIR/env.list"
 fcreate_secure "$ENVFILE"
+
+function cleanup {
+  rm -f "$ENVFILE"
+  rm -f "$GPG_KEY_FILE"
+}
+
+trap cleanup EXIT
 
 cat > "$ENVFILE" <<EOF
 PROJECT=$PROJECT
@@ -219,15 +165,21 @@ GIT_NAME=$GIT_NAME
 GIT_EMAIL=$GIT_EMAIL
 GPG_KEY=$GPG_KEY
 ASF_PASSWORD=$ASF_PASSWORD
+GPG_PASSPHRASE=$GPG_PASSPHRASE
 RELEASE_STEP=$RELEASE_STEP
 API_DIFF_TAG=$API_DIFF_TAG
-HOST_OS=$HOST_OS
 EOF
 
-JAVA_MOUNT=()
+JAVA_VOL=()
 if [ -n "$JAVA" ]; then
   echo "JAVA_HOME=/opt/hbase-java" >> "$ENVFILE"
-  JAVA_MOUNT=(--mount "type=bind,src=${JAVA},dst=/opt/hbase-java,readonly")
+  JAVA_VOL=(--volume "$JAVA:/opt/hbase-java")
+fi
+
+MAVEN_MOUNT=()
+if [ -n "${MAVEN_VOLUME}" ]; then
+  MAVEN_MOUNT=(--mount "type=volume,src=${MAVEN_VOLUME},dst=/home/hbase-rm/.m2-repository/")
+  echo "REPO=/home/hbase-rm/.m2-repository" >> "${ENVFILE}"
 fi
 
 #TODO some debug output would be good here
@@ -244,7 +196,7 @@ if [ -n "${GIT_REPO}" ]; then
       ;;
     # on the host but normally git wouldn't use the local optimization
     file://*)
-      log "Converted file:// git repo to a local path, which changes git to assume --local."
+      echo "[INFO] converted file:// git repo to a local path, which changes git to assume --local."
       GIT_REPO_MOUNT=(--mount "type=bind,src=${GIT_REPO#file://},dst=/opt/hbase-repo,consistency=delegated")
       echo "HOST_GIT_REPO=${GIT_REPO}" >> "${ENVFILE}"
       GIT_REPO="/opt/hbase-repo"
@@ -283,61 +235,15 @@ if [ -n "${GIT_REPO}" ]; then
   echo "GIT_REPO=${GIT_REPO}" >> "${ENVFILE}"
 fi
 
-GPG_PROXY_MOUNT=()
-if [ "${HOST_OS}" == "DARWIN" ]; then
-  GPG_PROXY_MOUNT=(--mount "type=volume,src=gpgagent,dst=/home/${USER}/.gnupg/")
-  log "Setting up GPG agent proxy container needed on OS X."
-  log "    we should clean this up for you. If that fails the container ID is below and in " \
-      "gpg-proxy.cid"
-  #TODO the key pair used should be configurable
-  docker run --rm -p 62222:22 \
-     --detach --cidfile "${WORKDIR}/gpg-proxy.cid" \
-     --mount \
-     "type=bind,src=${HOME}/.ssh/id_rsa.pub,dst=/home/${USER}/.ssh/authorized_keys,readonly" \
-     "${GPG_PROXY_MOUNT[@]}" \
-     "org.apache.hbase/gpg-agent-proxy:${IMGTAG}"
-  # gotta trust the container host
-  ssh-keyscan -p 62222 localhost 2>/dev/null | sort > "${WORKDIR}/gpg-agent-proxy.ssh-keyscan"
-  sort "${HOME}/.ssh/known_hosts" | comm -1 -3 - "${WORKDIR}/gpg-agent-proxy.ssh-keyscan" \
-      > "${WORKDIR}/gpg-agent-proxy.known_hosts"
-  if [ -s "${WORKDIR}/gpg-agent-proxy.known_hosts" ]; then
-    log "Your ssh known_hosts does not include the entries for the gpg-agent proxy container."
-    log "The following entry(ies) are missing:"
-    sed -e 's/^/    /' "${WORKDIR}/gpg-agent-proxy.known_hosts"
-    read -r -p "Okay to add these entries to ${HOME}/.ssh/known_hosts? [y/n] " ANSWER
-    if [ "$ANSWER" != "y" ]; then
-      error "Exiting."
-    fi
-    cat "${WORKDIR}/gpg-agent-proxy.known_hosts" >> "${HOME}/.ssh/known_hosts"
-  fi
-  log "Launching ssh reverse tunnel from the container to gpg agent."
-  log "    we should clean this up for you. If that fails the PID is in gpg-proxy.ssh.pid"
-  ssh -p 62222 -R "/home/${USER}/.gnupg/S.gpg-agent:$(gpgconf --list-dir agent-extra-socket)" \
-      -i "${HOME}/.ssh/id_rsa" -N -n localhost >gpg-proxy.ssh.log 2>&1 &
-  echo $! > "${WORKDIR}/gpg-proxy.ssh.pid"
-else
-  # Note that on linux we always directly mount the gpg agent's extra socket to limit what the
-  # container can ask the gpg-agent to do.
-  # When working on a remote linux machine you should be sure to forward both the remote machine's
-  # agent socket and agent extra socket to your local gpg-agent's extra socket. See the README.txt
-  # for an example.
-  GPG_PROXY_MOUNT=(--mount \
-      "type=bind,src=$(gpgconf --list-dir agent-extra-socket),dst=/home/${USER}/.gnupg/S.gpg-agent")
-fi
-
-banner "Building $RELEASE_TAG; output will be at $WORKDIR/output"
-log "We should clean the container up when we are done. If that fails then the container ID " \
-    "is in release.cid"
-echo
-# Where possible we specify "consistency=delegated" when we do not need host access during the
+echo "Building $RELEASE_TAG; output will be at $WORKDIR/output"
+# Where possible we specifcy "consistency=delegated" when we do not need host access during the
 # build run. On Mac OS X specifically this gets us a big perf improvement.
-cmd=(docker run --rm -ti \
+cmd=(docker run -ti \
   --env-file "$ENVFILE" \
-  --cidfile "${WORKDIR}/release.cid" \
-  --mount "type=bind,src=${WORKDIR},dst=/home/${USER}/hbase-rm,consistency=delegated" \
-  "${JAVA_MOUNT[@]}" \
+  --mount "type=bind,src=${WORKDIR},dst=/opt/hbase-rm,consistency=delegated" \
+  "${JAVA_VOL[@]}" \
   "${GIT_REPO_MOUNT[@]}" \
-  "${GPG_PROXY_MOUNT[@]}" \
-  "org.apache.hbase/hbase-rm:$IMGTAG")
+  "${MAVEN_MOUNT[@]}" \
+  "hbase-rm:$IMGTAG")
 echo "${cmd[*]}"
 "${cmd[@]}"

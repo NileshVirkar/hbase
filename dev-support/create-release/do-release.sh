@@ -17,11 +17,6 @@
 # limitations under the License.
 #
 
-# Make a tmp dir into which we put files cleaned-up on exit.
-TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
-
-set -e
 # Use the adjacent do-release-docker.sh instead, if you can.
 # Otherwise, this runs core of the release creation.
 # Will ask you questions on what to build and for logins
@@ -45,64 +40,38 @@ if (( $# > 0 )); then
   error "Arguments can only be provided with option flags, invalid args: $*"
 fi
 
-function gpg_agent_help {
-  cat <<EOF
-Trying to sign a test file using your GPG setup failed.
-
-Please make sure you have a local gpg-agent running with access to your secret keys prior to
-starting a release build. If you are creating release artifacts on a remote machine please check
-that you have set up ssh forwarding to the gpg-agent extra socket.
-
-For help on how to do this please see the README file in the create-release directory.
-EOF
-  exit 1
-}
-
 # If running in docker, import and then cache keys.
 if [ "$RUNNING_IN_DOCKER" = "1" ]; then
-  # when Docker Desktop for mac is running under load there is a delay before the mounted volume
-  # becomes available. if we do not pause then we may try to use the gpg-agent socket before docker
-  # has got it ready and we will not think there is a gpg-agent.
-  if [ "${HOST_OS}" == "DARWIN" ]; then
-    sleep 5
-  fi
-  # in docker our working dir is set to where all of our scripts are held
-  # and we want default output to go into the "output" directory that should be in there.
-  if [ -d "output" ]; then
-    cd output
-  fi
-  echo "GPG Version: $("${GPG}" "${GPG_ARGS[@]}" --version)"
-  # Inside docker, need to import the GPG key stored in the current directory.
-  if ! $GPG "${GPG_ARGS[@]}" --import "$SELF/gpg.key.public" ; then
-    gpg_agent_help
-  fi
+  # Run gpg agent.
+  eval "$(gpg-agent --disable-scdaemon --daemon --no-grab  --allow-preset-passphrase \
+          --default-cache-ttl=86400 --max-cache-ttl=86400)"
+  echo "GPG Version: $(gpg --version)"
+  # Inside docker, need to import the GPG keyfile stored in the current directory.
+  # (On workstation, assume GPG has access to keychain/cache with key_id already imported.)
+  echo "$GPG_PASSPHRASE" | $GPG --passphrase-fd 0 --import "$SELF/gpg.key"
 
   # We may need to adjust the path since JAVA_HOME may be overridden by the driver script.
   if [ -n "$JAVA_HOME" ]; then
-    echo "Using JAVA_HOME from host."
     export PATH="$JAVA_HOME/bin:$PATH"
   else
     # JAVA_HOME for the openjdk package.
-    export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64/
+    export JAVA_HOME=/usr
   fi
 else
   # Outside docker, need to ask for information about the release.
   get_release_info
 fi
-
-# Check GPG
-gpg_test_file="${TMPDIR}/gpg_test.$$.txt"
-echo "Testing gpg signing ${GPG} ${GPG_ARGS[@]} --detach --armor --sign ${gpg_test_file}"
-echo "foo" > "${gpg_test_file}"
-if ! "${GPG}" "${GPG_ARGS[@]}" --detach --armor --sign "${gpg_test_file}" ; then
-  gpg_agent_help
-fi
-# In --batch mode we have to be explicit about what we are verifying
-if ! "${GPG}" "${GPG_ARGS[@]}" --verify "${gpg_test_file}.asc" "${gpg_test_file}" ; then
-  gpg_agent_help
-fi
 GPG_TTY="$(tty)"
 export GPG_TTY
+
+if [[ -n "${REPO}" ]]; then
+  echo "reusing persistent maven repo, testing write access"
+  echo "foo" > "${REPO}/test.file"
+  if [[ -d "${REPO}/org/apache/hbase/" ]]; then
+    echo "reusing persistent maven repo, clearing out our project artifacts."
+    rm -rf "${REPO}/org/apache/hbase/"
+  fi
+fi
 
 if [[ -z "$RELEASE_STEP" ]]; then
   # If doing all stages, leave out 'publish-snapshot'
@@ -124,9 +93,9 @@ function should_build {
 
 if should_build "tag" && [ "$SKIP_TAG" = 0 ]; then
   if [ -z "${YETUS_HOME}" ] && [ "${RUNNING_IN_DOCKER}" != "1" ]; then
-    declare local_yetus="/opt/apache-yetus/0.12.0/"
+    declare local_yetus="/opt/apache-yetus/0.11.1/"
     if [ "$(get_host_os)" = "DARWIN" ]; then
-      local_yetus="/usr/local/Cellar/yetus/0.12.0/"
+      local_yetus="/usr/local/Cellar/yetus/0.11.1/"
     fi
     YETUS_HOME="$(read_config "YETUS_HOME not defined. Absolute path to local install of Apache Yetus" "${local_yetus}")"
     export YETUS_HOME
