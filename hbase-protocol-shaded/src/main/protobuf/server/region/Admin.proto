@@ -168,6 +168,14 @@ message CompactionSwitchResponse {
   required bool prev_state = 1;
 }
 
+message CompactionOffloadSwitchRequest {
+  required bool enabled = 1;
+}
+
+message CompactionOffloadSwitchResponse {
+  required bool prev_state = 1;
+}
+
 message UpdateFavoredNodesRequest {
   repeated RegionUpdateInfo update_info = 1;
 
@@ -352,6 +360,9 @@ service AdminService {
 
   rpc CompactionSwitch(CompactionSwitchRequest)
     returns(CompactionSwitchResponse);
+
+  rpc CompactionOffloadSwitch(CompactionOffloadSwitchRequest)
+    returns(CompactionOffloadSwitchResponse);
 
   rpc CompactRegion(CompactRegionRequest)
     returns(CompactRegionResponse);

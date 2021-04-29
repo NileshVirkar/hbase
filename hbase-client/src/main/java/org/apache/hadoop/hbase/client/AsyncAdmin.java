@@ -1440,6 +1440,17 @@ public interface AsyncAdmin {
       List<String> serverNamesList);
 
   /**
+   * Turn the compaction offload on or off. This state is ephemeral. The setting will be lost on
+   * restart. Compaction offload can also be enabled/disabled by modifying configuration
+   * hbase.compaction.offload.enabled in hbase-site.xml.
+   * @param switchState Set to <code>true</code> to enable, <code>false</code> to disable.
+   * @param serverNamesList list of region servers.
+   * @return Previous compaction offload states for region servers
+   */
+  CompletableFuture<Map<ServerName, Boolean>> compactionOffloadSwitch(boolean switchState,
+    List<String> serverNamesList);
+
+  /**
    * Switch the rpc throttle enabled state.
    * @param enable Set to <code>true</code> to enable, <code>false</code> to disable.
    * @return Previous rpc throttle enabled value

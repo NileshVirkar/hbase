@@ -335,8 +335,8 @@ public class MockRegionServerServices implements RegionServerServices {
   }
 
   @Override
-  public boolean reportFileArchivalForQuotas(
-      TableName tableName, Collection<Entry<String,Long>> archivedFiles) {
+  public boolean reportFileArchivalForQuotas(TableName tableName,
+      Collection<Entry<String, Long>> archivedFiles) {
     return true;
   }
 
@@ -378,5 +378,10 @@ public class MockRegionServerServices implements RegionServerServices {
   @Override
   public AsyncClusterConnection getAsyncClusterConnection() {
     return null;
+  }
+
+  @Override
+  public boolean isCompactionOffloadEnabled() {
+    return true;
   }
 }

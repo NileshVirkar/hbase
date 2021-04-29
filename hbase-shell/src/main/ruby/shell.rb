@@ -453,6 +453,7 @@ Shell.load_command_group(
     close_region
     compact
     compaction_switch
+    compaction_offload_switch
     flush
     get_balancer_decisions
     get_slowlog_responses

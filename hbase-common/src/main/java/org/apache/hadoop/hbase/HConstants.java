@@ -25,6 +25,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -303,6 +304,29 @@ public final class HConstants {
   /** A flag that enables automatic selection of regionserver info port */
   public static final String REGIONSERVER_INFO_PORT_AUTO =
       REGIONSERVER_INFO_PORT + ".auto";
+
+
+  /** Parameter name for port compaction server listens on. */
+  public static final String COMPACTION_SERVER_PORT = "hbase.compaction.server.port";
+
+  /** Default port compaction server listens on. */
+  public static final int DEFAULT_COMPACTION_SERVER_PORT = 16040;
+
+  /** default port for compaction server web api */
+  public static final int DEFAULT_COMPACTION_SERVER_INFOPORT = 16050;
+
+  /** A configuration key for compaction server info port */
+  public static final String COMPACTION_SERVER_INFO_PORT =
+    "hbase.compaction.server.info.port";
+
+  /** A flag that enables automatic selection of compaction server info port */
+  public static final String COMPACTION_SERVER_INFO_PORT_AUTO =
+    COMPACTION_SERVER_INFO_PORT + ".auto";
+
+  /** Parameter name for what compaction server implementation to use. */
+  public static final String COMPACTION_SERVER_IMPL= "hbase.compaction.server.impl";
+
+  public static final String COMPACTION_SERVER_MSG_INTERVAL = "hbase.compaction.server.msginterval";
 
   /** Parameter name for what region server implementation to use. */
   public static final String REGION_SERVER_IMPL= "hbase.regionserver.impl";
@@ -672,6 +696,16 @@ public final class HConstants {
   public static final long LATEST_TIMESTAMP = Long.MAX_VALUE;
 
   /**
+   * Timestamp to use when we want to refer to the oldest cell.
+   * Special! Used in fake Cells only. Should never be the timestamp on an actual Cell returned to
+   * a client.
+   * @deprecated Should not be public since hbase-1.3.0. For internal use only. Move internal to
+   *   Scanners flagged as special timestamp value never to be returned as timestamp on a Cell.
+   */
+  @Deprecated
+  public static final long OLDEST_TIMESTAMP = Long.MIN_VALUE;
+
+  /**
    * LATEST_TIMESTAMP in bytes form
    */
   public static final byte [] LATEST_TIMESTAMP_BYTES = {
@@ -934,6 +968,14 @@ public final class HConstants {
       "hbase.client.scanner.timeout.period";
 
   /**
+   * Use {@link #HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD} instead.
+   * @deprecated This config option is deprecated. Will be removed at later releases after 0.96.
+   */
+  @Deprecated
+  public static final String HBASE_REGIONSERVER_LEASE_PERIOD_KEY =
+      "hbase.regionserver.lease.period";
+
+  /**
    * Default value of {@link #HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD}.
    */
   public static final int DEFAULT_HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD = 60000;
@@ -1054,7 +1096,42 @@ public final class HConstants {
     */
   public static final float HBASE_CLUSTER_MINIMUM_MEMORY_THRESHOLD = 0.2f;
 
+  /**
+   * @deprecated  It is used internally. As of release 2.0.0, this will be removed in HBase 3.0.0.
+   */
+  @Deprecated
+  public static final Pattern CP_HTD_ATTR_KEY_PATTERN =
+      Pattern.compile("^coprocessor\\$([0-9]+)$", Pattern.CASE_INSENSITIVE);
 
+  /**
+   * <pre>
+   * Pattern that matches a coprocessor specification. Form is:
+   * {@code <coprocessor jar file location> '|' <class name> ['|' <priority> ['|' <arguments>]]}
+   * where arguments are {@code <KEY> '=' <VALUE> [,...]}
+   * For example: {@code hdfs:///foo.jar|com.foo.FooRegionObserver|1001|arg1=1,arg2=2}
+   * </pre>
+   * @deprecated  It is used internally. As of release 2.0.0, this will be removed in HBase 3.0.0.
+   */
+  @Deprecated
+  public static final Pattern CP_HTD_ATTR_VALUE_PATTERN =
+      Pattern.compile("(^[^\\|]*)\\|([^\\|]+)\\|[\\s]*([\\d]*)[\\s]*(\\|.*)?$");
+  /**
+   * @deprecated  It is used internally. As of release 2.0.0, this will be removed in HBase 3.0.0.
+   */
+  @Deprecated
+  public static final String CP_HTD_ATTR_VALUE_PARAM_KEY_PATTERN = "[^=,]+";
+  /**
+   * @deprecated  It is used internally. As of release 2.0.0, this will be removed in HBase 3.0.0.
+   */
+  @Deprecated
+  public static final String CP_HTD_ATTR_VALUE_PARAM_VALUE_PATTERN = "[^,]+";
+  /**
+   * @deprecated  It is used internally. As of release 2.0.0, this will be removed in HBase 3.0.0.
+   */
+  @Deprecated
+  public static final Pattern CP_HTD_ATTR_VALUE_PARAM_PATTERN = Pattern.compile(
+      "(" + CP_HTD_ATTR_VALUE_PARAM_KEY_PATTERN + ")=(" +
+      CP_HTD_ATTR_VALUE_PARAM_VALUE_PATTERN + "),?");
   public static final String CP_HTD_ATTR_INCLUSION_KEY =
       "hbase.coprocessor.classloader.included.classes";
 
@@ -1186,6 +1263,12 @@ public final class HConstants {
   public static final int ADMIN_QOS = 100;
   public static final int HIGH_QOS = 200;
   public static final int SYSTEMTABLE_QOS = HIGH_QOS;
+  /**
+   * @deprecated the name "META_QOS" is a bit ambiguous, actually only meta region transition can
+   *             use this priority, and you should not use this directly. Will be removed in 3.0.0.
+   */
+  @Deprecated
+  public static final int META_QOS = 300;
 
   /** Directory under /hbase where archived hfiles are stored */
   public static final String HFILE_ARCHIVE_DIRECTORY = "archive";
@@ -1600,6 +1683,9 @@ public final class HConstants {
    * Default value of {@link #BATCH_ROWS_THRESHOLD_NAME}
    */
   public static final int BATCH_ROWS_THRESHOLD_DEFAULT = 5000;
+
+  public final static String COMPACTION_OFFLOAD_ENABLED = "hbase.compaction.offload.enabled";
+  public final static boolean COMPACTION_OFFLOAD_ENABLED_DEFAULT = false;
 
   private HConstants() {
     // Can't be instantiated with this ctor.

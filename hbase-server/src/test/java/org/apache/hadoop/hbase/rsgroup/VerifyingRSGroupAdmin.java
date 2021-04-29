@@ -737,6 +737,11 @@ public class VerifyingRSGroupAdmin implements Admin, Closeable {
     return admin.getRegionServerSpaceQuotaSnapshots(serverName);
   }
 
+  public Map<ServerName, Boolean> compactionOffloadSwitch(boolean switchState,
+      List<String> serverNamesList) throws IOException {
+    return admin.compactionOffloadSwitch(switchState, serverNamesList);
+  }
+
   public SpaceQuotaSnapshotView getCurrentSpaceQuotaSnapshot(String namespace) throws IOException {
     return admin.getCurrentSpaceQuotaSnapshot(namespace);
   }

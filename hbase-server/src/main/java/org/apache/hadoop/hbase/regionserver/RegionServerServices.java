@@ -317,4 +317,9 @@ public interface RegionServerServices extends Server, MutableOnlineRegions, Favo
    * @return {@link ZKPermissionWatcher}
    */
   ZKPermissionWatcher getZKPermissionWatcher();
+
+  /**
+   * Return compaction offload enable state of region server
+   */
+  boolean isCompactionOffloadEnabled();
 }

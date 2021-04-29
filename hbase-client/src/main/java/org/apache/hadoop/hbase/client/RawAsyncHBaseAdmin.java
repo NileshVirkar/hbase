@@ -39,6 +39,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -126,6 +127,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearRegion
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearRegionBlockCacheResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactRegionRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactRegionResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionOffloadSwitchRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionOffloadSwitchResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionSwitchRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionSwitchResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.FlushRegionRequest;
@@ -3152,11 +3155,31 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
     return future;
   }
 
-  @Override
-  public CompletableFuture<Map<ServerName, Boolean>> compactionSwitch(boolean switchState,
-      List<String> serverNamesList) {
+  private CompletableFuture<List<ServerName>> getMasterAndRegionServerList() {
+    CompletableFuture<List<ServerName>> future = new CompletableFuture<>();
+    addListener(getRegionServerList(new ArrayList<>()), (serverNames, err) -> {
+      if (err != null) {
+        future.completeExceptionally(err);
+        return;
+      }
+      List<ServerName> serverNameList = new ArrayList<>(serverNames);
+      addListener(getMaster(), (masterName, err1) -> {
+        if (err1 != null) {
+          future.completeExceptionally(err1);
+        } else {
+          serverNameList.add(masterName);
+          future.complete(serverNameList);
+        }
+      });
+    });
+    return future;
+  }
+
+  public CompletableFuture<Map<ServerName, Boolean>> doSwitchForServers(boolean switchState,
+      CompletableFuture<List<ServerName>> serverNamesList,
+      BiFunction<ServerName, Boolean, CompletableFuture<Boolean>> switchFunction) {
     CompletableFuture<Map<ServerName, Boolean>> future = new CompletableFuture<>();
-    addListener(getRegionServerList(serverNamesList), (serverNames, err) -> {
+    addListener(serverNamesList, (serverNames, err) -> {
       if (err != null) {
         future.completeExceptionally(err);
         return;
@@ -3165,13 +3188,14 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
       Map<ServerName, Boolean> serverStates = new ConcurrentHashMap<>(serverNames.size());
       List<CompletableFuture<Boolean>> futures = new ArrayList<>(serverNames.size());
       serverNames.stream().forEach(serverName -> {
-        futures.add(switchCompact(serverName, switchState).whenComplete((serverState, err2) -> {
-          if (err2 != null) {
-            future.completeExceptionally(unwrapCompletionException(err2));
-          } else {
-            serverStates.put(serverName, serverState);
-          }
-        }));
+        futures.add(
+          switchFunction.apply(serverName, switchState).whenComplete((serverState, err2) -> {
+            if (err2 != null) {
+              future.completeExceptionally(unwrapCompletionException(err2));
+            } else {
+              serverStates.put(serverName, serverState);
+            }
+          }));
       });
       addListener(
         CompletableFuture.allOf(futures.toArray(new CompletableFuture<?>[futures.size()])),
@@ -3186,6 +3210,22 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
         });
     });
     return future;
+  }
+
+  @Override
+  public CompletableFuture<Map<ServerName, Boolean>> compactionSwitch(boolean switchState,
+    List<String> serverNamesList) {
+    return doSwitchForServers(switchState,getRegionServerList(serverNamesList),
+      this::switchCompact);
+  }
+
+  @Override
+  public CompletableFuture<Map<ServerName, Boolean>> compactionOffloadSwitch(boolean switchState,
+      List<String> serverNamesList) {
+    return doSwitchForServers(switchState,
+      serverNamesList.isEmpty() ? getMasterAndRegionServerList()
+          : getRegionServerList(serverNamesList),
+      this::switchCompactionOffload);
   }
 
   private CompletableFuture<List<ServerName>> getRegionServerList(List<String> serverNamesList) {
@@ -3231,6 +3271,16 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
             Boolean>adminCall(controller, stub,
             CompactionSwitchRequest.newBuilder().setEnabled(onOrOff).build(), (s, c, req, done) ->
             s.compactionSwitch(c, req, done), resp -> resp.getPrevState())).call();
+  }
+
+  private CompletableFuture<Boolean> switchCompactionOffload(ServerName serverName, boolean onOrOff) {
+    return this
+      .<Boolean>newAdminCaller()
+      .serverName(serverName)
+      .action((controller, stub) -> this.<CompactionOffloadSwitchRequest, CompactionOffloadSwitchResponse,
+        Boolean>adminCall(controller, stub,
+        CompactionOffloadSwitchRequest.newBuilder().setEnabled(onOrOff).build(), (s, c, req, done) ->
+          s.compactionOffloadSwitch(c, req, done), resp -> resp.getPrevState())).call();
   }
 
   @Override

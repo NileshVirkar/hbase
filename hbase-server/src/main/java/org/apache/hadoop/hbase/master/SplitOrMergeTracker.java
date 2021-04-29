@@ -21,17 +21,20 @@ import java.io.IOException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Abortable;
-import org.apache.hadoop.hbase.zookeeper.ZKNodeTracker;
-import org.apache.hadoop.hbase.zookeeper.ZKUtil;
-import org.apache.hadoop.hbase.zookeeper.ZNodePaths;
-import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.client.MasterSwitchType;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.ZooKeeperProtos.SwitchState;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.zookeeper.ZKNodeTracker;
+import org.apache.hadoop.hbase.zookeeper.ZKUtil;
+import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
+import org.apache.hadoop.hbase.zookeeper.ZNodePaths;
+
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.zookeeper.KeeperException;
+
+import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.ZooKeeperProtos.SwitchState;
 
 
 /**
@@ -42,9 +45,12 @@ public class SplitOrMergeTracker {
 
   private String splitZnode;
   private String mergeZnode;
+  private String compactionOffloadZnode;
 
   private SwitchStateTracker splitStateTracker;
   private SwitchStateTracker mergeStateTracker;
+  private SwitchStateTracker compactionOffloadStateTracker;
+  private boolean compactionOffloadEnabled;
 
   public SplitOrMergeTracker(ZKWatcher watcher, Configuration conf,
                              Abortable abortable) {
@@ -61,11 +67,18 @@ public class SplitOrMergeTracker {
       conf.get("zookeeper.znode.switch.merge", "merge"));
     splitStateTracker = new SwitchStateTracker(watcher, splitZnode, abortable);
     mergeStateTracker = new SwitchStateTracker(watcher, mergeZnode, abortable);
+    compactionOffloadZnode = ZNodePaths.joinZNode(watcher.getZNodePaths().switchZNode,
+      conf.get("zookeeper.znode.switch.compaction.offload", "compaction-offload"));
+    compactionOffloadEnabled = conf.getBoolean(HConstants.COMPACTION_OFFLOAD_ENABLED,
+      HConstants.COMPACTION_OFFLOAD_ENABLED_DEFAULT);
+    compactionOffloadStateTracker =
+        new SwitchStateTracker(watcher, compactionOffloadZnode, abortable);
   }
 
   public void start() {
     splitStateTracker.start();
     mergeStateTracker.start();
+    compactionOffloadStateTracker.start();
   }
 
   public boolean isSplitOrMergeEnabled(MasterSwitchType switchType) {
@@ -74,20 +87,25 @@ public class SplitOrMergeTracker {
         return splitStateTracker.isSwitchEnabled();
       case MERGE:
         return mergeStateTracker.isSwitchEnabled();
+      case COMPACTION_OFFLOAD:
+        return compactionOffloadEnabled && compactionOffloadStateTracker.isSwitchEnabled();
       default:
         break;
     }
     return false;
   }
 
-  public void setSplitOrMergeEnabled(boolean enabled, MasterSwitchType switchType)
-    throws KeeperException {
+  void setSplitOrMergeEnabled(boolean enabled, MasterSwitchType switchType) throws KeeperException {
     switch (switchType) {
       case SPLIT:
         splitStateTracker.setSwitchEnabled(enabled);
         break;
       case MERGE:
         mergeStateTracker.setSwitchEnabled(enabled);
+        break;
+      case COMPACTION_OFFLOAD:
+        enabled = enabled && compactionOffloadEnabled;
+        compactionOffloadStateTracker.setSwitchEnabled(enabled);
         break;
       default:
         break;
@@ -121,10 +139,10 @@ public class SplitOrMergeTracker {
      * @throws KeeperException keepException will be thrown out
      */
     public void setSwitchEnabled(boolean enabled) throws KeeperException {
-      byte [] upData = toByteArray(enabled);
+      byte[] upData = toByteArray(enabled);
       try {
         ZKUtil.setData(watcher, node, upData);
-      } catch(KeeperException.NoNodeException nne) {
+      } catch (KeeperException.NoNodeException nne) {
         ZKUtil.createAndWatch(watcher, node, upData);
       }
       super.nodeDataChanged(node);

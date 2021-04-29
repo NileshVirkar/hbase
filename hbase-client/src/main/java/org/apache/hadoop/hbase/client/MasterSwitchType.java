@@ -23,5 +23,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 @InterfaceAudience.Public
 public enum MasterSwitchType {
   SPLIT,
-  MERGE
+  MERGE,
+  COMPACTION_OFFLOAD
 }

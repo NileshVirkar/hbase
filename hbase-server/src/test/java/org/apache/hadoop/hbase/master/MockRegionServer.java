@@ -750,4 +750,16 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   public AsyncClusterConnection getAsyncClusterConnection() {
     return null;
   }
+
+  @Override
+  public AdminProtos.CompactionOffloadSwitchResponse compactionOffloadSwitch(
+      RpcController controller, AdminProtos.CompactionOffloadSwitchRequest request)
+      throws ServiceException {
+    return null;
+  }
+
+  @Override
+  public boolean isCompactionOffloadEnabled() {
+    return true;
+  }
 }

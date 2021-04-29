@@ -335,6 +335,12 @@ class AdminOverAsyncAdmin implements Admin {
   }
 
   @Override
+  public Map<ServerName, Boolean> compactionOffloadSwitch(boolean switchState,
+      List<String> serverNamesList) throws IOException {
+    return get(admin.compactionOffloadSwitch(switchState, serverNamesList));
+  }
+
+  @Override
   public void compactRegionServer(ServerName serverName) throws IOException {
     get(admin.compactRegionServer(serverName));
   }

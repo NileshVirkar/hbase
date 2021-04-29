@@ -121,6 +121,18 @@ module Hbase
       @admin.compactionSwitch(java.lang.Boolean.valueOf(on_or_off), servers)
     end
 
+    # Switch compaction offload on/off at runtime on a region server
+    def compaction_offload_switch(on_or_off, regionserver_names)
+      region_servers = regionserver_names.flatten.compact
+      servers = java.util.ArrayList.new
+      if region_servers.any?
+        region_servers.each do |s|
+          servers.add(s)
+        end
+      end
+      @admin.compactionOffloadSwitch(java.lang.Boolean.valueOf(on_or_off), servers)
+    end
+
     #----------------------------------------------------------------------------------------------
     # Gets compaction state for specified table
     def getCompactionState(table_name)
@@ -1148,22 +1160,6 @@ module Hbase
         compression = arg.delete(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT).upcase.to_sym
         if org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.include?(compression)
           cfdb.setCompactionCompressionType(org.apache.hadoop.hbase.io.compress.Compression::Algorithm.valueOf(compression))
-        else
-          raise(ArgumentError, "Compression #{compression} is not supported. Use one of " + org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.join(' '))
-        end
-      end
-      if arg.include?(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT_MAJOR)
-        compression = arg.delete(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT_MAJOR).upcase.to_sym
-        if org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.include?(compression)
-          cfdb.setMajorCompactionCompressionType(org.apache.hadoop.hbase.io.compress.Compression::Algorithm.valueOf(compression))
-        else
-          raise(ArgumentError, "Compression #{compression} is not supported. Use one of " + org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.join(' '))
-        end
-      end
-      if arg.include?(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT_MINOR)
-        compression = arg.delete(ColumnFamilyDescriptorBuilder::COMPRESSION_COMPACT_MINOR).upcase.to_sym
-        if org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.include?(compression)
-          cfdb.setMinorCompactionCompressionType(org.apache.hadoop.hbase.io.compress.Compression::Algorithm.valueOf(compression))
         else
           raise(ArgumentError, "Compression #{compression} is not supported. Use one of " + org.apache.hadoop.hbase.io.compress.Compression::Algorithm.constants.join(' '))
         end

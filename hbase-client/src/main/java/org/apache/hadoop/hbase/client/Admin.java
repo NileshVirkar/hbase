@@ -706,6 +706,17 @@ public interface Admin extends Abortable, Closeable {
       throws IOException;
 
   /**
+   * Turn the compaction offload on or off. This state is ephemeral. The setting will be lost on
+   * restart.
+   * @param switchState Set to <code>true</code> to enable, <code>false</code> to disable.
+   * @param serverNamesList list of region servers.
+   * @return Previous compaction offload states for region servers
+   * @throws IOException if a remote or network exception occurs
+   */
+  Map<ServerName, Boolean> compactionOffloadSwitch(boolean switchState, List<String> serverNamesList)
+    throws IOException;
+
+  /**
    * Compact all regions on the region server. Asynchronous operation in that this method requests
    * that a Compaction run and then it returns. It does not wait on the completion of Compaction (it
    * can take a while).

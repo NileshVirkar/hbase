@@ -576,6 +576,12 @@ public class ThriftAdmin implements Admin {
   }
 
   @Override
+  public Map<ServerName, Boolean> compactionOffloadSwitch(boolean switchState,
+    List<String> serverNamesList) {
+    throw new NotImplementedException("doSwitchForServers not supported in ThriftAdmin");
+  }
+
+  @Override
   public void compactRegionServer(ServerName serverName) {
     throw new NotImplementedException("compactRegionServer not supported in ThriftAdmin");
 

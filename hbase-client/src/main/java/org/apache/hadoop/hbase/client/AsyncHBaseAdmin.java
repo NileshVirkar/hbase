@@ -783,6 +783,12 @@ class AsyncHBaseAdmin implements AsyncAdmin {
   }
 
   @Override
+  public CompletableFuture<Map<ServerName, Boolean>> compactionOffloadSwitch(boolean switchState,
+    List<String> serverNamesList) {
+    return wrap(rawAdmin.compactionOffloadSwitch(switchState, serverNamesList));
+  }
+
+  @Override
   public CompletableFuture<Boolean> switchRpcThrottle(boolean enable) {
     return wrap(rawAdmin.switchRpcThrottle(enable));
   }
