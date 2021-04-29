@@ -152,6 +152,8 @@ import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.security.access.AccessChecker;
 import org.apache.hadoop.hbase.security.access.ZKPermissionWatcher;
+import org.apache.hadoop.hbase.trace.SpanReceiverHost;
+import org.apache.hadoop.hbase.trace.TraceUtil;
 import org.apache.hadoop.hbase.util.Addressing;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
@@ -300,7 +302,7 @@ public class HRegionServer extends Thread implements
   private boolean sameReplicationSourceAndSink;
 
   // Compactions
-  private CompactSplit compactSplitThread;
+  public CompactSplit compactSplitThread;
 
   /**
    * Map of regions currently being served by this region server. Key is the
@@ -388,6 +390,7 @@ public class HRegionServer extends Thread implements
 
   private MetricsRegionServer metricsRegionServer;
   MetricsRegionServerWrapperImpl metricsRegionServerImpl;
+  private SpanReceiverHost spanReceiverHost;
 
   /**
    * ChoreService used to schedule tasks that we want to run periodically
@@ -585,6 +588,7 @@ public class HRegionServer extends Thread implements
    */
   public HRegionServer(final Configuration conf) throws IOException {
     super("RegionServer");  // thread name
+    TraceUtil.initTracer(conf);
     try {
       this.startcode = System.currentTimeMillis();
       this.conf = conf;
@@ -650,6 +654,7 @@ public class HRegionServer extends Thread implements
         (t, e) -> abort("Uncaught exception in executorService thread " + t.getName(), e);
 
       initializeFileSystem();
+      spanReceiverHost = SpanReceiverHost.getInstance(getConfiguration());
 
       this.configurationManager = new ConfigurationManager();
       setupWindows(getConfiguration(), getConfigurationManager());
@@ -1395,6 +1400,8 @@ public class HRegionServer extends Thread implements
     serverLoad.setTotalNumberOfRequests(regionServerWrapper.getTotalRequestCount());
     serverLoad.setUsedHeapMB((int)(usedMemory / 1024 / 1024));
     serverLoad.setMaxHeapMB((int) (maxMemory / 1024 / 1024));
+    serverLoad.setReadRequestsCount(this.metricsRegionServerImpl.getReadRequestsCount());
+    serverLoad.setWriteRequestsCount(this.metricsRegionServerImpl.getWriteRequestsCount());
     Set<String> coprocessors = getWAL(null).getCoprocessorHost().getCoprocessors();
     Builder coprocessorBuilder = Coprocessor.newBuilder();
     for (String coprocessor : coprocessors) {
@@ -2689,6 +2696,10 @@ public class HRegionServer extends Thread implements
 
     if (this.cacheFlusher != null) {
       this.cacheFlusher.join();
+    }
+
+    if (this.spanReceiverHost != null) {
+      this.spanReceiverHost.closeReceivers();
     }
     if (this.walRoller != null) {
       this.walRoller.close();
