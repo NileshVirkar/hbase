@@ -27,6 +27,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell.Type;
 import org.apache.hadoop.hbase.ClientMetaTableAccessor.QueryType;
@@ -55,6 +58,9 @@ import org.apache.hadoop.hbase.util.PairOfSameType;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
  * Read/write operations on <code>hbase:meta</code> region as well as assignment information stored
@@ -106,6 +112,17 @@ public final class MetaTableAccessor {
   public static void fullScanRegions(Connection connection,
     final ClientMetaTableAccessor.Visitor visitor) throws IOException {
     scanMeta(connection, null, null, QueryType.REGION, visitor);
+  }
+
+  /**
+   * Performs a full scan of <code>hbase:meta</code> for regions.
+   *
+   * @param connection connection we're using
+   * @param visitor    Visitor invoked against each row in regions family.
+   */
+  public static void fullScanRegions(boolean async, Connection connection,
+    final ClientMetaTableAccessor.Visitor visitor) throws IOException {
+    scanMeta(true, connection, null, null, QueryType.REGION, null, Integer.MAX_VALUE, visitor);
   }
 
   /**
@@ -260,6 +277,7 @@ public final class MetaTableAccessor {
    *          true and we'll leave out offlined regions from returned list
    * @return List of all user-space regions.
    */
+  @VisibleForTesting
   public static List<RegionInfo> getAllRegions(Connection connection,
     boolean excludeOfflinedSplitParents) throws IOException {
     List<Pair<RegionInfo, ServerName>> result;
@@ -458,10 +476,16 @@ public final class MetaTableAccessor {
   static void scanMeta(Connection connection, @Nullable final byte[] startRow,
     @Nullable final byte[] stopRow, QueryType type, int maxRows,
     final ClientMetaTableAccessor.Visitor visitor) throws IOException {
-    scanMeta(connection, startRow, stopRow, type, null, maxRows, visitor);
+    scanMeta(false, connection, startRow, stopRow, type, null, maxRows, visitor);
   }
 
   public static void scanMeta(Connection connection, @Nullable final byte[] startRow,
+    @Nullable final byte[] stopRow, QueryType type, @Nullable Filter filter, int maxRows,
+    final ClientMetaTableAccessor.Visitor visitor) throws IOException {
+    scanMeta(false, connection, startRow, stopRow, type, null, maxRows, visitor);
+  }
+
+  public static void scanMeta(boolean async, Connection connection, @Nullable final byte[] startRow,
     @Nullable final byte[] stopRow, QueryType type, @Nullable Filter filter, int maxRows,
     final ClientMetaTableAccessor.Visitor visitor) throws IOException {
     int rowUpperLimit = maxRows > 0 ? maxRows : Integer.MAX_VALUE;
@@ -494,12 +518,34 @@ public final class MetaTableAccessor {
           if (data.isEmpty()) {
             continue;
           }
-          // Break if visit returns false.
-          if (!visitor.visit(data)) {
-            break;
-          }
-          if (++currentRow >= rowUpperLimit) {
-            break;
+
+          if (!async) {
+            // Break if visit returns false.
+            if (!visitor.visit(data)) {
+              break;
+            }
+            if (++currentRow >= rowUpperLimit) {
+              break;
+            }
+          } else {
+            // creating a threadPool and submitting the visitors if 'async' is true
+            // note: not breaking in case of !visitor.visit(data) as this will always be true
+            // calling from regionStateStore's visitMeta().
+            ThreadFactoryBuilder builder = new ThreadFactoryBuilder();
+            builder.setDaemon(true);
+            builder.setNameFormat("MetaScanner" + "-%1$d");
+            ExecutorService metaScannerThreadPool = Executors.newFixedThreadPool(
+              connection.getConfiguration().getInt("hbase.assignment.meta.scanner.threads", 10),
+              builder.build());
+            Result finalData = data;
+            if (++currentRow >= rowUpperLimit) {
+              break;
+            }
+            try {
+              metaScannerThreadPool.submit(() -> visitor.visit(finalData));
+            } finally {
+              metaScannerThreadPool.shutdown();
+            }
           }
         }
       }
@@ -858,6 +904,7 @@ public final class MetaTableAccessor {
    * @param sn Server name
    * @param masterSystemTime wall clock time from master if passed in the open region RPC
    */
+  @VisibleForTesting
   public static void updateRegionLocation(Connection connection, RegionInfo regionInfo,
     ServerName sn, long openSeqNum, long masterSystemTime) throws IOException {
     updateLocation(connection, regionInfo, sn, openSeqNum, masterSystemTime);
