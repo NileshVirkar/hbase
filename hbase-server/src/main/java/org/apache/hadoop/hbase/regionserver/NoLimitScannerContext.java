@@ -36,7 +36,7 @@ import org.apache.yetus.audience.InterfaceStability;
 public class NoLimitScannerContext extends ScannerContext {
 
   public NoLimitScannerContext() {
-    super(false, null, false);
+    super(false, null, false, false);
   }
 
   /**

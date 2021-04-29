@@ -110,7 +110,17 @@ public class ScannerContext {
    */
   final ServerSideScanMetrics metrics;
 
-  ScannerContext(boolean keepProgress, LimitFields limitsToCopy, boolean trackMetrics) {
+  /**
+   * Set this be on will make the scanners prematurely return if the kvs scanned reach the count
+   * limit of per heart beat, though the top cell on the store heap may not match the return rules,
+   * e.g. out of date by ttl, should be skipped by delete marker.
+   * It can make both user-scanners and compaction scanners be aborted as soon as possible when
+   * region is closing. See HBASE-25709.
+   */
+  private boolean preventLoopReadEnabled = true;
+
+  ScannerContext(boolean keepProgress, LimitFields limitsToCopy, boolean trackMetrics,
+    boolean preventLoopReadEnabled) {
     this.limits = new LimitFields();
     if (limitsToCopy != null) {
       this.limits.copy(limitsToCopy);
@@ -122,10 +132,15 @@ public class ScannerContext {
     this.keepProgress = keepProgress;
     this.scannerState = DEFAULT_STATE;
     this.metrics = trackMetrics ? new ServerSideScanMetrics() : null;
+    this.preventLoopReadEnabled = preventLoopReadEnabled;
   }
 
   public boolean isTrackingMetrics() {
     return this.metrics != null;
+  }
+
+  public boolean isPreventLoopReadEnabled() {
+    return preventLoopReadEnabled;
   }
 
   /**
@@ -372,6 +387,7 @@ public class ScannerContext {
     boolean keepProgress = DEFAULT_KEEP_PROGRESS;
     boolean trackMetrics = false;
     LimitFields limits = new LimitFields();
+    boolean preventLoopReadEnabled = true;
 
     private Builder() {
     }
@@ -407,9 +423,13 @@ public class ScannerContext {
       limits.setBatch(batchLimit);
       return this;
     }
+    public Builder setPreventLoopReadEnabled(boolean enabled) {
+      this.preventLoopReadEnabled = enabled;
+      return this;
+    }
 
     public ScannerContext build() {
-      return new ScannerContext(keepProgress, limits, trackMetrics);
+      return new ScannerContext(keepProgress, limits, trackMetrics, preventLoopReadEnabled);
     }
   }
 
