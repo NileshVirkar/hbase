@@ -33,12 +33,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.LongAdder;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.CallQueueTooBigException;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
-import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.RequestIOCorruptionException;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.conf.ConfigurationObserver;
 import org.apache.hadoop.hbase.exceptions.RequestTooBigException;
@@ -46,9 +47,8 @@ import org.apache.hadoop.hbase.io.ByteBuffAllocator;
 import org.apache.hadoop.hbase.monitoring.MonitoredRPCHandler;
 import org.apache.hadoop.hbase.monitoring.TaskMonitor;
 import org.apache.hadoop.hbase.regionserver.RSRpcServices;
-import org.apache.hadoop.hbase.namequeues.RpcLogDetails;
-import org.apache.hadoop.hbase.namequeues.NamedQueueRecorder;
-import org.apache.hadoop.hbase.security.HBasePolicyProvider;
+import org.apache.hadoop.hbase.regionserver.slowlog.RpcLogDetails;
+import org.apache.hadoop.hbase.regionserver.slowlog.SlowLogRecorder;
 import org.apache.hadoop.hbase.security.SaslUtil;
 import org.apache.hadoop.hbase.security.SaslUtil.QualityOfProtection;
 import org.apache.hadoop.hbase.security.User;
@@ -59,7 +59,6 @@ import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.authorize.PolicyProvider;
-import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.security.authorize.ServiceAuthorizationManager;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.TokenIdentifier;
@@ -67,6 +66,7 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.gson.Gson;
 import org.apache.hbase.thirdparty.com.google.protobuf.BlockingService;
 import org.apache.hbase.thirdparty.com.google.protobuf.Descriptors.MethodDescriptor;
@@ -89,13 +89,16 @@ public abstract class RpcServer implements RpcServerInterface,
   public static final Logger LOG = LoggerFactory.getLogger(RpcServer.class);
   protected static final CallQueueTooBigException CALL_QUEUE_TOO_BIG_EXCEPTION
       = new CallQueueTooBigException();
+  protected static final RequestIOCorruptionException REQUEST_IO_MESS_UP_EXCEPTION
+      = new RequestIOCorruptionException();
 
   private static final String MULTI_GETS = "multi.gets";
   private static final String MULTI_MUTATIONS = "multi.mutations";
   private static final String MULTI_SERVICE_CALLS = "multi.service_calls";
+  private static final String GET_SLOW_LOG_RESPONSES = "GetSlowLogResponses";
+  private static final String CLEAR_SLOW_LOGS_RESPONSES = "ClearSlowLogsResponses";
 
   private final boolean authorize;
-  private final boolean isOnlineLogProviderEnabled;
   protected boolean isSecurityEnabled;
 
   public static final byte CURRENT_VERSION = 0;
@@ -120,6 +123,8 @@ public abstract class RpcServer implements RpcServerInterface,
   protected SecretManager<TokenIdentifier> secretManager;
   protected final Map<String, String> saslProps;
 
+  @edu.umd.cs.findbugs.annotations.SuppressWarnings(value="IS2_INCONSISTENT_SYNC",
+      justification="Start is synchronized so authManager creation is single-threaded")
   protected ServiceAuthorizationManager authManager;
 
   /** This is set to Call object before Handler invokes an RPC and ybdie
@@ -198,7 +203,7 @@ public abstract class RpcServer implements RpcServerInterface,
   protected static final String TRACE_LOG_MAX_LENGTH = "hbase.ipc.trace.log.max.length";
   protected static final String KEY_WORD_TRUNCATED = " <TRUNCATED>";
 
-  protected static final Gson GSON = GsonUtil.createGsonWithDisableHtmlEscaping().create();
+  protected static final Gson GSON = GsonUtil.createGson().create();
 
   protected final int maxRequestSize;
   protected final int warnResponseTime;
@@ -227,7 +232,7 @@ public abstract class RpcServer implements RpcServerInterface,
   /**
    * Use to add online slowlog responses
    */
-  private NamedQueueRecorder namedQueueRecorder;
+  private SlowLogRecorder slowLogRecorder;
 
   @FunctionalInterface
   protected interface CallCleanup {
@@ -302,8 +307,6 @@ public abstract class RpcServer implements RpcServerInterface,
       saslProps = Collections.emptyMap();
     }
 
-    this.isOnlineLogProviderEnabled = conf.getBoolean(HConstants.SLOW_LOG_BUFFER_ENABLED_KEY,
-      HConstants.DEFAULT_ONLINE_LOG_PROVIDER_ENABLED);
     this.scheduler = scheduler;
   }
 
@@ -312,9 +315,6 @@ public abstract class RpcServer implements RpcServerInterface,
     initReconfigurable(newConf);
     if (scheduler instanceof ConfigurationObserver) {
       ((ConfigurationObserver) scheduler).onConfigurationChange(newConf);
-    }
-    if (authorize) {
-      refreshAuthManager(newConf, new HBasePolicyProvider());
     }
   }
 
@@ -342,14 +342,12 @@ public abstract class RpcServer implements RpcServerInterface,
   }
 
   @Override
-  public synchronized void refreshAuthManager(Configuration conf, PolicyProvider pp) {
+  public void refreshAuthManager(PolicyProvider pp) {
     // Ignore warnings that this should be accessed in a static way instead of via an instance;
     // it'll break if you go via static route.
-    System.setProperty("hadoop.policy.file", "hbase-policy.xml");
-    this.authManager.refresh(conf, pp);
-    LOG.info("Refreshed hbase-policy.xml successfully");
-    ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
-    LOG.info("Refreshed super and proxy users successfully");
+    synchronized (authManager) {
+      authManager.refresh(this.conf, pp);
+    }
   }
 
   protected AuthenticationTokenSecretManager createSecretManager() {
@@ -432,13 +430,12 @@ public abstract class RpcServer implements RpcServerInterface,
           tooLarge, tooSlow,
           status.getClient(), startTime, processingTime, qTime,
           responseSize, userName);
-        if (this.namedQueueRecorder != null && this.isOnlineLogProviderEnabled) {
+        if (tooSlow && this.slowLogRecorder != null) {
           // send logs to ring buffer owned by slowLogRecorder
-          final String className =
-            server == null ? StringUtils.EMPTY : server.getClass().getSimpleName();
-          this.namedQueueRecorder.addRecord(
-            new RpcLogDetails(call, param, status.getClient(), responseSize, className, tooSlow,
-              tooLarge));
+          final String className = server == null ? StringUtils.EMPTY :
+            server.getClass().getSimpleName();
+          this.slowLogRecorder.addSlowLogPayload(
+            new RpcLogDetails(call, status.getClient(), responseSize, className));
         }
       }
       return new Pair<>(result, controller.cellScanner());
@@ -504,15 +501,12 @@ public abstract class RpcServer implements RpcServerInterface,
     responseInfo.put("param", stringifiedParam);
     if (param instanceof ClientProtos.ScanRequest && rsRpcServices != null) {
       ClientProtos.ScanRequest request = ((ClientProtos.ScanRequest) param);
-      String scanDetails;
       if (request.hasScannerId()) {
         long scannerId = request.getScannerId();
-        scanDetails = rsRpcServices.getScanDetailsWithId(scannerId);
-      } else {
-        scanDetails = rsRpcServices.getScanDetailsWithRequest(request);
-      }
-      if (scanDetails != null) {
-        responseInfo.put("scandetails", scanDetails);
+        String scanDetails = rsRpcServices.getScanDetailsWithId(scannerId);
+        if (scanDetails != null) {
+          responseInfo.put("scandetails", scanDetails);
+        }
       }
     }
     if (param instanceof ClientProtos.MultiRequest) {
@@ -549,6 +543,7 @@ public abstract class RpcServer implements RpcServerInterface,
    * @param strParam stringifiedParam to be truncated
    * @return truncated trace log string
    */
+  @VisibleForTesting
   String truncateTraceLog(String strParam) {
     if (LOG.isTraceEnabled()) {
       int traceLogMaxLength = getConf().getInt(TRACE_LOG_MAX_LENGTH, DEFAULT_TRACE_LOG_MAX_LENGTH);
@@ -594,11 +589,13 @@ public abstract class RpcServer implements RpcServerInterface,
    * @param addr InetAddress of incoming connection
    * @throws AuthorizationException when the client isn't authorized to talk the protocol
    */
-  public synchronized void authorize(UserGroupInformation user, ConnectionHeader connection,
+  public void authorize(UserGroupInformation user, ConnectionHeader connection,
       InetAddress addr) throws AuthorizationException {
     if (authorize) {
       Class<?> c = getServiceInterface(services, connection.getServiceName());
-      authManager.authorize(user, c, getConf(), addr);
+      synchronized (authManager) {
+        authManager.authorize(user, c, getConf(), addr);
+      }
     }
   }
 
@@ -683,27 +680,6 @@ public abstract class RpcServer implements RpcServerInterface,
 
   public static boolean isInRpcCallContext() {
     return CurCall.get() != null;
-  }
-
-  /**
-   * Used by {@link org.apache.hadoop.hbase.procedure2.store.region.RegionProcedureStore}. For
-   * master's rpc call, it may generate new procedure and mutate the region which store procedure.
-   * There are some check about rpc when mutate region, such as rpc timeout check. So unset the rpc
-   * call to avoid the rpc check.
-   * @return the currently ongoing rpc call
-   */
-  public static Optional<RpcCall> unsetCurrentCall() {
-    Optional<RpcCall> rpcCall = getCurrentCall();
-    CurCall.set(null);
-    return rpcCall;
-  }
-
-  /**
-   * Used by {@link org.apache.hadoop.hbase.procedure2.store.region.RegionProcedureStore}. Set the
-   * rpc call back after mutate region.
-   */
-  public static void setCurrentCall(RpcCall rpcCall) {
-    CurCall.set(rpcCall);
   }
 
   /**
@@ -818,11 +794,12 @@ public abstract class RpcServer implements RpcServerInterface,
   }
 
   @Override
-  public void setNamedQueueRecorder(NamedQueueRecorder namedQueueRecorder) {
-    this.namedQueueRecorder = namedQueueRecorder;
+  public void setSlowLogRecorder(SlowLogRecorder slowLogRecorder) {
+    this.slowLogRecorder = slowLogRecorder;
   }
 
-  protected boolean needAuthorization() {
-    return authorize;
+  @Override
+  public SlowLogRecorder getSlowLogRecorder() {
+    return slowLogRecorder;
   }
 }

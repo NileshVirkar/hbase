@@ -19,11 +19,6 @@ package org.apache.hadoop.hbase.ipc;
 
 import static org.apache.hadoop.hbase.HConstants.RPC_HEADER;
 
-import io.opentelemetry.api.GlobalOpenTelemetry;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
-import io.opentelemetry.context.propagation.TextMapGetter;
 import java.io.ByteArrayInputStream;
 import java.io.Closeable;
 import java.io.DataOutputStream;
@@ -36,11 +31,13 @@ import java.nio.channels.ReadableByteChannel;
 import java.security.GeneralSecurityException;
 import java.util.Objects;
 import java.util.Properties;
+
 import org.apache.commons.crypto.cipher.CryptoCipherFactory;
 import org.apache.commons.crypto.random.CryptoRandom;
 import org.apache.commons.crypto.random.CryptoRandomFactory;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
+import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.hadoop.hbase.client.VersionInfoUtil;
 import org.apache.hadoop.hbase.codec.Codec;
 import org.apache.hadoop.hbase.io.ByteBufferOutputStream;
@@ -56,7 +53,21 @@ import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.provider.SaslServerAuthenticationProvider;
 import org.apache.hadoop.hbase.security.provider.SaslServerAuthenticationProviders;
 import org.apache.hadoop.hbase.security.provider.SimpleSaslServerAuthenticationProvider;
-import org.apache.hadoop.hbase.trace.TraceUtil;
+import org.apache.hbase.thirdparty.com.google.protobuf.BlockingService;
+import org.apache.hbase.thirdparty.com.google.protobuf.ByteInput;
+import org.apache.hbase.thirdparty.com.google.protobuf.ByteString;
+import org.apache.hbase.thirdparty.com.google.protobuf.CodedInputStream;
+import org.apache.hbase.thirdparty.com.google.protobuf.Descriptors.MethodDescriptor;
+import org.apache.hbase.thirdparty.com.google.protobuf.Message;
+import org.apache.hbase.thirdparty.com.google.protobuf.TextFormat;
+import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
+import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.VersionInfo;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.ConnectionHeader;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.RequestHeader;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.ResponseHeader;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.UserInformation;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.IntWritable;
@@ -68,25 +79,6 @@ import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.security.token.SecretManager.InvalidToken;
-import org.apache.yetus.audience.InterfaceAudience;
-
-import org.apache.hbase.thirdparty.com.google.protobuf.BlockingService;
-import org.apache.hbase.thirdparty.com.google.protobuf.ByteInput;
-import org.apache.hbase.thirdparty.com.google.protobuf.ByteString;
-import org.apache.hbase.thirdparty.com.google.protobuf.CodedInputStream;
-import org.apache.hbase.thirdparty.com.google.protobuf.Descriptors.MethodDescriptor;
-import org.apache.hbase.thirdparty.com.google.protobuf.Message;
-import org.apache.hbase.thirdparty.com.google.protobuf.TextFormat;
-import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
-
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.VersionInfo;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.ConnectionHeader;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.RequestHeader;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.ResponseHeader;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.RPCProtos.UserInformation;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.TracingProtos.RPCTInfo;
 
 /** Reads calls from a connection and queues them for handling. */
 @edu.umd.cs.findbugs.annotations.SuppressWarnings(
@@ -356,14 +348,9 @@ abstract class ServerRpcConnection implements Closeable {
       byte[] replyToken;
       try {
         if (saslServer == null) {
-          try {
-            saslServer =
-              new HBaseSaslRpcServer(provider, rpcServer.saslProps, rpcServer.secretManager);
-          } catch (Exception e){
-            RpcServer.LOG.error("Error when trying to create instance of HBaseSaslRpcServer "
-              + "with sasl provider: " + provider, e);
-            throw e;
-          }
+          saslServer =
+              new HBaseSaslRpcServer(
+                  rpcServer.getConf(), provider, rpcServer.saslProps, rpcServer.secretManager);
           RpcServer.LOG.debug("Created SASL server with mechanism={}",
               provider.getSaslAuthMethod().getAuthMethod());
         }
@@ -387,7 +374,7 @@ abstract class ServerRpcConnection implements Closeable {
         String clientIP = this.toString();
         // attempting user could be null
         RpcServer.AUDITLOG
-            .warn("{}{}: {}", RpcServer.AUTH_FAILED_FOR, clientIP, saslServer.getAttemptingUser());
+            .warn("{} {}: {}", RpcServer.AUTH_FAILED_FOR, clientIP, saslServer.getAttemptingUser());
         throw e;
       }
       if (replyToken != null) {
@@ -457,7 +444,7 @@ abstract class ServerRpcConnection implements Closeable {
     } else {
       processConnectionHeader(buf);
       this.connectionHeaderRead = true;
-      if (rpcServer.needAuthorization() && !authorizeConnection()) {
+      if (!authorizeConnection()) {
         // Throw FatalConnectionException wrapping ACE so client does right thing and closes
         // down the connection instead of trying to read non-existent retun.
         throw new AccessDeniedException("Connection from " + this + " for service " +
@@ -495,9 +482,7 @@ abstract class ServerRpcConnection implements Closeable {
     if (buf.hasArray()) {
       this.connectionHeader = ConnectionHeader.parseFrom(buf.array());
     } else {
-      CodedInputStream cis = UnsafeByteOperations.unsafeWrap(
-          new ByteBuffByteInput(buf, 0, buf.limit()), 0, buf.limit()).newCodedInput();
-      cis.enableAliasing(true);
+      CodedInputStream cis = getCodedInputStream(buf);
       this.connectionHeader = ConnectionHeader.parseFrom(cis);
     }
     String serviceName = connectionHeader.getServiceName();
@@ -588,6 +573,21 @@ abstract class ServerRpcConnection implements Closeable {
   protected abstract void doRespond(RpcResponse resp) throws IOException;
 
   /**
+   * get CodedInputStream from ByteBuff
+   */
+  protected CodedInputStream getCodedInputStream(ByteBuff buf) {
+    CodedInputStream cis;
+    if (buf.hasArray()) {
+      cis = UnsafeByteOperations.unsafeWrap(buf.array(), 0, buf.limit()).newCodedInput();
+    } else {
+      cis = UnsafeByteOperations
+          .unsafeWrap(new ByteBuffByteInput(buf, 0, buf.limit()), 0, buf.limit()).newCodedInput();
+    }
+    cis.enableAliasing(true);
+    return cis;
+  }
+
+  /**
    * @param buf
    *          Has the request header and the request param and optionally
    *          encoded data buffer all in this one array.
@@ -601,128 +601,106 @@ abstract class ServerRpcConnection implements Closeable {
     // Here we read in the header. We avoid having pb
     // do its default 4k allocation for CodedInputStream. We force it to use
     // backing array.
-    CodedInputStream cis;
-    if (buf.hasArray()) {
-      cis = UnsafeByteOperations.unsafeWrap(buf.array(), 0, buf.limit()).newCodedInput();
-    } else {
-      cis = UnsafeByteOperations
-          .unsafeWrap(new ByteBuffByteInput(buf, 0, buf.limit()), 0, buf.limit()).newCodedInput();
-    }
-    cis.enableAliasing(true);
+    CodedInputStream cis = getCodedInputStream(buf);
     int headerSize = cis.readRawVarint32();
     offset = cis.getTotalBytesRead();
     Message.Builder builder = RequestHeader.newBuilder();
     ProtobufUtil.mergeFrom(builder, cis, headerSize);
     RequestHeader header = (RequestHeader) builder.build();
     offset += headerSize;
-    TextMapGetter<RPCTInfo> getter = new TextMapGetter<RPCTInfo>() {
-
-      @Override
-      public Iterable<String> keys(RPCTInfo carrier) {
-        return carrier.getHeadersMap().keySet();
-      }
-
-      @Override
-      public String get(RPCTInfo carrier, String key) {
-        return carrier.getHeadersMap().get(key);
-      }
-    };
-    Context traceCtx = GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
-      .extract(Context.current(), header.getTraceInfo(), getter);
-    Span span = TraceUtil.createRemoteSpan("RpcServer.process", traceCtx);
-    try (Scope scope = span.makeCurrent()) {
-      int id = header.getCallId();
-      if (RpcServer.LOG.isTraceEnabled()) {
-        RpcServer.LOG.trace("RequestHeader " + TextFormat.shortDebugString(header) +
-          " totalRequestSize: " + totalRequestSize + " bytes");
-      }
-      // Enforcing the call queue size, this triggers a retry in the client
-      // This is a bit late to be doing this check - we have already read in the
-      // total request.
-      if ((totalRequestSize +
+    int id = header.getCallId();
+    if (RpcServer.LOG.isTraceEnabled()) {
+      RpcServer.LOG.trace("RequestHeader " + TextFormat.shortDebugString(header)
+          + " totalRequestSize: " + totalRequestSize + " bytes");
+    }
+    // Enforcing the call queue size, this triggers a retry in the client
+    // This is a bit late to be doing this check - we have already read in the
+    // total request.
+    if ((totalRequestSize +
         this.rpcServer.callQueueSizeInBytes.sum()) > this.rpcServer.maxQueueSizeInBytes) {
-        final ServerCall<?> callTooBig = createCall(id, this.service, null, null, null, null,
-          totalRequestSize, null, 0, this.callCleanup);
-        this.rpcServer.metrics.exception(RpcServer.CALL_QUEUE_TOO_BIG_EXCEPTION);
-        callTooBig.setResponse(null, null, RpcServer.CALL_QUEUE_TOO_BIG_EXCEPTION,
-          "Call queue is full on " + this.rpcServer.server.getServerName() +
-            ", is hbase.ipc.server.max.callqueue.size too small?");
-        callTooBig.sendResponseIfReady();
-        return;
+      final ServerCall<?> callTooBig = createCall(id, this.service, null, null, null, null,
+        totalRequestSize, null, 0, this.callCleanup);
+      this.rpcServer.metrics.exception(RpcServer.CALL_QUEUE_TOO_BIG_EXCEPTION);
+      callTooBig.setResponse(null, null,  RpcServer.CALL_QUEUE_TOO_BIG_EXCEPTION,
+        "Call queue is full on " + this.rpcServer.server.getServerName() +
+        ", is hbase.ipc.server.max.callqueue.size too small?");
+      callTooBig.sendResponseIfReady();
+      return;
+    }
+    MethodDescriptor md = null;
+    Message param = null;
+    CellScanner cellScanner = null;
+    try {
+      if (header.hasRequestParam() && header.getRequestParam()) {
+        md = this.service.getDescriptorForType().findMethodByName(
+            header.getMethodName());
+        if (md == null)
+          throw new UnsupportedOperationException(header.getMethodName());
+        builder = this.service.getRequestPrototype(md).newBuilderForType();
+        cis.resetSizeCounter();
+        int paramSize = cis.readRawVarint32();
+        offset += cis.getTotalBytesRead();
+        if (builder != null) {
+          ProtobufUtil.mergeFrom(builder, cis, paramSize);
+          param = builder.build();
+        }
+        offset += paramSize;
+      } else {
+        // currently header must have request param, so we directly throw
+        // exception here
+        String msg = "Invalid request header: "
+            + TextFormat.shortDebugString(header)
+            + ", should have param set in it";
+        RpcServer.LOG.warn(msg);
+        throw new DoNotRetryIOException(msg);
       }
-      MethodDescriptor md = null;
-      Message param = null;
-      CellScanner cellScanner = null;
-      try {
-        if (header.hasRequestParam() && header.getRequestParam()) {
-          md = this.service.getDescriptorForType().findMethodByName(header.getMethodName());
-          if (md == null) {
-            throw new UnsupportedOperationException(header.getMethodName());
-          }
-          builder = this.service.getRequestPrototype(md).newBuilderForType();
-          cis.resetSizeCounter();
-          int paramSize = cis.readRawVarint32();
-          offset += cis.getTotalBytesRead();
-          if (builder != null) {
-            ProtobufUtil.mergeFrom(builder, cis, paramSize);
-            param = builder.build();
-          }
-          offset += paramSize;
-        } else {
-          // currently header must have request param, so we directly throw
-          // exception here
-          String msg = "Invalid request header: " + TextFormat.shortDebugString(header) +
-            ", should have param set in it";
-          RpcServer.LOG.warn(msg);
-          throw new DoNotRetryIOException(msg);
-        }
-        if (header.hasCellBlockMeta()) {
-          buf.position(offset);
-          ByteBuff dup = buf.duplicate();
-          dup.limit(offset + header.getCellBlockMeta().getLength());
-          cellScanner = this.rpcServer.cellBlockBuilder.createCellScannerReusingBuffers(this.codec,
-            this.compressionCodec, dup);
-        }
-      } catch (Throwable t) {
-        InetSocketAddress address = this.rpcServer.getListenerAddress();
-        String msg = (address != null ? address : "(channel closed)") +
-          " is unable to read call parameter from client " + getHostAddress();
-        RpcServer.LOG.warn(msg, t);
+      if (header.hasCellBlockMeta()) {
+        buf.position(offset);
+        ByteBuff dup = buf.duplicate();
+        dup.limit(offset + header.getCellBlockMeta().getLength());
+        cellScanner = this.rpcServer.cellBlockBuilder.createCellScannerReusingBuffers(
+            this.codec, this.compressionCodec, dup);
+      }
+    } catch (Throwable t) {
+      InetSocketAddress address = this.rpcServer.getListenerAddress();
+      String msg = (address != null ? address : "(channel closed)")
+          + " is unable to read call parameter from client "
+          + getHostAddress();
+      RpcServer.LOG.warn(msg, t);
 
-        this.rpcServer.metrics.exception(t);
+      this.rpcServer.metrics.exception(t);
 
-        // probably the hbase hadoop version does not match the running hadoop
-        // version
-        if (t instanceof LinkageError) {
-          t = new DoNotRetryIOException(t);
-        }
-        // If the method is not present on the server, do not retry.
-        if (t instanceof UnsupportedOperationException) {
-          t = new DoNotRetryIOException(t);
-        }
-
-        ServerCall<?> readParamsFailedCall = createCall(id, this.service, null, null, null, null,
-          totalRequestSize, null, 0, this.callCleanup);
-        readParamsFailedCall.setResponse(null, null, t, msg + "; " + t.getMessage());
-        readParamsFailedCall.sendResponseIfReady();
-        return;
+      // probably the hbase hadoop version does not match the running hadoop
+      // version
+      if (t instanceof LinkageError) {
+        t = new DoNotRetryIOException(t);
+      }
+      // If the method is not present on the server, do not retry.
+      if (t instanceof UnsupportedOperationException) {
+        t = new DoNotRetryIOException(t);
       }
 
-      int timeout = 0;
-      if (header.hasTimeout() && header.getTimeout() > 0) {
-        timeout = Math.max(this.rpcServer.minClientRequestTimeout, header.getTimeout());
-      }
-      ServerCall<?> call = createCall(id, this.service, md, header, param, cellScanner,
-        totalRequestSize, this.addr, timeout, this.callCleanup);
+      ServerCall<?> readParamsFailedCall = createCall(id, this.service, null, null, null, null,
+        totalRequestSize, null, 0, this.callCleanup);
+      readParamsFailedCall.setResponse(null, null, t, msg + "; " + t.getMessage());
+      readParamsFailedCall.sendResponseIfReady();
+      return;
+    }
 
-      if (!this.rpcServer.scheduler.dispatch(new CallRunner(this.rpcServer, call))) {
-        this.rpcServer.callQueueSizeInBytes.add(-1 * call.getSize());
-        this.rpcServer.metrics.exception(RpcServer.CALL_QUEUE_TOO_BIG_EXCEPTION);
-        call.setResponse(null, null, RpcServer.CALL_QUEUE_TOO_BIG_EXCEPTION,
-          "Call queue is full on " + this.rpcServer.server.getServerName() +
+    int timeout = 0;
+    if (header.hasTimeout() && header.getTimeout() > 0) {
+      timeout = Math.max(this.rpcServer.minClientRequestTimeout, header.getTimeout());
+    }
+    ServerCall<?> call = createCall(id, this.service, md, header, param, cellScanner, totalRequestSize,
+      this.addr, timeout, this.callCleanup);
+
+    if (!this.rpcServer.scheduler.dispatch(new CallRunner(this.rpcServer, call))) {
+      this.rpcServer.callQueueSizeInBytes.add(-1 * call.getSize());
+      this.rpcServer.metrics.exception(RpcServer.CALL_QUEUE_TOO_BIG_EXCEPTION);
+      call.setResponse(null, null, RpcServer.CALL_QUEUE_TOO_BIG_EXCEPTION,
+        "Call queue is full on " + this.rpcServer.server.getServerName() +
             ", too many items queued ?");
-        call.sendResponseIfReady();
-      }
+      call.sendResponseIfReady();
     }
   }
 
@@ -803,7 +781,7 @@ abstract class ServerRpcConnection implements Closeable {
       RequestHeader header, Message param, CellScanner cellScanner, long size,
       InetAddress remoteAddress, int timeout, CallCleanup reqCleanup);
 
-  private static class ByteBuffByteInput extends ByteInput {
+  static class ByteBuffByteInput extends ByteInput {
 
     private ByteBuff buf;
     private int offset;
