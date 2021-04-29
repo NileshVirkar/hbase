@@ -459,7 +459,8 @@ public class MasterRpcServices extends RSRpcServices implements
       final String name) throws IOException {
     final Configuration conf = regionServer.getConfiguration();
     // RpcServer at HM by default enable ByteBufferPool iff HM having user table region in it
-    boolean reservoirEnabled = conf.getBoolean(ByteBuffAllocator.ALLOCATOR_POOL_ENABLED_KEY, false);
+    boolean reservoirEnabled = conf.getBoolean(ByteBuffAllocator.ALLOCATOR_POOL_ENABLED_KEY,
+      LoadBalancer.isMasterCanHostUserRegions(conf));
     try {
       return RpcServerFactory.createRpcServer(server, name, getServices(),
           bindAddress, // use final bindAddress for this server.
@@ -962,12 +963,6 @@ public class MasterRpcServices extends RSRpcServices implements
       if (execController.getFailedOn() != null) {
         throw execController.getFailedOn();
       }
-
-      String remoteAddress = RpcServer.getRemoteAddress().map(InetAddress::toString).orElse("");
-      User caller = RpcServer.getRequestUser().orElse(null);
-      AUDITLOG.info("User {} (remote address: {}) master service request for {}.{}", caller,
-        remoteAddress, serviceName, methodName);
-
       return CoprocessorRpcUtils.getResponse(execResult, HConstants.EMPTY_BYTE_ARRAY);
     } catch (IOException ie) {
       throw new ServiceException(ie);
@@ -1469,7 +1464,8 @@ public class MasterRpcServices extends RSRpcServices implements
         ProtobufUtil.toTableName(req.getTableName()),
         ProtobufUtil.toTableDescriptor(req.getTableSchema()),
         req.getNonceGroup(),
-        req.getNonce());
+        req.getNonce(),
+        req.getLazyMode());
       return ModifyTableResponse.newBuilder().setProcId(procId).build();
     } catch (IOException ioe) {
       throw new ServiceException(ioe);
@@ -2734,31 +2730,6 @@ public class MasterRpcServices extends RSRpcServices implements
       }
     }
     return MasterProtos.ScheduleServerCrashProcedureResponse.newBuilder().addAllPid(pids).build();
-  }
-
-  @Override
-  public MasterProtos.ScheduleSCPsForUnknownServersResponse scheduleSCPsForUnknownServers(
-      RpcController controller, MasterProtos.ScheduleSCPsForUnknownServersRequest request)
-      throws ServiceException {
-
-    List<Long> pids = new ArrayList<>();
-    final Set<ServerName> serverNames =
-      master.getAssignmentManager().getRegionStates().getRegionStates().stream()
-        .map(RegionState::getServerName).collect(Collectors.toSet());
-
-    final Set<ServerName> unknownServerNames = serverNames.stream()
-      .filter(sn -> master.getServerManager().isServerUnknown(sn)).collect(Collectors.toSet());
-
-    for (ServerName sn: unknownServerNames) {
-      LOG.info("{} schedule ServerCrashProcedure for unknown {}",
-        this.master.getClientIdAuditPrefix(), sn);
-      if (shouldSubmitSCP(sn)) {
-        pids.add(this.master.getServerManager().expireServer(sn, true));
-      } else {
-        pids.add(Procedure.NO_PROC_ID);
-      }
-    }
-    return MasterProtos.ScheduleSCPsForUnknownServersResponse.newBuilder().addAllPid(pids).build();
   }
 
   @Override

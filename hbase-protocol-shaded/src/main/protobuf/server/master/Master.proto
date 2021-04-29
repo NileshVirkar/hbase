@@ -194,6 +194,7 @@ message ModifyTableRequest {
   required TableSchema table_schema = 2;
   optional uint64 nonce_group = 3 [default = 0];
   optional uint64 nonce = 4 [default = 0];
+  optional bool lazy_mode = 5 [default = false];
 }
 
 message ModifyTableResponse {
@@ -1225,12 +1226,6 @@ message ScheduleServerCrashProcedureResponse {
   repeated uint64 pid = 1;
 }
 
-message ScheduleSCPsForUnknownServersRequest {}
-
-message ScheduleSCPsForUnknownServersResponse {
-  repeated uint64 pid = 1;
-}
-
 message FixMetaRequest {}
 
 message FixMetaResponse {}
@@ -1269,10 +1264,6 @@ service HbckService {
   /** Schedule a ServerCrashProcedure to help recover a crash server */
   rpc ScheduleServerCrashProcedure(ScheduleServerCrashProcedureRequest)
     returns(ScheduleServerCrashProcedureResponse);
-
-  /** Schedule a ServerCrashProcedure for unknown servers */
-  rpc ScheduleSCPsForUnknownServers(ScheduleSCPsForUnknownServersRequest)
-    returns(ScheduleSCPsForUnknownServersResponse);
 
   /**
    * Request HBCK chore to run at master side.
