@@ -75,7 +75,6 @@ import org.apache.hadoop.hbase.ipc.RpcServerInterface;
 import org.apache.hadoop.hbase.ipc.ServerNotRunningYetException;
 import org.apache.hadoop.hbase.ipc.ServerRpcController;
 import org.apache.hadoop.hbase.master.assignment.RegionStates;
-import org.apache.hadoop.hbase.master.assignment.TransitRegionStateProcedure;
 import org.apache.hadoop.hbase.master.janitor.MetaFixer;
 import org.apache.hadoop.hbase.master.locking.LockProcedure;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
@@ -263,6 +262,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListNamesp
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListNamespaceDescriptorsResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListNamespacesRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListNamespacesResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListReplicationSinkServersRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListReplicationSinkServersResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListTableDescriptorsByNamespaceRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListTableDescriptorsByNamespaceResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ListTableNamesByNamespaceRequest;
@@ -399,6 +400,9 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.Trans
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.TransitReplicationPeerSyncReplicationStateResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.UpdateReplicationPeerConfigRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.UpdateReplicationPeerConfigResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationServerStatusProtos.ReplicationServerReportRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationServerStatusProtos.ReplicationServerReportResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationServerStatusProtos.ReplicationServerStatusService;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.VisibilityLabelsService;
 
@@ -410,7 +414,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.
 public class MasterRpcServices extends RSRpcServices implements
     MasterService.BlockingInterface, RegionServerStatusService.BlockingInterface,
     LockService.BlockingInterface, HbckService.BlockingInterface,
-    ClientMetaService.BlockingInterface {
+    ClientMetaService.BlockingInterface, ReplicationServerStatusService.BlockingInterface {
 
   private static final Logger LOG = LoggerFactory.getLogger(MasterRpcServices.class.getName());
   private static final Logger AUDITLOG =
@@ -459,7 +463,8 @@ public class MasterRpcServices extends RSRpcServices implements
       final String name) throws IOException {
     final Configuration conf = regionServer.getConfiguration();
     // RpcServer at HM by default enable ByteBufferPool iff HM having user table region in it
-    boolean reservoirEnabled = conf.getBoolean(ByteBuffAllocator.ALLOCATOR_POOL_ENABLED_KEY, false);
+    boolean reservoirEnabled = conf.getBoolean(ByteBuffAllocator.ALLOCATOR_POOL_ENABLED_KEY,
+      LoadBalancer.isMasterCanHostUserRegions(conf));
     try {
       return RpcServerFactory.createRpcServer(server, name, getServices(),
           bindAddress, // use final bindAddress for this server.
@@ -543,7 +548,7 @@ public class MasterRpcServices extends RSRpcServices implements
    */
   @Override
   protected List<BlockingServiceAndInterface> getServices() {
-    List<BlockingServiceAndInterface> bssi = new ArrayList<>(5);
+    List<BlockingServiceAndInterface> bssi = new ArrayList<>(6);
     bssi.add(new BlockingServiceAndInterface(
         MasterService.newReflectiveBlockingService(this),
         MasterService.BlockingInterface.class));
@@ -556,6 +561,9 @@ public class MasterRpcServices extends RSRpcServices implements
         HbckService.BlockingInterface.class));
     bssi.add(new BlockingServiceAndInterface(ClientMetaService.newReflectiveBlockingService(this),
         ClientMetaService.BlockingInterface.class));
+    bssi.add(new BlockingServiceAndInterface(
+        ReplicationServerStatusService.newReflectiveBlockingService(this),
+        ReplicationServerStatusService.BlockingInterface.class));
     bssi.addAll(super.getServices());
     return bssi;
   }
@@ -962,12 +970,6 @@ public class MasterRpcServices extends RSRpcServices implements
       if (execController.getFailedOn() != null) {
         throw execController.getFailedOn();
       }
-
-      String remoteAddress = RpcServer.getRemoteAddress().map(InetAddress::toString).orElse("");
-      User caller = RpcServer.getRequestUser().orElse(null);
-      AUDITLOG.info("User {} (remote address: {}) master service request for {}.{}", caller,
-        remoteAddress, serviceName, methodName);
-
       return CoprocessorRpcUtils.getResponse(execResult, HConstants.EMPTY_BYTE_ARRAY);
     } catch (IOException ie) {
       throw new ServiceException(ie);
@@ -2737,31 +2739,6 @@ public class MasterRpcServices extends RSRpcServices implements
   }
 
   @Override
-  public MasterProtos.ScheduleSCPsForUnknownServersResponse scheduleSCPsForUnknownServers(
-      RpcController controller, MasterProtos.ScheduleSCPsForUnknownServersRequest request)
-      throws ServiceException {
-
-    List<Long> pids = new ArrayList<>();
-    final Set<ServerName> serverNames =
-      master.getAssignmentManager().getRegionStates().getRegionStates().stream()
-        .map(RegionState::getServerName).collect(Collectors.toSet());
-
-    final Set<ServerName> unknownServerNames = serverNames.stream()
-      .filter(sn -> master.getServerManager().isServerUnknown(sn)).collect(Collectors.toSet());
-
-    for (ServerName sn: unknownServerNames) {
-      LOG.info("{} schedule ServerCrashProcedure for unknown {}",
-        this.master.getClientIdAuditPrefix(), sn);
-      if (shouldSubmitSCP(sn)) {
-        pids.add(this.master.getServerManager().expireServer(sn, true));
-      } else {
-        pids.add(Procedure.NO_PROC_ID);
-      }
-    }
-    return MasterProtos.ScheduleSCPsForUnknownServersResponse.newBuilder().addAllPid(pids).build();
-  }
-
-  @Override
   public FixMetaResponse fixMeta(RpcController controller, FixMetaRequest request)
       throws ServiceException {
     rpcPreCheck("fixMeta");
@@ -3423,4 +3400,54 @@ public class MasterRpcServices extends RSRpcServices implements
       .addAllBalancerDecision(balancerDecisions).build();
   }
 
+  @Override
+  public ListReplicationSinkServersResponse listReplicationSinkServers(
+    RpcController controller, ListReplicationSinkServersRequest request)
+    throws ServiceException {
+    ListReplicationSinkServersResponse.Builder builder =
+      ListReplicationSinkServersResponse.newBuilder();
+    try {
+      if (master.getMasterCoprocessorHost() != null) {
+        master.getMasterCoprocessorHost().preListReplicationSinkServers();
+      }
+      builder.addAllServerName(master.listReplicationSinkServers().stream()
+        .map(ProtobufUtil::toServerName).collect(Collectors.toList()));
+      if (master.getMasterCoprocessorHost() != null) {
+        master.getMasterCoprocessorHost().postListReplicationSinkServers();
+      }
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return builder.build();
+  }
+
+  @Override
+  public ReplicationServerReportResponse replicationServerReport(RpcController controller,
+    ReplicationServerReportRequest request) throws ServiceException {
+    try {
+      master.checkServiceStarted();
+      int versionNumber = 0;
+      String version = "0.0.0";
+      VersionInfo versionInfo = VersionInfoUtil.getCurrentClientVersionInfo();
+      if (versionInfo != null) {
+        version = versionInfo.getVersion();
+        versionNumber = VersionInfoUtil.getVersionNumber(versionInfo);
+      }
+      ClusterStatusProtos.ServerLoad sl = request.getLoad();
+      ServerName serverName = ProtobufUtil.toServerName(request.getServer());
+      ServerMetrics oldMetrics = master.getReplicationServerManager().getServerMetrics(serverName);
+      ServerMetrics newMetrics =
+        ServerMetricsBuilder.toServerMetrics(serverName, versionNumber, version, sl);
+      Set<String> queueNodes = request.getQueueNodeList().stream().collect(Collectors.toSet());
+      master.getReplicationServerManager().serverReport(serverName, newMetrics, queueNodes);
+      if (sl != null && master.metricsMaster != null) {
+        // Up our metrics.
+        master.metricsMaster.incrementRequests(sl.getTotalNumberOfRequests()
+          - (oldMetrics != null ? oldMetrics.getRequestCount() : 0));
+      }
+    } catch (IOException ioe) {
+      throw new ServiceException(ioe);
+    }
+    return ReplicationServerReportResponse.newBuilder().build();
+  }
 }

@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.NavigableSet;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeMap;
@@ -46,7 +47,9 @@ import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.ClusterId;
+import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
@@ -56,7 +59,9 @@ import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
+import org.apache.hadoop.hbase.client.AsyncClusterConnection;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.TableDescriptor;
@@ -67,7 +72,9 @@ import org.apache.hadoop.hbase.replication.ReplicationFactory;
 import org.apache.hadoop.hbase.replication.ReplicationPeer;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeers;
+import org.apache.hadoop.hbase.replication.ReplicationQueueInfo;
 import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
+import org.apache.hadoop.hbase.replication.ReplicationSourceController;
 import org.apache.hadoop.hbase.replication.ReplicationSourceDummy;
 import org.apache.hadoop.hbase.replication.ReplicationStorageFactory;
 import org.apache.hadoop.hbase.replication.ReplicationUtils;
@@ -80,7 +87,6 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.JVMClusterUtil;
-import org.apache.hadoop.hbase.util.MockServer;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.wal.WALEdit;
@@ -332,8 +338,9 @@ public abstract class TestReplicationSourceManager {
     when(source.getQueueId()).thenReturn("1");
     when(source.isRecovered()).thenReturn(false);
     when(source.isSyncReplication()).thenReturn(false);
-    manager.logPositionAndCleanOldLogs(source,
-      new WALEntryBatch(0, manager.getSources().get(0).getCurrentPath()));
+    WALEntryBatch batch = new WALEntryBatch(0, manager.getSources().get(0).getCurrentPath());
+    source.setWALPosition(batch);
+    source.cleanOldWALs(batch.getLastWalPath().getName(), batch.isEndOfFile());
 
     wal.appendData(hri,
       new WALKeyImpl(hri.getEncodedNameAsBytes(), test, System.currentTimeMillis(), mvcc, scopes),
@@ -407,11 +414,11 @@ public abstract class TestReplicationSourceManager {
     assertEquals(1, manager.getWalsByIdRecoveredQueues().size());
     String id = "1-" + server.getServerName().getServerName();
     assertEquals(files, manager.getWalsByIdRecoveredQueues().get(id).get(group));
-    ReplicationSourceInterface source = mock(ReplicationSourceInterface.class);
-    when(source.getQueueId()).thenReturn(id);
-    when(source.isRecovered()).thenReturn(true);
-    when(source.isSyncReplication()).thenReturn(false);
-    manager.cleanOldLogs(file2, false, source);
+    ReplicationSourceInterface source = new ReplicationSource();
+    source.init(conf, fs, null, manager, manager.getQueueStorage(), rp1.getPeer("1"),
+      manager.getServer(), new ReplicationQueueInfo(manager.getServer().getServerName(), id), null,
+      p -> OptionalLong.empty(), null);
+    source.cleanOldWALs(file2, false);
     // log1 should be deleted
     assertEquals(Sets.newHashSet(file2), manager.getWalsByIdRecoveredQueues().get(id).get(group));
   }
@@ -588,19 +595,15 @@ public abstract class TestReplicationSourceManager {
     }
   }
 
-  private ReplicationSourceInterface mockReplicationSource(String peerId) {
-    ReplicationSourceInterface source = mock(ReplicationSourceInterface.class);
-    when(source.getPeerId()).thenReturn(peerId);
-    when(source.getQueueId()).thenReturn(peerId);
-    when(source.isRecovered()).thenReturn(false);
-    when(source.isSyncReplication()).thenReturn(true);
+  private ReplicationPeer mockReplicationPeerForSyncReplication(String peerId) {
     ReplicationPeerConfig config = mock(ReplicationPeerConfig.class);
     when(config.getRemoteWALDir())
       .thenReturn(remoteLogDir.makeQualified(fs.getUri(), fs.getWorkingDirectory()).toString());
+    when(config.isSyncReplication()).thenReturn(true);
     ReplicationPeer peer = mock(ReplicationPeer.class);
     when(peer.getPeerConfig()).thenReturn(config);
-    when(source.getPeer()).thenReturn(peer);
-    return source;
+    when(peer.getId()).thenReturn(peerId);
+    return peer;
   }
 
   @Test
@@ -629,13 +632,21 @@ public abstract class TestReplicationSourceManager {
       manager.preLogRoll(wal);
       manager.postLogRoll(wal);
 
-      ReplicationSourceInterface source = mockReplicationSource(peerId2);
-      manager.cleanOldLogs(walName, true, source);
+      ReplicationSourceInterface source = new ReplicationSource();
+      source.init(conf, fs, null, manager, manager.getQueueStorage(),
+        mockReplicationPeerForSyncReplication(peerId2), manager.getServer(),
+        new ReplicationQueueInfo(manager.getServer().getServerName(), peerId2), null,
+        p -> OptionalLong.empty(), null);
+      source.cleanOldWALs(walName, true);
       // still there if peer id does not match
       assertTrue(fs.exists(remoteWAL));
 
-      source = mockReplicationSource(slaveId);
-      manager.cleanOldLogs(walName, true, source);
+      source = new ReplicationSource();
+      source.init(conf, fs, null, manager, manager.getQueueStorage(),
+        mockReplicationPeerForSyncReplication(slaveId), manager.getServer(),
+        new ReplicationQueueInfo(manager.getServer().getServerName(), slaveId), null,
+        p -> OptionalLong.empty(), null);
+      source.cleanOldWALs(walName, true);
       assertFalse(fs.exists(remoteWAL));
     } finally {
       removePeerAndWait(peerId2);
@@ -813,15 +824,16 @@ public abstract class TestReplicationSourceManager {
   static class FailInitializeDummyReplicationSource extends ReplicationSourceDummy {
 
     @Override
-    public void init(Configuration conf, FileSystem fs, ReplicationSourceManager manager,
-        ReplicationQueueStorage rq, ReplicationPeer rp, Server server, String peerClusterId,
-        UUID clusterId, WALFileLengthProvider walFileLengthProvider, MetricsSource metrics)
-        throws IOException {
+    public void init(Configuration conf, FileSystem fs, Path walDir,
+      ReplicationSourceController overallController, ReplicationQueueStorage queueStorage,
+      ReplicationPeer replicationPeer, Server server, ReplicationQueueInfo queueInfo,
+      UUID clusterId, WALFileLengthProvider walFileLengthProvider, MetricsSource metrics)
+      throws IOException {
       throw new IOException("Failing deliberately");
     }
   }
 
-  static class DummyServer extends MockServer {
+  static class DummyServer implements Server {
     String hostname;
 
     DummyServer() {
@@ -843,8 +855,63 @@ public abstract class TestReplicationSourceManager {
     }
 
     @Override
+    public CoordinatedStateManager getCoordinatedStateManager() {
+      return null;
+    }
+
+    @Override
+    public Connection getConnection() {
+      return null;
+    }
+
+    @Override
     public ServerName getServerName() {
       return ServerName.valueOf(hostname, 1234, 1L);
+    }
+
+    @Override
+    public void abort(String why, Throwable e) {
+      // To change body of implemented methods use File | Settings | File Templates.
+    }
+
+    @Override
+    public boolean isAborted() {
+      return false;
+    }
+
+    @Override
+    public void stop(String why) {
+      // To change body of implemented methods use File | Settings | File Templates.
+    }
+
+    @Override
+    public boolean isStopped() {
+      return false; // To change body of implemented methods use File | Settings | File Templates.
+    }
+
+    @Override
+    public ChoreService getChoreService() {
+      return null;
+    }
+
+    @Override
+    public FileSystem getFileSystem() {
+      return null;
+    }
+
+    @Override
+    public boolean isStopping() {
+      return false;
+    }
+
+    @Override
+    public Connection createConnection(Configuration conf) throws IOException {
+      return null;
+    }
+
+    @Override
+    public AsyncClusterConnection getAsyncClusterConnection() {
+      return null;
     }
   }
 }

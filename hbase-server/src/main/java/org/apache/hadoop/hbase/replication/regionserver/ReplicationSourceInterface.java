@@ -28,12 +28,11 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.replication.ReplicationEndpoint;
-import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationPeer;
+import org.apache.hadoop.hbase.replication.ReplicationQueueInfo;
 import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
-import org.apache.hadoop.hbase.util.Pair;
+import org.apache.hadoop.hbase.replication.ReplicationSourceController;
 import org.apache.hadoop.hbase.wal.WAL.Entry;
 import org.apache.yetus.audience.InterfaceAudience;
 
@@ -44,32 +43,30 @@ import org.apache.yetus.audience.InterfaceAudience;
 public interface ReplicationSourceInterface {
   /**
    * Initializer for the source
-   * @param conf the configuration to use
-   * @param fs the file system to use
-   * @param manager the manager to use
-   * @param server the server for this region server
+   *
+   * @param conf configuration to use
+   * @param fs file system to use
+   * @param walDir the directory where the WAL is located
+   * @param overallController the overall controller of all replication sources
+   * @param queueStorage the replication queue storage
+   * @param replicationPeer the replication peer
+   * @param server the server which start and run this replication source
+   * @param queueInfo the replication queue
+   * @param clusterId unique UUID for the cluster
+   * @param walFileLengthProvider used to get the WAL length
+   * @param metrics metrics for this replication source
    */
-  void init(Configuration conf, FileSystem fs, ReplicationSourceManager manager,
-      ReplicationQueueStorage queueStorage, ReplicationPeer replicationPeer, Server server,
-      String queueId, UUID clusterId, WALFileLengthProvider walFileLengthProvider,
-      MetricsSource metrics) throws IOException;
+  void init(Configuration conf, FileSystem fs, Path walDir,
+    ReplicationSourceController overallController, ReplicationQueueStorage queueStorage,
+    ReplicationPeer replicationPeer, Server server, ReplicationQueueInfo queueInfo,
+    UUID clusterId, WALFileLengthProvider walFileLengthProvider, MetricsSource metrics)
+    throws IOException;
 
   /**
    * Add a log to the list of logs to replicate
    * @param log path to the log to replicate
    */
   void enqueueLog(Path log);
-
-  /**
-   * Add hfile names to the queue to be replicated.
-   * @param tableName Name of the table these files belongs to
-   * @param family Name of the family these files belong to
-   * @param pairs list of pairs of { HFile location in staging dir, HFile path in region dir which
-   *          will be added in the queue for replication}
-   * @throws ReplicationException If failed to add hfile references
-   */
-  void addHFileRefs(TableName tableName, byte[] family, List<Pair<Path, Path>> pairs)
-      throws ReplicationException;
 
   /**
    * Start the replication
@@ -108,7 +105,16 @@ public interface ReplicationSourceInterface {
    *
    * @return queue id
    */
-  String getQueueId();
+  default String getQueueId() {
+    return getReplicationQueueInfo().getQueueId();
+  }
+
+  /**
+   * Get the replication queue info
+   *
+   * @return the replication queue info
+   */
+  ReplicationQueueInfo getReplicationQueueInfo();
 
   /**
    * Get the id that the source is replicating to.
@@ -160,11 +166,6 @@ public interface ReplicationSourceInterface {
   ReplicationEndpoint getReplicationEndpoint();
 
   /**
-   * @return the replication source manager
-   */
-  ReplicationSourceManager getSourceManager();
-
-  /**
    * @return the wal file length provider
    */
   WALFileLengthProvider getWALFileLengthProvider();
@@ -210,14 +211,25 @@ public interface ReplicationSourceInterface {
   ReplicationQueueStorage getReplicationQueueStorage();
 
   /**
-   * Log the current position to storage. Also clean old logs from the replication queue.
-   * Use to bypass the default call to
-   * {@link ReplicationSourceManager#logPositionAndCleanOldLogs(ReplicationSourceInterface,
-   * WALEntryBatch)} whem implementation does not need to persist state to backing storage.
-   * @param entryBatch the wal entry batch we just shipped
-   * @return The instance of queueStorage used by this ReplicationSource.
+   * Set the current position of WAL to {@link ReplicationQueueStorage}
+   * @param entryBatch a batch of WAL entries to replicate
    */
-  default void logPositionAndCleanOldLogs(WALEntryBatch entryBatch) {
-    getSourceManager().logPositionAndCleanOldLogs(this, entryBatch);
+  void setWALPosition(WALEntryBatch entryBatch);
+
+  /**
+   * Cleans a WAL and all older WALs from replication queue. Called when we are sure that a WAL is
+   * closed and has no more entries.
+   * @param walName the name of WAL
+   * @param inclusive whether we should also remove the given WAL
+   */
+  void cleanOldWALs(String walName, boolean inclusive);
+
+  /**
+   * The queue only be hold by one region server. This will return the region server which
+   * hold this queue.
+   * @return the region server which hold this queue.
+   */
+  default ServerName getQueueOwner() {
+    return this.getReplicationQueueInfo().getOwner();
   }
 }

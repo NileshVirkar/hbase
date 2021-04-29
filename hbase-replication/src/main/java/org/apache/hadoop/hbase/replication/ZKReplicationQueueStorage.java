@@ -79,7 +79,7 @@ import org.apache.hbase.thirdparty.org.apache.commons.collections4.CollectionUti
  * </pre>
  */
 @InterfaceAudience.Private
-class ZKReplicationQueueStorage extends ZKReplicationStorageBase
+public class ZKReplicationQueueStorage extends ZKReplicationStorageBase
     implements ReplicationQueueStorage {
 
   private static final Logger LOG = LoggerFactory.getLogger(ZKReplicationQueueStorage.class);
@@ -121,7 +121,7 @@ class ZKReplicationQueueStorage extends ZKReplicationStorageBase
     return ZNodePaths.joinZNode(queuesZNode, serverName.getServerName());
   }
 
-  private String getQueueNode(ServerName serverName, String queueId) {
+  public String getQueueNode(ServerName serverName, String queueId) {
     return ZNodePaths.joinZNode(getRsNode(serverName), queueId);
   }
 
@@ -205,7 +205,7 @@ class ZKReplicationQueueStorage extends ZKReplicationStorageBase
 
   private void addLastSeqIdsToOps(String queueId, Map<String, Long> lastSeqIds,
       List<ZKUtilOp> listOfOps) throws KeeperException, ReplicationException {
-    String peerId = new ReplicationQueueInfo(queueId).getPeerId();
+    String peerId = ReplicationQueueInfo.parsePeerId(queueId);
     for (Entry<String, Long> lastSeqEntry : lastSeqIds.entrySet()) {
       String path = getSerialReplicationRegionPeerNode(lastSeqEntry.getKey(), peerId);
       Pair<Long, Integer> p = getLastSequenceIdWithVersion(lastSeqEntry.getKey(), peerId);

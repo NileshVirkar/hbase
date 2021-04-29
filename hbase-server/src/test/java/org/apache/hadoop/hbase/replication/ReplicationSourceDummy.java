@@ -21,17 +21,16 @@ import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.replication.regionserver.MetricsSource;
 import org.apache.hadoop.hbase.replication.regionserver.ReplicationSourceInterface;
-import org.apache.hadoop.hbase.replication.regionserver.ReplicationSourceManager;
+import org.apache.hadoop.hbase.replication.regionserver.WALEntryBatch;
 import org.apache.hadoop.hbase.replication.regionserver.WALFileLengthProvider;
-import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.WAL.Entry;
 
 /**
@@ -39,24 +38,24 @@ import org.apache.hadoop.hbase.wal.WAL.Entry;
  */
 public class ReplicationSourceDummy implements ReplicationSourceInterface {
 
-  private ReplicationSourceManager manager;
   private ReplicationPeer replicationPeer;
-  private String peerClusterId;
+  private ReplicationQueueInfo replicationQueueInfo;
+  private String queueId;
   private Path currentPath;
   private MetricsSource metrics;
   private WALFileLengthProvider walFileLengthProvider;
   private AtomicBoolean startup = new AtomicBoolean(false);
 
   @Override
-  public void init(Configuration conf, FileSystem fs, ReplicationSourceManager manager,
-      ReplicationQueueStorage rq, ReplicationPeer rp, Server server, String peerClusterId,
-      UUID clusterId, WALFileLengthProvider walFileLengthProvider, MetricsSource metrics)
-      throws IOException {
-    this.manager = manager;
-    this.peerClusterId = peerClusterId;
+  public void init(Configuration conf, FileSystem fs, Path walDir,
+    ReplicationSourceController overallController, ReplicationQueueStorage queueStorage,
+    ReplicationPeer replicationPeer, Server server, ReplicationQueueInfo queueInfo,
+    UUID clusterId, WALFileLengthProvider walFileLengthProvider, MetricsSource metrics)
+    throws IOException {
+    this.replicationQueueInfo = queueInfo;
     this.metrics = metrics;
     this.walFileLengthProvider = walFileLengthProvider;
-    this.replicationPeer = rp;
+    this.replicationPeer = replicationPeer;
   }
 
   @Override
@@ -98,26 +97,13 @@ public class ReplicationSourceDummy implements ReplicationSourceInterface {
   }
 
   @Override
-  public String getQueueId() {
-    return peerClusterId;
-  }
-
-  @Override
-  public String getPeerId() {
-    String[] parts = peerClusterId.split("-", 2);
-    return parts.length != 1 ?
-        parts[0] : peerClusterId;
+  public ReplicationQueueInfo getReplicationQueueInfo() {
+    return replicationQueueInfo;
   }
 
   @Override
   public String getStats() {
     return "";
-  }
-
-  @Override
-  public void addHFileRefs(TableName tableName, byte[] family, List<Pair<Path, Path>> files)
-      throws ReplicationException {
-    return;
   }
 
   @Override
@@ -141,11 +127,6 @@ public class ReplicationSourceDummy implements ReplicationSourceInterface {
   }
 
   @Override
-  public ReplicationSourceManager getSourceManager() {
-    return manager;
-  }
-
-  @Override
   public void tryThrottle(int batchSize) throws InterruptedException {
   }
 
@@ -166,6 +147,14 @@ public class ReplicationSourceDummy implements ReplicationSourceInterface {
   @Override
   public ReplicationQueueStorage getReplicationQueueStorage() {
     return null;
+  }
+
+  @Override
+  public void setWALPosition(WALEntryBatch entryBatch) {
+  }
+
+  @Override
+  public void cleanOldWALs(String walName, boolean inclusive) {
   }
 
   @Override
