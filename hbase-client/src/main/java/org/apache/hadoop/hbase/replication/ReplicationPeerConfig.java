@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.hadoop.hbase.replication;
 
 import java.util.Collection;
@@ -24,7 +25,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -49,8 +49,6 @@ public class ReplicationPeerConfig {
   private Set<String> excludeNamespaces = null;
   private long bandwidth = 0;
   private final boolean serial;
-  // Used by synchronous replication
-  private String remoteWALDir;
 
   private ReplicationPeerConfig(ReplicationPeerConfigBuilderImpl builder) {
     this.clusterKey = builder.clusterKey;
@@ -70,7 +68,6 @@ public class ReplicationPeerConfig {
             : null;
     this.bandwidth = builder.bandwidth;
     this.serial = builder.serial;
-    this.remoteWALDir = builder.remoteWALDir;
   }
 
   private Map<TableName, List<String>>
@@ -79,6 +76,41 @@ public class ReplicationPeerConfig {
     tableCFsMap.forEach((table, cfs) -> newTableCFsMap.put(table,
       cfs != null ? Collections.unmodifiableList(cfs) : null));
     return Collections.unmodifiableMap(newTableCFsMap);
+  }
+
+  /**
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder} to create new ReplicationPeerConfig.
+   */
+  @Deprecated
+  public ReplicationPeerConfig() {
+    this.peerData = new TreeMap<>(Bytes.BYTES_COMPARATOR);
+    this.configuration = new HashMap<>(0);
+    this.serial = false;
+  }
+
+  /**
+   * Set the clusterKey which is the concatenation of the slave cluster's:
+   * hbase.zookeeper.quorum:hbase.zookeeper.property.clientPort:zookeeper.znode.parent
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder#setClusterKey(String)} instead.
+   */
+  @Deprecated
+  public ReplicationPeerConfig setClusterKey(String clusterKey) {
+    this.clusterKey = clusterKey;
+    return this;
+  }
+
+  /**
+   * Sets the ReplicationEndpoint plugin class for this peer.
+   * @param replicationEndpointImpl a class implementing ReplicationEndpoint
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder#setReplicationEndpointImpl(String)} instead.
+   */
+  @Deprecated
+  public ReplicationPeerConfig setReplicationEndpointImpl(String replicationEndpointImpl) {
+    this.replicationEndpointImpl = replicationEndpointImpl;
+    return this;
   }
 
   public String getClusterKey() {
@@ -101,35 +133,86 @@ public class ReplicationPeerConfig {
     return (Map<TableName, List<String>>) tableCFsMap;
   }
 
+  /**
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder#setTableCFsMap(Map)} instead.
+   */
+  @Deprecated
+  public ReplicationPeerConfig setTableCFsMap(Map<TableName,
+                                              ? extends Collection<String>> tableCFsMap) {
+    this.tableCFsMap = tableCFsMap;
+    return this;
+  }
+
   public Set<String> getNamespaces() {
     return this.namespaces;
+  }
+
+  /**
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder#setNamespaces(Set)} instead.
+   */
+  @Deprecated
+  public ReplicationPeerConfig setNamespaces(Set<String> namespaces) {
+    this.namespaces = namespaces;
+    return this;
   }
 
   public long getBandwidth() {
     return this.bandwidth;
   }
 
+  /**
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder#setBandwidth(long)} instead.
+   */
+  @Deprecated
+  public ReplicationPeerConfig setBandwidth(long bandwidth) {
+    this.bandwidth = bandwidth;
+    return this;
+  }
+
   public boolean replicateAllUserTables() {
     return this.replicateAllUserTables;
+  }
+
+  /**
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder#setReplicateAllUserTables(boolean)} instead.
+   */
+  @Deprecated
+  public ReplicationPeerConfig setReplicateAllUserTables(boolean replicateAllUserTables) {
+    this.replicateAllUserTables = replicateAllUserTables;
+    return this;
   }
 
   public Map<TableName, List<String>> getExcludeTableCFsMap() {
     return (Map<TableName, List<String>>) excludeTableCFsMap;
   }
 
+  /**
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder#setExcludeTableCFsMap(Map)} instead.
+   */
+  @Deprecated
+  public ReplicationPeerConfig setExcludeTableCFsMap(Map<TableName,
+                                              ? extends Collection<String>> tableCFsMap) {
+    this.excludeTableCFsMap = tableCFsMap;
+    return this;
+  }
+
   public Set<String> getExcludeNamespaces() {
     return this.excludeNamespaces;
   }
 
-  public String getRemoteWALDir() {
-    return this.remoteWALDir;
-  }
-
   /**
-   * Use remote wal dir to decide whether a peer is sync replication peer
+   * @deprecated as release of 2.0.0, and it will be removed in 3.0.0. Use
+   *             {@link ReplicationPeerConfigBuilder#setExcludeNamespaces(Set)} instead.
    */
-  public boolean isSyncReplication() {
-    return !StringUtils.isBlank(this.remoteWALDir);
+  @Deprecated
+  public ReplicationPeerConfig setExcludeNamespaces(Set<String> namespaces) {
+    this.excludeNamespaces = namespaces;
+    return this;
   }
 
   public static ReplicationPeerConfigBuilder newBuilder() {
@@ -149,8 +232,7 @@ public class ReplicationPeerConfig {
       .setReplicateAllUserTables(peerConfig.replicateAllUserTables())
       .setExcludeTableCFsMap(peerConfig.getExcludeTableCFsMap())
       .setExcludeNamespaces(peerConfig.getExcludeNamespaces())
-      .setBandwidth(peerConfig.getBandwidth()).setSerial(peerConfig.isSerial())
-      .setRemoteWALDir(peerConfig.getRemoteWALDir());
+      .setBandwidth(peerConfig.getBandwidth()).setSerial(peerConfig.isSerial());
     return builder;
   }
 
@@ -179,8 +261,6 @@ public class ReplicationPeerConfig {
 
     private boolean serial = false;
 
-    private String remoteWALDir = null;
-
     @Override
     public ReplicationPeerConfigBuilder setClusterKey(String clusterKey) {
       this.clusterKey = clusterKey;
@@ -196,12 +276,6 @@ public class ReplicationPeerConfig {
     @Override
     public ReplicationPeerConfigBuilder putConfiguration(String key, String value) {
       this.configuration.put(key, value);
-      return this;
-    }
-
-    @Override
-    public ReplicationPeerConfigBuilder removeConfiguration(String key) {
-      this.configuration.remove(key);
       return this;
     }
 
@@ -256,12 +330,6 @@ public class ReplicationPeerConfig {
     }
 
     @Override
-    public ReplicationPeerConfigBuilder setRemoteWALDir(String dir) {
-      this.remoteWALDir = dir;
-      return this;
-    }
-
-    @Override
     public ReplicationPeerConfig build() {
       // It would be nice to validate the configuration, but we have to work with "old" data
       // from ZK which makes it much more difficult.
@@ -291,9 +359,6 @@ public class ReplicationPeerConfig {
     }
     builder.append("bandwidth=").append(bandwidth).append(",");
     builder.append("serial=").append(serial);
-    if (this.remoteWALDir != null) {
-      builder.append(",remoteWALDir=").append(remoteWALDir);
-    }
     return builder.toString();
   }
 
