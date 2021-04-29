@@ -611,8 +611,8 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       Map<ServerName, List<RegionInfo>> loadOfOneTable);
 
   @Override
-  public List<RegionPlan>
-      balanceCluster(Map<TableName, Map<ServerName, List<RegionInfo>>> loadOfAllTable) {
+  public List<RegionPlan> balanceCluster(Map<TableName, Map<ServerName,
+    List<RegionInfo>>> loadOfAllTable) {
     if (isByTable) {
       List<RegionPlan> result = new ArrayList<>();
       loadOfAllTable.forEach((tableName, loadOfOneTable) -> {

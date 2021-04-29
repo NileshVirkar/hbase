@@ -619,8 +619,8 @@ public class SimpleLoadBalancer extends BaseLoadBalancer {
    * on every server to achieve overall balanced
    */
   @Override
-  public synchronized List<RegionPlan>
-      balanceCluster(Map<TableName, Map<ServerName, List<RegionInfo>>> loadOfAllTable) {
+  public synchronized List<RegionPlan> balanceCluster(Map<TableName, Map<ServerName,
+    List<RegionInfo>>> loadOfAllTable) {
     setClusterLoad(loadOfAllTable);
     return super.balanceCluster(loadOfAllTable);
   }
