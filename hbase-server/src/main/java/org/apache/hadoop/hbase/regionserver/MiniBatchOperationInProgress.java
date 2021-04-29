@@ -45,8 +45,8 @@ public class MiniBatchOperationInProgress<T> {
   private int cellCount = 0;
   private int numOfPuts = 0;
   private int numOfDeletes = 0;
-  private int numOfIncrements = 0;
-  private int numOfAppends = 0;
+  private long bytesForPuts = 0;
+  private long bytesForDeletes = 0;
 
 
   public MiniBatchOperationInProgress(T[] operations, OperationStatus[] retCodeDetails,
@@ -124,7 +124,6 @@ public class MiniBatchOperationInProgress<T> {
    * in the same batch. These mutations are applied to the WAL and applied to the memstore as well.
    * The timestamp of the cells in the given Mutations MUST be obtained from the original mutation.
    * <b>Note:</b> The durability from CP will be replaced by the durability of corresponding mutation.
-   * <b>Note:</b> Currently only supports Put and Delete operations.
    * @param index the index that corresponds to the original mutation index in the batch
    * @param newOperations the Mutations to add
    */
@@ -173,19 +172,19 @@ public class MiniBatchOperationInProgress<T> {
     this.numOfDeletes += 1;
   }
 
-  public int getNumOfIncrements() {
-    return numOfIncrements;
+  public long getBytesForPuts() {
+    return bytesForPuts;
   }
 
-  public void incrementNumOfIncrements() {
-    this.numOfIncrements += 1;
+  public void incrementBytesForPuts(long size) {
+    this.bytesForPuts += size;
   }
 
-  public int getNumOfAppends() {
-    return numOfAppends;
+  public long getBytesForDeletes() {
+    return bytesForDeletes;
   }
 
-  public void incrementNumOfAppends() {
-    this.numOfAppends += 1;
+  public void incrementBytesForDeletes(long size) {
+    this.bytesForDeletes += size;
   }
 }

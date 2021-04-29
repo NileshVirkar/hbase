@@ -87,12 +87,6 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   void updateCheckAndPut(long t);
 
   /**
-   * Update checkAndMutate histogram
-   * @param t time it took
-   */
-  void updateCheckAndMutate(long t);
-
-  /**
    * Update the Get time histogram .
    *
    * @param t time it took
@@ -403,20 +397,28 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String UPDATES_BLOCKED_DESC =
       "Number of MS updates have been blocked so that the memstore can be flushed.";
   String DELETE_KEY = "delete";
+  String DELETE_BYTES_KEY = "deleteBytes";
   String CHECK_AND_DELETE_KEY = "checkAndDelete";
   String CHECK_AND_PUT_KEY = "checkAndPut";
-  String CHECK_AND_MUTATE_KEY = "checkAndMutate";
   String DELETE_BATCH_KEY = "deleteBatch";
   String GET_SIZE_KEY = "getSize";
   String GET_KEY = "get";
+  String GET_BYTES_KEY = "getBytes";
   String INCREMENT_KEY = "increment";
+  String INCREMENT_BYTES_KEY = "incrementBytes";
   String PUT_KEY = "put";
+  String PUT_BYTES_KEY = "putBytes";
   String PUT_BATCH_KEY = "putBatch";
   String APPEND_KEY = "append";
+  String APPEND_BYTES_KEY = "appendBytes";
   String REPLAY_KEY = "replay";
   String SCAN_KEY = "scan";
   String SCAN_SIZE_KEY = "scanSize";
+  String SCAN_BYTES_KEY = "scanBytes";
   String SCAN_TIME_KEY = "scanTime";
+  String BULKLOAD_BYTES_KEY = "bulkLoadBytes";
+  String RECEIVED_BYTES_KEY = "receivedBytes";
+  String SENT_BYTES_KEY = "sentBytes";
 
   String SLOW_PUT_KEY = "slowPutCount";
   String SLOW_GET_KEY = "slowGetCount";
@@ -486,20 +488,6 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String HEDGED_READ_WINS = "hedgedReadWins";
   String HEDGED_READ_WINS_DESC =
       "The number of times we started a hedged read and a hedged read won";
-  String HEDGED_READ_IN_CUR_THREAD = "hedgedReadOpsInCurThread";
-  String HEDGED_READ_IN_CUR_THREAD_DESC =
-    "The number of times we execute a hedged read in current thread as a fallback for task rejection";
-
-  String TOTAL_BYTES_READ = "totalBytesRead";
-  String TOTAL_BYTES_READ_DESC = "The total number of bytes read from HDFS";
-  String LOCAL_BYTES_READ = "localBytesRead";
-  String LOCAL_BYTES_READ_DESC =
-      "The number of bytes read from the local HDFS DataNode";
-  String SHORTCIRCUIT_BYTES_READ = "shortCircuitBytesRead";
-  String SHORTCIRCUIT_BYTES_READ_DESC = "The number of bytes read through HDFS short circuit read";
-  String ZEROCOPY_BYTES_READ = "zeroCopyBytesRead";
-  String ZEROCOPY_BYTES_READ_DESC =
-      "The number of bytes read through HDFS zero copy";
 
   String BLOCKED_REQUESTS_COUNT = "blockedRequestCount";
   String BLOCKED_REQUESTS_COUNT_DESC = "The number of blocked requests because of memstore size is "
@@ -571,9 +559,6 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String RPC_SCAN_REQUEST_COUNT = "rpcScanRequestCount";
   String RPC_SCAN_REQUEST_COUNT_DESC =
       "Number of rpc scan requests this RegionServer has answered.";
-  String RPC_FULL_SCAN_REQUEST_COUNT = "rpcFullScanRequestCount";
-  String RPC_FULL_SCAN_REQUEST_COUNT_DESC =
-      "Number of rpc scan requests that were possible full region scans.";
   String RPC_MULTI_REQUEST_COUNT = "rpcMultiRequestCount";
   String RPC_MULTI_REQUEST_COUNT_DESC =
       "Number of rpc multi requests this RegionServer has answered.";

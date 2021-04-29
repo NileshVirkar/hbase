@@ -53,10 +53,6 @@ public interface MetricsRegionSource extends Comparable<MetricsRegionSource> {
   String COPROCESSOR_EXECUTION_STATISTICS_DESC = "Statistics for coprocessor execution times";
   String REPLICA_ID = "replicaid";
   String REPLICA_ID_DESC = "The replica ID of a region. 0 is primary, otherwise is secondary";
-  String ROW_READS_ONLY_ON_MEMSTORE = "memstoreOnlyRowReadsCount";
-  String ROW_READS_ONLY_ON_MEMSTORE_DESC = "Row reads happening completely out of memstore";
-  String MIXED_ROW_READS = "mixedRowReadsCount";
-  String MIXED_ROW_READS_ON_STORE_DESC = "Row reads happening out of files and memstore on store";
 
   /**
    * Close the region's metrics as this region is closing.
@@ -93,6 +89,51 @@ public interface MetricsRegionSource extends Comparable<MetricsRegionSource> {
    * Update related counts of appends.
    */
   void updateAppend();
+
+  /**
+   * Update related bytes of all sent.
+   */
+  void updateSentBytes(long size);
+
+  /**
+   * Update related bytes of all received.
+   */
+  void updateReceivedBytes(long size);
+
+  /**
+   * Update related bytes of gets.
+   */
+  void updateGetBytes(long size);
+
+  /**
+   * Update related bytes of puts.
+   */
+  void updatePutBytes(long size);
+
+  /**
+   * Update related bytes of scans.
+   */
+  void updateScanBytes(long size);
+
+  /**
+   * Update related bytes of deletes.
+   */
+  void updateDeleteBytes(long size);
+
+  /**
+   * Update related bytes of increments.
+   */
+  void updateIncrementBytes(long size);
+
+  /**
+   * Update related bytes of appends.
+   */
+  void updateAppendBytes(long size);
+
+  /**
+   * Update related bytes of bulkloads.
+   */
+  void updateBulkLoadBytes(long size);
 
   /**
    * Get the aggregate source to which this reports.
