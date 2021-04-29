@@ -22,15 +22,17 @@ import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
 import org.apache.hadoop.hbase.regionserver.MetricsRegionServerSourceFactory;
 import org.apache.yetus.audience.InterfaceAudience;
 
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+
 @InterfaceAudience.Private
 public class MetricsIO {
 
   private final MetricsIOSource source;
   private final MetricsIOWrapper wrapper;
 
-  public MetricsIO(MetricsIOWrapper wrapper) {
+  public MetricsIO(MetricsIOWrapper wrapper, String context, String jmxContext) {
     this(CompatibilitySingletonFactory.getInstance(MetricsRegionServerSourceFactory.class)
-            .createIO(wrapper), wrapper);
+        .createIO(wrapper, context, jmxContext), wrapper);
   }
 
   MetricsIO(MetricsIOSource source, MetricsIOWrapper wrapper) {
@@ -38,10 +40,12 @@ public class MetricsIO {
     this.wrapper = wrapper;
   }
 
+  @VisibleForTesting
   public MetricsIOSource getMetricsSource() {
     return source;
   }
 
+  @VisibleForTesting
   public MetricsIOWrapper getWrapper() {
     return wrapper;
   }
