@@ -30,7 +30,6 @@ AssignmentManager assignmentManager = null;
 </%args>
 <%import>
 java.util.*;
-java.net.URLEncoder;
 java.io.IOException;
 org.apache.hadoop.hbase.client.replication.ReplicationPeerConfigUtil;
 org.apache.hadoop.hbase.client.RegionInfo;
@@ -39,6 +38,7 @@ org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 org.apache.hadoop.hbase.replication.ReplicationPeerDescription;
 org.apache.hadoop.hbase.HBaseConfiguration;
 org.apache.hadoop.hbase.HConstants;
+org.apache.hadoop.hbase.HTableDescriptor;
 org.apache.hadoop.hbase.NamespaceDescriptor;
 org.apache.hadoop.hbase.ServerName;
 org.apache.hadoop.hbase.TableName;
@@ -50,17 +50,15 @@ org.apache.hadoop.hbase.master.DeadServer;
 org.apache.hadoop.hbase.master.HMaster;
 org.apache.hadoop.hbase.master.RegionState;
 org.apache.hadoop.hbase.master.ServerManager;
+org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 org.apache.hadoop.hbase.quotas.QuotaUtil;
-org.apache.hadoop.hbase.rsgroup.RSGroupInfoManager;
-org.apache.hadoop.hbase.rsgroup.RSGroupUtil;
 org.apache.hadoop.hbase.security.access.PermissionStorage;
 org.apache.hadoop.hbase.security.visibility.VisibilityConstants;
 org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
-org.apache.hadoop.hbase.tool.CanaryTool;
+org.apache.hadoop.hbase.tool.Canary;
 org.apache.hadoop.hbase.util.Bytes;
-org.apache.hadoop.hbase.util.CommonFSUtils;
+org.apache.hadoop.hbase.util.FSUtils;
 org.apache.hadoop.hbase.util.JvmVersion;
-org.apache.hadoop.hbase.util.PrettyPrinter;
 org.apache.hadoop.util.StringUtils;
 </%import>
 
@@ -153,9 +151,6 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
                 <%if master.isActiveMaster() %>
                     <li><a href="/procedures.jsp">Procedures &amp; Locks</a></li>
                     <li><a href="/hbck.jsp">HBCK Report</a></li>
-                    <%if master.getConfiguration().getBoolean(QuotaUtil.QUOTA_CONF_KEY, false) %>
-                        <li><a href="/quotas.jsp">Quotas</a></li>
-                    </%if>
                 </%if>
                 <li><a href="/processMaster.jsp">Process Metrics</a></li>
                 <li><a href="/logs/">Local Logs</a></li>
@@ -197,8 +192,8 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
         </%if>
         <%if master.isInMaintenanceMode() %>
           <div class="alert alert-warning">
-          Your Master is in maintenance mode. This is because hbase.master.maintenance_mode is
-          set to true. Under the maintenance mode, no quota or no Master coprocessor is loaded.
+          Your Master is in maintenance mode. This may be because of HBCK aborting while
+          running in repair mode. Please re-run HBCK in repair mode.
           </div>
         </%if>
         <%if !master.isBalancerOn() %>
@@ -225,14 +220,11 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
         <%if master.getAssignmentManager() != null %>
           <& AssignmentManagerStatusTmpl; assignmentManager=master.getAssignmentManager()&>
         </%if>
-        <%if !master.isInMaintenanceMode() && master.getMasterCoprocessorHost() != null %>
-          <%if RSGroupUtil.isRSGroupEnabled(master.getConfiguration()) &&
-            serverManager.getOnlineServersList().size() > 0 %>
-            <section>
-              <h2><a name="rsgroup">RSGroup</a></h2>
-              <& RSGroupListTmpl; master= master; serverManager= serverManager&>
-            </section>
-          </%if>
+        <%if master.getMasterCoprocessorHost().findCoprocessor("RSGroupAdminEndpoint") != null %>
+          <section>
+            <h2><a name="rsgroup">RSGroup</a></h2>
+            <& RSGroupListTmpl; master= master; serverManager= serverManager&>
+          </section>
         </%if>
         <section>
             <h2><a name="regionservers">Region Servers</a></h2>
@@ -271,6 +263,7 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
                         </%if>
                     </div>
                     <div class="tab-pane" id="tab_userSnapshots">
+                        <& userSnapshots &>
                     </div>
                 </div>
             </div>
@@ -297,11 +290,6 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
                     <th>Attribute Name</th>
                     <th>Value</th>
                     <th>Description</th>
-                </tr>
-                <tr>
-                    <td>JVM Version</td>
-                    <td><% JvmVersion.getVersion() %></td>
-                    <td>JVM vendor and version</td>
                 </tr>
                 <tr>
                     <td>HBase Version</td>
@@ -334,8 +322,8 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
                 </tr>
                 <tr>
                     <td>ZooKeeper Client Version</td>
-                    <td><% org.apache.zookeeper.Version.getVersion() %>, revision=<% org.apache.zookeeper.Version.getRevisionHash() %></td>
-                    <td>ZooKeeper client version and revision hash</td>
+                    <td><% org.apache.zookeeper.Version.getVersion() %>, revision=<% org.apache.zookeeper.Version.getRevision() %></td>
+                    <td>ZooKeeper client version and revision</td>
                 </tr>
                 <tr>
                     <td>ZooKeeper Client Compiled</td>
@@ -360,7 +348,7 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
                 </tr>
                 <tr>
                     <td>HBase Root Directory</td>
-                    <td><% CommonFSUtils.getRootDir(master.getConfiguration()).toString() %></td>
+                    <td><% FSUtils.getRootDir(master.getConfiguration()).toString() %></td>
                     <td>Location of HBase home directory</td>
                 </tr>
                 <tr>
@@ -411,10 +399,8 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
 
     <script src="/static/js/jquery.min.js" type="text/javascript"></script>
     <script src="/static/js/jquery.tablesorter.min.js" type="text/javascript"></script>
-    <script src="/static/js/parser-date-iso8601.min.js" type="text/javascript"></script>
     <script src="/static/js/bootstrap.min.js" type="text/javascript"></script>
     <script src="/static/js/tab.js" type="text/javascript"></script>
-    <script src="/static/js/jqSpager.js" type="text/javascript"></script>
     <script>
     $(document).ready(function()
         {
@@ -451,8 +437,20 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
                     return $.tablesorter.formatFloat( s.replace(/,/g,'') );
                 }, type: "numeric"
             });
+            $.tablesorter.addParser(
+            {
+                id: "dateTime",
+                is: function (s) {
+                    return /^([a-zA-Z]{3}\s){2}\d{2}\s\d{2}:\d{2}:\d{2}\s[a-zA-Z]{3}\s\d{4}$/.test(s);
+                }, format: function (s) {
+                    var split = s.split(" ");
+                    var time = Date.parse(split[1] + " " + split[2] + " " + split[3] + " " + split[5]);
+                    return $.tablesorter.formatFloat(time);
+                }, type: "numeric"
+            });
             $("#baseStatsTable").tablesorter({
                 headers: {
+                    1: {sorter: 'dateTime'},
                     4: {sorter: 'separator'},
                     5: {sorter: 'separator'}
                 }
@@ -491,35 +489,6 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
             });
 
             $("#userTables").tablesorter();
-
-            function showRitPages() {
-                if (!$("#rit_page_num")) {
-                  return;
-                }
-                var ritTotalNum = parseInt($("#rit_page_num").val());
-                if (!ritTotalNum || ritTotalNum < 1) {
-                  return;
-                }
-                var ritPerPage = parseInt($("#rit_per_page").val());
-
-                 $("#rit_pagination").sPage({
-                      page:1,
-                      total:ritTotalNum,
-                      pageSize:ritPerPage,
-                      noData: false,
-                      showPN:true,
-                      prevPage:"prev",
-                      nextPage:"next",
-                      fastForward: 5,
-                      backFun:function(page){
-                          $("div[id^='tab_rits']").removeClass('active');
-                          $("#tab_rits"+page).addClass('active');
-                      }
-                  });
-
-            }
-            showRitPages();
-
         }
     );
     </script>
@@ -551,7 +520,7 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
     <%java>String description = null;
         if (tableName.equals(TableName.META_TABLE_NAME)){
             description = "The hbase:meta table holds references to all User Table regions.";
-        } else if (tableName.equals(CanaryTool.DEFAULT_WRITE_TABLE_NAME)){
+        } else if (tableName.equals(Canary.DEFAULT_WRITE_TABLE_NAME)){
             description = "The hbase:canary table is used to sniff the write availbility of"
               + " each regionserver.";
         } else if (tableName.equals(PermissionStorage.ACL_TABLE_NAME)){
@@ -603,6 +572,7 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
         <th>CLOSED</th>
         <th>CLOSING</th>
         <th>OFFLINE</th>
+        <th>FAILED</th>
         <th>SPLIT</th>
         <th>Other</th>
     </tr>
@@ -610,7 +580,8 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
 <tbody>
     <%for TableDescriptor desc : tables%>
     <%java>
-      TableName tableName = desc.getTableName();
+      HTableDescriptor htDesc = new HTableDescriptor(desc);
+      TableName tableName = htDesc.getTableName();
       TableState tableState = master.getTableStateManager().getTableState(tableName);
       Map<RegionState.State, List<RegionInfo>> tableRegions =
           master.getAssignmentManager().getRegionStates()
@@ -621,44 +592,69 @@ AssignmentManager assignmentManager = master.getAssignmentManager();
       int closingRegionsCount = tableRegions.get(RegionState.State.CLOSING).size();
       int offlineRegionsCount = tableRegions.get(RegionState.State.OFFLINE).size();
       int splitRegionsCount = tableRegions.get(RegionState.State.SPLIT).size();
+      int failedRegionsCount = tableRegions.get(RegionState.State.FAILED_OPEN).size()
+             + tableRegions.get(RegionState.State.FAILED_CLOSE).size();
       int otherRegionsCount = 0;
       for (List<RegionInfo> list: tableRegions.values()) {
          otherRegionsCount += list.size();
       }
       // now subtract known states
       otherRegionsCount = otherRegionsCount - openRegionsCount
-                     - offlineRegionsCount - splitRegionsCount
-                     - openingRegionsCount - closedRegionsCount
-                     - closingRegionsCount;
-    String encodedTableName = URLEncoder.encode(tableName.getNameAsString());
+                     - failedRegionsCount - offlineRegionsCount
+                     - splitRegionsCount - openingRegionsCount
+                     - closedRegionsCount - closingRegionsCount;
     </%java>
     <tr>
         <td><% tableName.getNamespaceAsString() %></td>
-        <td><a href=table.jsp?name=<% encodedTableName %>><% URLEncoder.encode(tableName.getQualifierAsString()) %></a> </td>
+        <td><a href=table.jsp?name=<% tableName.getNameAsString() %>><% tableName.getQualifierAsString() %></a> </td>
         <%if (frags != null) %>
             <td align="center"><% frags.get(tableName.getNameAsString()) != null ? frags.get(tableName.getNameAsString()).intValue() + "%" : "n/a" %></td>
         </%if>
         <td><% tableState.getState() %></td>
         <td><% openRegionsCount %></td>
-        <%if (openingRegionsCount > 0) %> <td><a href="/table.jsp?name=hbase%3Ameta&scan_table=<% encodedTableName %>&scan_region_state=OPENING"><% openingRegionsCount %></td> <%else><td><% openingRegionsCount %></td> </%if>
-        <%if (closedRegionsCount > 0) %> <td><a href="/table.jsp?name=hbase%3Ameta&scan_table=<% encodedTableName %>&scan_region_state=CLOSED"><% closedRegionsCount %></td> <%else><td><% closedRegionsCount %></td> </%if>
-        <%if (closingRegionsCount > 0) %> <td><a href="/table.jsp?name=hbase%3Ameta&scan_table=<% encodedTableName %>&scan_region_state=CLOSING"><% closingRegionsCount %></td> <%else><td><% closingRegionsCount %></td> </%if>
-        <%if (offlineRegionsCount > 0) %> <td><a href="/table.jsp?name=hbase%3Ameta&scan_table=<% encodedTableName %>&scan_region_state=OFFLINE"><% offlineRegionsCount %></td> <%else><td><% offlineRegionsCount %></td> </%if>
-        <%if (splitRegionsCount > 0) %> <td><a href="/table.jsp?name=hbase%3Ameta&scan_table=<% encodedTableName %>&scan_region_state=SPLIT"><% splitRegionsCount %></td> <%else><td><% splitRegionsCount %></td> </%if>
+        <%if (openingRegionsCount > 0) %> <td><a href="/rits.jsp?table=<% tableName.getNameAsString() %>&state=OPENING"><% openingRegionsCount %></td> <%else><td><% openingRegionsCount %></td> </%if>
+        <td><% closedRegionsCount %></td>
+        <%if (closingRegionsCount > 0) %> <td><a href="/rits.jsp?table=<% tableName.getNameAsString() %>&state=CLOSING"><% closingRegionsCount %></td> <%else><td><% closingRegionsCount %></td> </%if>
+        <td><% offlineRegionsCount %></td>
+        <td><% failedRegionsCount %></td>
+        <td><% splitRegionsCount %></td>
         <td><% otherRegionsCount %></td>
-        <td><% desc.toStringCustomizedValues() %></td>
+        <td><% htDesc.toStringCustomizedValues() %></td>
     </tr>
     </%for>
-    <p><% tables.size() %> table(s) in set. [<a href=tablesDetailed.jsp>Details</a>]. Click count below to
-    see list of regions currently in 'state' designated by the column title. For 'Other' Region state,
-    browse to <a href="/table.jsp?name=hbase%3Ameta">hbase:meta</a> and adjust filter on 'Meta Entries' to
-    query on states other than those listed here. Queries may take a while if the <i>hbase:meta</i> table
-    is large.</p>
+    <p><% tables.size() %> table(s) in set. [<a href=tablesDetailed.jsp>Details</a>]</p>
 </tbody>
 </table>
 </%if>
 </%def>
 
+<%def userSnapshots>
+<%java>
+   List<SnapshotDescription> snapshots = master.isInitialized() ?
+     master.getSnapshotManager().getCompletedSnapshots() : null;
+</%java>
+<%if (snapshots != null && snapshots.size() > 0)%>
+<table class="table table-striped">
+    <tr>
+        <th>Snapshot Name</th>
+        <th>Table</th>
+        <th>Creation Time</th>
+    </tr>
+    <%for SnapshotDescription snapshotDesc : snapshots%>
+    <%java>
+        TableName snapshotTable = TableName.valueOf(snapshotDesc.getTable());
+    </%java>
+    <tr>
+        <td><a href="snapshot.jsp?name=<% snapshotDesc.getName() %>"><% snapshotDesc.getName() %></a> </td>
+        <td><a href="table.jsp?name=<% snapshotTable.getNameAsString() %>"><% snapshotTable.getNameAsString() %></a>
+        </td>
+        <td><% new Date(snapshotDesc.getCreationTime()) %></td>
+    </tr>
+    </%for>
+    <p><% snapshots.size() %> snapshot(s) in set. [<a href="/snapshotsStats.jsp">Snapshot Storefile stats</a>]</p>
+</table>
+</%if>
+</%def>
 
 
 <%def deadRegionServers>
