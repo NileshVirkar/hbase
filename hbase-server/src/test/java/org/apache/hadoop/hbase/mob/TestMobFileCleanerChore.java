@@ -22,6 +22,7 @@ import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.util.Arrays;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -30,17 +31,18 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.CompactionState;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
+import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.cleaner.TimeToLiveHFileCleaner;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.mapred.Master;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
@@ -59,6 +61,7 @@ import org.slf4j.LoggerFactory;
   * 6. Runs Mob cleaner chore
   * 7 Verifies that number of MOB files in a mob directory is 1.
  */
+@SuppressWarnings("deprecation")
 @Category(MediumTests.class)
 public class TestMobFileCleanerChore {
   private static final Logger LOG = LoggerFactory.getLogger(TestMobFileCleanerChore.class);
@@ -76,8 +79,8 @@ public class TestMobFileCleanerChore {
       .toBytes("01234567890123456789012345678901234567890123456789012345678901234567890123456789");
 
   private Configuration conf;
-  private TableDescriptor tableDescriptor;
-  private ColumnFamilyDescriptor familyDescriptor;
+  private TableDescriptorBuilder.ModifyableTableDescriptor tableDescriptor;
+  private ColumnFamilyDescriptorBuilder.ModifyableColumnFamilyDescriptor familyDescriptor;
   private Admin admin;
   private Table table = null;
   private MobFileCleanerChore chore;
@@ -89,17 +92,20 @@ public class TestMobFileCleanerChore {
   @Before
   public void setUp() throws Exception {
     HTU = new HBaseTestingUtility();
+    tableDescriptor = HTU.createModifyableTableDescriptor("testMobCompactTable");
     conf = HTU.getConfiguration();
 
     initConf();
 
     HTU.startMiniCluster();
     admin = HTU.getAdmin();
-    chore = new MobFileCleanerChore();
-    familyDescriptor = ColumnFamilyDescriptorBuilder.newBuilder(fam).setMobEnabled(true)
-      .setMobThreshold(mobLen).setMaxVersions(1).build();
-    tableDescriptor = HTU.createModifyableTableDescriptor("testMobCompactTable")
-      .setColumnFamily(familyDescriptor).build();
+    HMaster master = HTU.getMiniHBaseCluster().getMaster();
+    chore = new MobFileCleanerChore(master);
+    familyDescriptor = new ColumnFamilyDescriptorBuilder.ModifyableColumnFamilyDescriptor(fam);
+    familyDescriptor.setMobEnabled(true);
+    familyDescriptor.setMobThreshold(mobLen);
+    familyDescriptor.setMaxVersions(1);
+    tableDescriptor.setColumnFamily(familyDescriptor);
     table = HTU.createTable(tableDescriptor, null);
   }
 
