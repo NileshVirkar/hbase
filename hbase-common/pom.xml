@@ -30,6 +30,7 @@
   <artifactId>hbase-common</artifactId>
   <name>Apache HBase - Common</name>
   <description>Common functionality for HBase</description>
+<!--REMOVE-->
 
   <build>
     <resources>
@@ -92,7 +93,7 @@
                             <property name="generated.sources" location="${project.build.directory}/generated-sources"/>
 
                             <exec executable="bash" failonerror="true">
-                                <arg line="${basedir}/src/saveVersion.sh ${project.version} ${generated.sources}"/>
+                                <arg line="${basedir}/src/saveVersion.sh ${project.version} ${generated.sources}/java"/>
                             </exec>
                         </target>
                     </configuration>
@@ -146,16 +147,6 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.apache.hbase</groupId>
-      <artifactId>hbase-logging</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.hbase</groupId>
-      <artifactId>hbase-logging</artifactId>
-      <type>test-jar</type>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
       <groupId>org.apache.hbase.thirdparty</groupId>
       <artifactId>hbase-shaded-miscellaneous</artifactId>
     </dependency>
@@ -191,23 +182,18 @@
       <artifactId>commons-validator</artifactId>
       <scope>compile</scope>
     </dependency>
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
+    </dependency>
     <!-- tracing Dependencies -->
     <dependency>
-      <groupId>io.opentelemetry</groupId>
-      <artifactId>opentelemetry-api</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.opentelemetry</groupId>
-      <artifactId>opentelemetry-semconv</artifactId>
+      <groupId>org.apache.htrace</groupId>
+      <artifactId>htrace-core4</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
       <artifactId>commons-crypto</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>com.github.stephenc.findbugs</groupId>
@@ -216,39 +202,18 @@
       <optional>true</optional>
     </dependency>
     <dependency>
-      <groupId>org.hamcrest</groupId>
-      <artifactId>hamcrest-library</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>jcl-over-slf4j</artifactId>
-      <scope>test</scope>
+      <!--For Hadoop-->
+      <groupId>log4j</groupId>
+      <artifactId>log4j</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>jul-to-slf4j</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.logging.log4j</groupId>
-      <artifactId>log4j-api</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.logging.log4j</groupId>
-      <artifactId>log4j-core</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.logging.log4j</groupId>
-      <artifactId>log4j-slf4j-impl</artifactId>
-      <scope>test</scope>
+      <artifactId>junit</artifactId>
+      <groupId>junit</groupId>
     </dependency>
     <dependency>
       <groupId>org.apache.kerby</groupId>
