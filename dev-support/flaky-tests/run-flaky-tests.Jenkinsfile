@@ -21,12 +21,12 @@ pipeline {
     }
   }
   triggers {
-    cron('H H/4 * * *') // Every four hours. See https://jenkins.io/doc/book/pipeline/syntax/#cron-syntax
+    cron('H H/6 * * *') // Every four hours. See https://jenkins.io/doc/book/pipeline/syntax/#cron-syntax
   }
   options {
     // this should roughly match how long we tell the flaky dashboard to look at
     buildDiscarder(logRotator(numToKeepStr: '30'))
-    timeout (time: 2, unit: 'HOURS')
+    timeout (time: 4, unit: 'HOURS')
     timestamps()
   }
   parameters {
@@ -34,8 +34,8 @@ pipeline {
   }
   tools {
     // this should match what the yetus nightly job for the branch will use
-    maven 'maven_latest'
-    jdk "jdk_1.8_latest"
+    maven 'Maven (latest)'
+    jdk "JDK 1.8 (latest)"
   }
   stages {
     stage ('run flaky tests') {
@@ -49,7 +49,7 @@ pipeline {
             mvn_args=("${mvn_args[@]}" -X)
             set -x
           fi
-          curl "${curl_args[@]}" -o includes.txt "${JENKINS_URL}/job/HBase/job/HBase-Find-Flaky-Tests/job/${BRANCH_NAME}/lastSuccessfulBuild/artifact/output/includes"
+          curl "${curl_args[@]}" -o includes.txt "${JENKINS_URL}/job/HBase/job/HBase-Find-Flaky-Tests/job/${BRANCH_NAME}/lastSuccessfulBuild/artifact/includes"
           if [ -s includes.txt ]; then
             rm -rf local-repository/org/apache/hbase
             mvn clean "${mvn_args[@]}"
@@ -61,7 +61,7 @@ pipeline {
             else
               echo "Skipped gathering machine environment because we couldn't read the script to do so."
             fi
-            mvn -T0.25C package "${mvn_args[@]}" -Dtest="$(cat includes.txt)" -Dmaven.test.redirectTestOutputToFile=true -Dsurefire.firstPartForkCount=0.25C -Dsurefire.secondPartForkCount=0.25C
+            mvn package "${mvn_args[@]}" -Dtest="$(cat includes.txt)" -Dmaven.test.redirectTestOutputToFile=true -Dsurefire.firstPartForkCount=3 -Dsurefire.secondPartForkCount=3
           else
             echo "set of flaky tests is currently empty."
           fi
