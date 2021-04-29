@@ -76,7 +76,18 @@ Options:
   -s [step]    runs a single step of the process; valid steps are: tag|publish-dist|publish-release.
                If none specified, runs tag, then publish-dist, and then publish-release.
                'publish-snapshot' is also an allowed, less used, option.
-  -x           debug. Does less clean up (env file, gpg forwarding on mac)
+  -x           debug. do less clean up. (env file, gpg forwarding on mac)
+  -u [upload-to-apache-public-resource]
+               ignores svn checkin and instead tries to upload RC artifacts to given public apache
+               resource location (https://home.apache.org). RC artifacts are uploaded using scp so
+               make sure you have setup password-less ssh to public resources
+               (home.apache.org / people.apache.org) by copying your localhost ssh public key to
+               remote location's /home/{APACHE_USERNAME}/.ssh/authorized_keys
+               Example usage:
+               ./do-release-docker.sh -d location -u home.apache.org:/home/{APACHE_USERNAME}/public_html/2.3.0RC0/
+               which represent destination as https://home.apache.org/~{APACHE_USERNAME}/2.3.0RC0/
+               For this example, /home/{APACHE_USERNAME}/public_html/2.3.0RC0 dir must be present
+               on home.apache.org.
 EOF
   exit 1
 }
@@ -86,7 +97,7 @@ IMGTAG=latest
 JAVA=
 RELEASE_STEP=
 GIT_REPO=
-while getopts "d:fhj:p:r:s:t:x" opt; do
+while getopts "d:u:fhj:p:r:s:t:x" opt; do
   case $opt in
     d) WORKDIR="$OPTARG" ;;
     f) DRY_RUN=0 ;;
@@ -96,6 +107,7 @@ while getopts "d:fhj:p:r:s:t:x" opt; do
     r) GIT_REPO="$OPTARG" ;;
     s) RELEASE_STEP="$OPTARG" ;;
     x) DEBUG=1 ;;
+    u) UPLOAD_TO_RESOURCE="$OPTARG" ;;
     h) usage ;;
     ?) error "Invalid option. Run with -h for help." ;;
   esac
@@ -147,7 +159,7 @@ done
 
 # We need to import that public key in the container in order to use the private key via the agent.
 GPG_KEY_FILE="$WORKDIR/gpg.key.public"
-log "Exporting public key for ${GPG_KEY}"
+echo "Exporting public key for ${GPG_KEY}"
 fcreate_secure "$GPG_KEY_FILE"
 $GPG "${GPG_ARGS[@]}" --export "${GPG_KEY}" > "${GPG_KEY_FILE}"
 
@@ -155,10 +167,10 @@ function cleanup {
   local id
   banner "Release Cleanup"
   if is_debug; then
-    log "skipping due to debug run"
+    echo "skipping due to debug run"
     return 0
   fi
-  log "details in cleanup.log"
+  echo "details in cleanup.log"
   if [ -f "${ENVFILE}" ]; then
     rm -f "$ENVFILE"
   fi
@@ -186,7 +198,7 @@ function cleanup {
 
 trap cleanup EXIT
 
-log "Host OS: ${HOST_OS}"
+echo "Host OS: ${HOST_OS}"
 if [ "${HOST_OS}" == "DARWIN" ]; then
   run_silent "Building gpg-agent-proxy image with tag ${IMGTAG}..." "docker-proxy-build.log" \
     docker build --build-arg "UID=${UID}" --build-arg "RM_USER=${USER}" \
@@ -198,7 +210,7 @@ run_silent "Building hbase-rm image with tag $IMGTAG..." "docker-build.log" \
       --build-arg "RM_USER=${USER}" "$SELF/hbase-rm"
 
 banner "Final prep for container launch."
-log "Writing out environment for container."
+echo "Writing out environment for container."
 # Write the release information to a file with environment variables to be used when running the
 # image.
 ENVFILE="$WORKDIR/env.list"
@@ -222,6 +234,7 @@ ASF_PASSWORD=$ASF_PASSWORD
 RELEASE_STEP=$RELEASE_STEP
 API_DIFF_TAG=$API_DIFF_TAG
 HOST_OS=$HOST_OS
+UPLOAD_TO_RESOURCE=$UPLOAD_TO_RESOURCE
 EOF
 
 JAVA_MOUNT=()
@@ -244,7 +257,7 @@ if [ -n "${GIT_REPO}" ]; then
       ;;
     # on the host but normally git wouldn't use the local optimization
     file://*)
-      log "Converted file:// git repo to a local path, which changes git to assume --local."
+      echo "[INFO] converted file:// git repo to a local path, which changes git to assume --local."
       GIT_REPO_MOUNT=(--mount "type=bind,src=${GIT_REPO#file://},dst=/opt/hbase-repo,consistency=delegated")
       echo "HOST_GIT_REPO=${GIT_REPO}" >> "${ENVFILE}"
       GIT_REPO="/opt/hbase-repo"
@@ -286,8 +299,8 @@ fi
 GPG_PROXY_MOUNT=()
 if [ "${HOST_OS}" == "DARWIN" ]; then
   GPG_PROXY_MOUNT=(--mount "type=volume,src=gpgagent,dst=/home/${USER}/.gnupg/")
-  log "Setting up GPG agent proxy container needed on OS X."
-  log "    we should clean this up for you. If that fails the container ID is below and in " \
+  echo "Setting up GPG agent proxy container needed on OS X."
+  echo "    we should clean this up for you. If that fails the container ID is below and in " \
       "gpg-proxy.cid"
   #TODO the key pair used should be configurable
   docker run --rm -p 62222:22 \
@@ -301,8 +314,8 @@ if [ "${HOST_OS}" == "DARWIN" ]; then
   sort "${HOME}/.ssh/known_hosts" | comm -1 -3 - "${WORKDIR}/gpg-agent-proxy.ssh-keyscan" \
       > "${WORKDIR}/gpg-agent-proxy.known_hosts"
   if [ -s "${WORKDIR}/gpg-agent-proxy.known_hosts" ]; then
-    log "Your ssh known_hosts does not include the entries for the gpg-agent proxy container."
-    log "The following entry(ies) are missing:"
+    echo "Your ssh known_hosts does not include the entries for the gpg-agent proxy container."
+    echo "The following entry(ies) arre missing:"
     sed -e 's/^/    /' "${WORKDIR}/gpg-agent-proxy.known_hosts"
     read -r -p "Okay to add these entries to ${HOME}/.ssh/known_hosts? [y/n] " ANSWER
     if [ "$ANSWER" != "y" ]; then
@@ -310,8 +323,8 @@ if [ "${HOST_OS}" == "DARWIN" ]; then
     fi
     cat "${WORKDIR}/gpg-agent-proxy.known_hosts" >> "${HOME}/.ssh/known_hosts"
   fi
-  log "Launching ssh reverse tunnel from the container to gpg agent."
-  log "    we should clean this up for you. If that fails the PID is in gpg-proxy.ssh.pid"
+  echo "Launching ssh reverse tunnel from the container to gpg agent."
+  echo "    we should clean this up for you. If that fails the PID is in gpg-proxy.ssh.pid"
   ssh -p 62222 -R "/home/${USER}/.gnupg/S.gpg-agent:$(gpgconf --list-dir agent-extra-socket)" \
       -i "${HOME}/.ssh/id_rsa" -N -n localhost >gpg-proxy.ssh.log 2>&1 &
   echo $! > "${WORKDIR}/gpg-proxy.ssh.pid"
@@ -326,10 +339,10 @@ else
 fi
 
 banner "Building $RELEASE_TAG; output will be at $WORKDIR/output"
-log "We should clean the container up when we are done. If that fails then the container ID " \
+echo "We should clean the container up when we are done. If that fails then the container ID " \
     "is in release.cid"
 echo
-# Where possible we specify "consistency=delegated" when we do not need host access during the
+# Where possible we specifcy "consistency=delegated" when we do not need host access during the
 # build run. On Mac OS X specifically this gets us a big perf improvement.
 cmd=(docker run --rm -ti \
   --env-file "$ENVFILE" \
@@ -338,6 +351,7 @@ cmd=(docker run --rm -ti \
   "${JAVA_MOUNT[@]}" \
   "${GIT_REPO_MOUNT[@]}" \
   "${GPG_PROXY_MOUNT[@]}" \
+  --mount "type=bind,src=${HOME}/.ssh,dst=/home/${USER}/.ssh" \
   "org.apache.hbase/hbase-rm:$IMGTAG")
 echo "${cmd[*]}"
 "${cmd[@]}"

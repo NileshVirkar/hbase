@@ -81,17 +81,13 @@ set -e
 function cleanup {
   # If REPO was set, then leave things be. Otherwise if we defined a repo clean it out.
   if [[ -z "${REPO}" ]] && [[ -n "${MAVEN_LOCAL_REPO}" ]]; then
-    log "Cleaning up temp repo in '${MAVEN_LOCAL_REPO}'. Set REPO to reuse downloads." >&2
+    echo "Cleaning up temp repo in '${MAVEN_LOCAL_REPO}'. Set REPO to reuse downloads." >&2
     rm -f "${MAVEN_SETTINGS_FILE}" &> /dev/null || true
     rm -rf "${MAVEN_LOCAL_REPO}" &> /dev/null || true
   fi
 }
 
 if [ $# -ne 1 ]; then
-  exit_with_usage
-fi
-
-if [[ "$1" == "-h" ]]; then
   exit_with_usage
 fi
 
@@ -140,21 +136,19 @@ if [[ "$1" == "tag" ]]; then
 
   git config user.name "$GIT_NAME"
   git config user.email "$GIT_EMAIL"
-  git config user.signingkey "${GPG_KEY}"
 
   # Create release version
   maven_set_version "$RELEASE_VERSION"
-  find . -name pom.xml -exec git add {} \;
   git add RELEASENOTES.md CHANGES.md
 
-  git commit -s -m "Preparing ${PROJECT} release $RELEASE_TAG; tagging and updates to CHANGES.md and RELEASENOTES.md"
-  log "Creating tag $RELEASE_TAG at the head of $GIT_BRANCH"
-  git tag -s -m "Via create-release" "$RELEASE_TAG"
+  git commit -a -m "Preparing ${PROJECT} release $RELEASE_TAG; tagging and updates to CHANGES.md and RELEASENOTES.md"
+  echo "Creating tag $RELEASE_TAG at the head of $GIT_BRANCH"
+  git tag "$RELEASE_TAG"
 
   # Create next version
   maven_set_version "$NEXT_VERSION"
-  find . -name pom.xml -exec git add {} \;
-  git commit -s -m "Preparing development version $NEXT_VERSION"
+
+  git commit -a -m "Preparing development version $NEXT_VERSION"
 
   if ! is_dry_run; then
     # Push changes
@@ -165,7 +159,7 @@ if [[ "$1" == "tag" ]]; then
   else
     cd ..
     mv "${PROJECT}" "${PROJECT}.tag"
-    log "Dry run: Clone with version changes and tag available as ${PROJECT}.tag in the output directory."
+    echo "Dry run: Clone with version changes and tag available as ${PROJECT}.tag in the output directory."
   fi
   exit 0
 fi
@@ -192,8 +186,7 @@ fi
 cd "${PROJECT}"
 git checkout "$GIT_REF"
 git_hash="$(git rev-parse --short HEAD)"
-GIT_LONG_HASH="$(git rev-parse HEAD)"
-log "Checked out ${PROJECT} at ${GIT_REF} commit $git_hash"
+echo "Checked out ${PROJECT} at ${GIT_REF} commit $git_hash"
 
 if [ -z "${RELEASE_VERSION}" ]; then
   RELEASE_VERSION="$(maven_get_version)"
@@ -214,15 +207,10 @@ fi
 
 git clean -d -f -x
 cd ..
-if [[ "$PROJECT" =~ ^hbase- ]]; then
-  DEST_DIR_NAME="${PROJECT}-${package_version_name}"
-else
-  DEST_DIR_NAME="$package_version_name"
-fi
 
 if [[ "$1" == "publish-dist" ]]; then
   # Source and binary tarballs
-  log "Packaging release source tarballs"
+  echo "Packaging release source tarballs"
   make_src_release "${PROJECT}" "${RELEASE_VERSION}"
 
   # we do not have binary tarballs for hbase-thirdparty
@@ -230,12 +218,17 @@ if [[ "$1" == "publish-dist" ]]; then
     make_binary_release "${PROJECT}" "${RELEASE_VERSION}"
   fi
 
+  if [[ "$PROJECT" =~ ^hbase- ]]; then
+    DEST_DIR_NAME="${PROJECT}-${package_version_name}"
+  else
+    DEST_DIR_NAME="$package_version_name"
+  fi
   svn_target="svn-${PROJECT}"
   svn co --depth=empty "$RELEASE_STAGING_LOCATION" "$svn_target"
   rm -rf "${svn_target:?}/${DEST_DIR_NAME}"
   mkdir -p "$svn_target/${DEST_DIR_NAME}"
 
-  log "Copying release tarballs"
+  echo "Copying release tarballs"
   cp "${PROJECT}"-*.tar.* "$svn_target/${DEST_DIR_NAME}/"
   cp "${PROJECT}/CHANGES.md" "$svn_target/${DEST_DIR_NAME}/"
   cp "${PROJECT}/RELEASENOTES.md" "$svn_target/${DEST_DIR_NAME}/"
@@ -248,20 +241,24 @@ if [[ "$1" == "publish-dist" ]]; then
   fi
   shopt -u nocasematch
 
-  log "svn add"
   svn add "$svn_target/${DEST_DIR_NAME}"
 
-  if ! is_dry_run; then
+  if upload_to_svn; then
     cd "$svn_target"
     svn ci --username "$ASF_USERNAME" --password "$ASF_PASSWORD" -m"Apache ${PROJECT} $package_version_name" --no-auth-cache
     cd ..
     rm -rf "$svn_target"
+  elif upload_to_user_resource; then
+    cd "$svn_target/${DEST_DIR_NAME}"
+    scp * $UPLOAD_TO_RESOURCE
+    cd ..
+    cd ..
+    rm -rf "$svn_target"
   else
     mv "$svn_target/${DEST_DIR_NAME}" "${svn_target}_${DEST_DIR_NAME}.dist"
-    log "Dry run: svn-managed 'dist' directory with release tarballs, CHANGES.md and RELEASENOTES.md available as $(pwd)/${svn_target}_${DEST_DIR_NAME}.dist"
+    echo "Ignored svn ci: svn-managed 'dist' directory with release tarballs, CHANGES.md and RELEASENOTES.md available as $(pwd)/${svn_target}_${DEST_DIR_NAME}.dist"
     rm -rf "$svn_target"
   fi
-  log "svn ci done"
 
   exit 0
 fi
@@ -270,13 +267,13 @@ if [[ "$1" == "publish-snapshot" ]]; then
   (
   cd "${PROJECT}"
   mvn_log="${BASE_DIR}/mvn_deploy_snapshot.log"
-  log "Publishing snapshot to nexus"
+  echo "Publishing snapshot to nexus"
   maven_deploy snapshot "$mvn_log"
   if ! is_dry_run; then
-    log "Snapshot artifacts successfully published to repo."
+    echo "Snapshot artifacts successfully published to repo."
     rm "$mvn_log"
   else
-    log "Dry run: Snapshot artifacts successfully built, but not published due to dry run."
+    echo "Dry run: Snapshot artifacts successfully built, but not published due to dry run."
   fi
   )
   exit $?
@@ -286,16 +283,16 @@ if [[ "$1" == "publish-release" ]]; then
   (
   cd "${PROJECT}"
   mvn_log="${BASE_DIR}/mvn_deploy_release.log"
-  log "Staging release in nexus"
+  echo "Staging release in nexus"
   maven_deploy release "$mvn_log"
   declare staged_repo_id="dryrun-no-repo"
   if ! is_dry_run; then
     staged_repo_id=$(grep -o "Closing staging repository with ID .*" "$mvn_log" \
         | sed -e 's/Closing staging repository with ID "\([^"]*\)"./\1/')
-    log "Release artifacts successfully published to repo ${staged_repo_id}"
+    echo "Release artifacts successfully published to repo ${staged_repo_id}"
     rm "$mvn_log"
   else
-    log "Dry run: Release artifacts successfully built, but not published due to dry run."
+    echo "Dry run: Release artifacts successfully built, but not published due to dry run."
   fi
   # Dump out email to send. Where we find vote.tmpl depends
   # on where this script is run from
@@ -309,5 +306,5 @@ fi
 set +x  # done with detailed logging
 cd ..
 rm -rf "${PROJECT}"
-log "ERROR: expects to be called with 'tag', 'publish-dist', 'publish-release', or 'publish-snapshot'" >&2
+echo "ERROR: expects to be called with 'tag', 'publish-dist', 'publish-release', or 'publish-snapshot'" >&2
 exit_with_usage
