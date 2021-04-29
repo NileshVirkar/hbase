@@ -21,11 +21,9 @@ import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.regionserver.wal.MetricsWAL;
 import org.apache.hadoop.hbase.regionserver.wal.ProtobufLogReader;
@@ -37,6 +35,7 @@ import org.apache.hadoop.hbase.wal.WALProvider.Writer;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Entry point for users of the Write Ahead Log.
@@ -86,7 +85,6 @@ public class WALFactory {
   public static final String WAL_ENABLED = "hbase.regionserver.hlog.enabled";
 
   final String factoryId;
-  final Abortable abortable;
   private final WALProvider provider;
   // The meta updates are written to a different wal. If this
   // regionserver holds meta regions, then this ref will be non-null.
@@ -120,13 +118,14 @@ public class WALFactory {
     // this instance can't create wals, just reader/writers.
     provider = null;
     factoryId = SINGLETON_ID;
-    this.abortable = null;
   }
 
+  @VisibleForTesting
   Providers getDefaultProvider() {
     return Providers.defaultProvider;
   }
 
+  @VisibleForTesting
   public Class<? extends WALProvider> getProviderClass(String key, String defaultValue) {
     try {
       Providers provider = Providers.valueOf(conf.get(key, defaultValue));
@@ -175,7 +174,7 @@ public class WALFactory {
   public WALFactory(Configuration conf, String factoryId) throws IOException {
     // default enableSyncReplicationWALProvider is true, only disable SyncReplicationWALProvider
     // for HMaster or HRegionServer which take system table only. See HBASE-19999
-    this(conf, factoryId, null, true);
+    this(conf, factoryId, true);
   }
 
   /**
@@ -183,12 +182,11 @@ public class WALFactory {
    *          instances.
    * @param factoryId a unique identifier for this factory. used i.e. by filesystem implementations
    *          to make a directory
-   * @param abortable the server associated with this WAL file
    * @param enableSyncReplicationWALProvider whether wrap the wal provider to a
    *          {@link SyncReplicationWALProvider}
    */
-  public WALFactory(Configuration conf, String factoryId, Abortable abortable,
-      boolean enableSyncReplicationWALProvider) throws IOException {
+  public WALFactory(Configuration conf, String factoryId, boolean enableSyncReplicationWALProvider)
+      throws IOException {
     // until we've moved reader/writer construction down into providers, this initialization must
     // happen prior to provider initialization, in case they need to instantiate a reader/writer.
     timeoutMillis = conf.getInt("hbase.hlog.open.timeout", 300000);
@@ -197,21 +195,20 @@ public class WALFactory {
       AbstractFSWALProvider.Reader.class);
     this.conf = conf;
     this.factoryId = factoryId;
-    this.abortable = abortable;
     // end required early initialization
     if (conf.getBoolean(WAL_ENABLED, true)) {
       WALProvider provider = createProvider(getProviderClass(WAL_PROVIDER, DEFAULT_WAL_PROVIDER));
       if (enableSyncReplicationWALProvider) {
         provider = new SyncReplicationWALProvider(provider);
       }
-      provider.init(this, conf, null, this.abortable);
+      provider.init(this, conf, null);
       provider.addWALActionsListener(new MetricsWAL());
       this.provider = provider;
     } else {
       // special handling of existing configuration behavior.
       LOG.warn("Running with WAL disabled.");
       provider = new DisabledWALProvider();
-      provider.init(this, conf, factoryId, null);
+      provider.init(this, conf, factoryId);
     }
   }
 
@@ -280,7 +277,7 @@ public class WALFactory {
         clz = getProviderClass(META_WAL_PROVIDER, conf.get(WAL_PROVIDER, DEFAULT_WAL_PROVIDER));
       }
       provider = createProvider(clz);
-      provider.init(this, conf, AbstractFSWALProvider.META_WAL_PROVIDER_ID, this.abortable);
+      provider.init(this, conf, AbstractFSWALProvider.META_WAL_PROVIDER_ID);
       provider.addWALActionsListener(new MetricsWAL());
       if (metaProvider.compareAndSet(null, provider)) {
         return provider;
@@ -336,9 +333,7 @@ public class WALFactory {
           reader = lrClass.getDeclaredConstructor().newInstance();
           reader.init(fs, path, conf, null);
           return reader;
-        } catch (Exception e) {
-          // catch Exception so that we close reader for all exceptions. If we don't
-          // close the reader, we leak a socket.
+        } catch (IOException e) {
           if (reader != null) {
             try {
               reader.close();
@@ -348,38 +343,34 @@ public class WALFactory {
             }
           }
 
-          // Only inspect the Exception to consider retry when it's an IOException
-          if (e instanceof IOException) {
-            String msg = e.getMessage();
-            if (msg != null
-                && (msg.contains("Cannot obtain block length")
-                    || msg.contains("Could not obtain the last block") || msg
-                      .matches("Blocklist for [^ ]* has changed.*"))) {
-              if (++nbAttempt == 1) {
-                LOG.warn("Lease should have recovered. This is not expected. Will retry", e);
-              }
-              if (reporter != null && !reporter.progress()) {
-                throw new InterruptedIOException("Operation is cancelled");
-              }
-              if (nbAttempt > 2 && openTimeout < EnvironmentEdgeManager.currentTime()) {
-                LOG.error("Can't open after " + nbAttempt + " attempts and "
-                    + (EnvironmentEdgeManager.currentTime() - startWaiting) + "ms " + " for " + path);
-              } else {
-                try {
-                  Thread.sleep(nbAttempt < 3 ? 500 : 1000);
-                  continue; // retry
-                } catch (InterruptedException ie) {
-                  InterruptedIOException iioe = new InterruptedIOException();
-                  iioe.initCause(ie);
-                  throw iioe;
-                }
-              }
-              throw new LeaseNotRecoveredException(e);
+          String msg = e.getMessage();
+          if (msg != null
+              && (msg.contains("Cannot obtain block length")
+                  || msg.contains("Could not obtain the last block") || msg
+                    .matches("Blocklist for [^ ]* has changed.*"))) {
+            if (++nbAttempt == 1) {
+              LOG.warn("Lease should have recovered. This is not expected. Will retry", e);
             }
+            if (reporter != null && !reporter.progress()) {
+              throw new InterruptedIOException("Operation is cancelled");
+            }
+            if (nbAttempt > 2 && openTimeout < EnvironmentEdgeManager.currentTime()) {
+              LOG.error("Can't open after " + nbAttempt + " attempts and "
+                  + (EnvironmentEdgeManager.currentTime() - startWaiting) + "ms " + " for " + path);
+            } else {
+              try {
+                Thread.sleep(nbAttempt < 3 ? 500 : 1000);
+                continue; // retry
+              } catch (InterruptedException ie) {
+                InterruptedIOException iioe = new InterruptedIOException();
+                iioe.initCause(ie);
+                throw iioe;
+              }
+            }
+            throw new LeaseNotRecoveredException(e);
+          } else {
+            throw e;
           }
-
-          // Rethrow the original exception if we are not retrying due to HDFS-isms.
-          throw e;
         }
       }
     } catch (IOException ie) {
@@ -406,6 +397,7 @@ public class WALFactory {
    * Uses defaults.
    * @return an overwritable writer for recovered edits. caller should close.
    */
+  @VisibleForTesting
   public Writer createRecoveredEditsWriter(final FileSystem fs, final Path path)
       throws IOException {
     return FSHLogProvider.createWriter(conf, fs, path, true);
@@ -485,6 +477,7 @@ public class WALFactory {
    * Uses defaults.
    * @return a writer that won't overwrite files. Caller must close.
    */
+  @VisibleForTesting
   public static Writer createWALWriter(final FileSystem fs, final Path path,
       final Configuration configuration)
       throws IOException {

@@ -446,9 +446,8 @@ public class MiniHBaseCluster extends HBaseCluster {
     ServerName rsServerName = t.getRegionServer().getServerName();
 
     long start = System.currentTimeMillis();
-    ClusterMetrics clusterStatus;
+    ClusterMetrics clusterStatus = getClusterMetrics();
     while ((System.currentTimeMillis() - start) < timeout) {
-      clusterStatus = getClusterMetrics();
       if (clusterStatus != null && clusterStatus.getLiveServerMetrics().containsKey(rsServerName)) {
         return t;
       }
@@ -706,6 +705,10 @@ public class MiniHBaseCluster extends HBaseCluster {
   }
 
   private void executeFlush(HRegion region) throws IOException {
+    if (!region.areWritesEnabled()) {
+      return;
+    }
+
     // retry 5 times if we can not flush
     for (int i = 0; i < 5; i++) {
       FlushResult result = region.flush(true);

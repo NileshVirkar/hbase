@@ -36,6 +36,8 @@ import org.apache.hadoop.hbase.util.ClassSize;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.yetus.audience.InterfaceAudience;
 
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos.CompactionDescriptor;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos.FlushDescriptor;
@@ -91,14 +93,14 @@ public class WALEdit implements HeapSize {
    *   {@link #isCompactionMarker(Cell)}
    */
   @Deprecated
-  @InterfaceAudience.Private
+  @VisibleForTesting
   public static final byte[] COMPACTION = Bytes.toBytes("HBASE::COMPACTION");
 
   /**
    * @deprecated Since 2.3.0. Make it protected, internal-use only.
    */
   @Deprecated
-  @InterfaceAudience.Private
+  @VisibleForTesting
   public static final byte [] FLUSH = Bytes.toBytes("HBASE::FLUSH");
 
   /**
@@ -128,7 +130,10 @@ public class WALEdit implements HeapSize {
   private static final byte [] REGION_EVENT_CLOSE =
       createRegionEventDescriptorQualifier(RegionEventDescriptor.EventType.REGION_CLOSE);
 
-  @InterfaceAudience.Private
+  private static final byte [] REGION_EVENT_OPEN =
+    createRegionEventDescriptorQualifier(RegionEventDescriptor.EventType.REGION_OPEN);
+
+  @VisibleForTesting
   public static final byte [] BULK_LOAD = Bytes.toBytes("HBASE::BULK_LOAD");
 
   private final transient boolean replay;
@@ -318,6 +323,15 @@ public class WALEdit implements HeapSize {
         FlushDescriptor.parseFrom(CellUtil.cloneValue(cell)): null;
   }
 
+  public static FlushDescriptor getCommitFlushDescriptor(Cell cell) throws IOException {
+    FlushDescriptor desc =  getFlushDescriptor(cell);
+    if ((desc != null) && desc.getAction() != WALProtos.FlushDescriptor.FlushAction.COMMIT_FLUSH) {
+        desc = null;
+    }
+    return desc;
+  }
+
+
   /**
    * @return A meta Marker WALEdit that has a single Cell whose value is the passed in
    *   <code>regionEventDesc</code> serialized and whose row is this region,
@@ -330,7 +344,7 @@ public class WALEdit implements HeapSize {
     return createRegionEventWALEdit(getRowForRegion(hri), regionEventDesc);
   }
 
-  @InterfaceAudience.Private
+  @VisibleForTesting
   public static WALEdit createRegionEventWALEdit(byte [] rowForRegion,
       RegionEventDescriptor regionEventDesc) {
     KeyValue kv = new KeyValue(rowForRegion, METAFAMILY,
@@ -343,9 +357,18 @@ public class WALEdit implements HeapSize {
    * @return Cell qualifier for the passed in RegionEventDescriptor Type; e.g. we'll
    *   return something like a byte array with HBASE::REGION_EVENT::REGION_OPEN in it.
    */
-  @InterfaceAudience.Private
+  @VisibleForTesting
   public static byte [] createRegionEventDescriptorQualifier(RegionEventDescriptor.EventType t) {
     return Bytes.toBytes(REGION_EVENT_PREFIX_STR + t.toString());
+  }
+
+  /**
+   * Public so can be accessed from regionserver.wal package.
+   * @return True if this is a Marker Edit and it is a RegionOpen type.
+   */
+  public boolean isRegionOpenMarker() {
+    return isMetaEdit() && PrivateCellUtil.matchingQualifier(this.cells.get(0),
+      REGION_EVENT_OPEN, 0, REGION_EVENT_OPEN.length);
   }
 
   /**

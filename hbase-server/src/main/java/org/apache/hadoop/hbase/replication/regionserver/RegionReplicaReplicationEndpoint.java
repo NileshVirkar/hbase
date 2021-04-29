@@ -69,9 +69,6 @@ public class RegionReplicaReplicationEndpoint extends HBaseReplicationEndpoint {
 
   private static final Logger LOG = LoggerFactory.getLogger(RegionReplicaReplicationEndpoint.class);
 
-  // Can be configured differently than hbase.client.retries.number
-  private static String CLIENT_RETRIES_NUMBER =
-    "hbase.region.replica.replication.client.retries.number";
 
   private Configuration conf;
   private AsyncClusterConnection connection;
@@ -182,16 +179,7 @@ public class RegionReplicaReplicationEndpoint extends HBaseReplicationEndpoint {
   private void replicate(CompletableFuture<Long> future, RegionLocations locs,
       TableDescriptor tableDesc, byte[] encodedRegionName, byte[] row, List<Entry> entries) {
     if (locs.size() == 1) {
-      LOG.info("Only one location for {}.{}, refresh the location cache only for meta now",
-        tableDesc.getTableName(), Bytes.toString(encodedRegionName));
-
-      // This could happen to meta table. In case of meta table comes with no replica and
-      // later it is changed to multiple replicas. The cached location for meta may only has
-      // the primary region. In this case, it needs to clean up and refresh the cached meta
-      // locations.
-      if (tableDesc.isMetaTable()) {
-        connection.getRegionLocator(tableDesc.getTableName()).clearRegionLocationCache();
-      }
+      // Could this happen?
       future.complete(Long.valueOf(entries.size()));
       return;
     }
