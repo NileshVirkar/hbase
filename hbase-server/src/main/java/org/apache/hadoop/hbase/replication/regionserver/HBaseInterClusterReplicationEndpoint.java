@@ -39,6 +39,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Abortable;
@@ -47,11 +48,9 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.AsyncRegionServerAdmin;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.ipc.RpcServer;
-import org.apache.hadoop.hbase.protobuf.ReplicationProtobufUtil;
 import org.apache.hadoop.hbase.regionserver.NoSuchColumnFamilyException;
 import org.apache.hadoop.hbase.regionserver.wal.WALUtil;
 import org.apache.hadoop.hbase.replication.HBaseReplicationEndpoint;
@@ -65,6 +64,7 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
@@ -261,6 +261,7 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
   /**
    * Check if there's an {@link TableNotFoundException} in the caused by stacktrace.
    */
+  @VisibleForTesting
   public static boolean isTableNotFoundException(Throwable io) {
     if (io instanceof RemoteException) {
       io = ((RemoteException) io).unwrapRemoteException();
@@ -279,6 +280,7 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
   /**
    * Check if there's an {@link NoSuchColumnFamilyException} in the caused by stacktrace.
    */
+  @VisibleForTesting
   public static boolean isNoSuchColumnFamilyException(Throwable io) {
     if (io instanceof RemoteException) {
       io = ((RemoteException) io).unwrapRemoteException();
@@ -294,6 +296,7 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
     return false;
   }
 
+  @VisibleForTesting
   List<List<Entry>> filterNotExistTableEdits(final List<List<Entry>> oldEntryList) {
     List<List<Entry>> entryList = new ArrayList<>();
     Map<TableName, Boolean> existMap = new HashMap<>();
@@ -337,6 +340,7 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
     return entryList;
   }
 
+  @VisibleForTesting
   List<List<Entry>> filterNotExistColumnFamilyEdits(final List<List<Entry>> oldEntryList) {
     List<List<Entry>> entryList = new ArrayList<>();
     Map<TableName, Set<String>> existColumnFamilyMap = new HashMap<>();
@@ -550,6 +554,7 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
     notifyStopped();
   }
 
+  @VisibleForTesting
   protected int replicateEntries(List<Entry> entries, int batchIndex, int timeout)
       throws IOException {
     SinkPeer sinkPeer = null;
@@ -561,11 +566,9 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
           logPeerId(), entriesHashCode, entries.size(), size, replicationClusterId);
       }
       sinkPeer = getReplicationSink();
-      AsyncRegionServerAdmin rsAdmin = sinkPeer.getRegionServer();
       try {
-        ReplicationProtobufUtil.replicateWALEntry(rsAdmin,
-          entries.toArray(new Entry[entries.size()]), replicationClusterId, baseNamespaceDir,
-          hfileArchiveDir, timeout);
+        sinkPeer.replicateWALEntry(entries.toArray(new Entry[entries.size()]), replicationClusterId,
+            baseNamespaceDir, hfileArchiveDir, timeout);
         if (LOG.isTraceEnabled()) {
           LOG.trace("{} Completed replicating batch {}", logPeerId(), entriesHashCode);
         }
@@ -605,6 +608,7 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
     return batchIndex;
   }
 
+  @VisibleForTesting
   protected Callable<Integer> createReplicator(List<Entry> entries, int batchIndex, int timeout) {
     return isSerial ? () -> serialReplicateRegionEntries(entries, batchIndex, timeout)
         : () -> replicateEntries(entries, batchIndex, timeout);

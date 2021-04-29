@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.PriorityBlockingQueue;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -29,6 +30,7 @@ import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.replication.ReplicationPeer;
 import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
+import org.apache.hadoop.hbase.replication.ReplicationSourceController;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -47,23 +49,24 @@ public class RecoveredReplicationSource extends ReplicationSource {
   private String actualPeerId;
 
   @Override
-  public void init(Configuration conf, FileSystem fs, ReplicationSourceManager manager,
-      ReplicationQueueStorage queueStorage, ReplicationPeer replicationPeer, Server server,
-      String peerClusterZnode, UUID clusterId, WALFileLengthProvider walFileLengthProvider,
-      MetricsSource metrics) throws IOException {
-    super.init(conf, fs, manager, queueStorage, replicationPeer, server, peerClusterZnode,
-      clusterId, walFileLengthProvider, metrics);
+  public void init(Configuration conf, FileSystem fs, Path walDir,
+    ReplicationSourceController overallController, ReplicationQueueStorage queueStorage,
+    ReplicationPeer replicationPeer, Server server, ServerName producer, String queueId,
+    UUID clusterId, WALFileLengthProvider walFileLengthProvider, MetricsSource metrics)
+    throws IOException {
+    super.init(conf, fs, walDir, overallController, queueStorage, replicationPeer, server, producer,
+      queueId, clusterId, walFileLengthProvider, metrics);
     this.actualPeerId = this.replicationQueueInfo.getPeerId();
   }
 
   @Override
-  protected RecoveredReplicationSourceShipper createNewShipper(String walGroupId) {
-    return new RecoveredReplicationSourceShipper(conf, walGroupId, logQueue, this, queueStorage);
+  protected RecoveredReplicationSourceShipper createNewShipper(String walGroupId,
+      PriorityBlockingQueue<Path> queue) {
+    return new RecoveredReplicationSourceShipper(conf, walGroupId, queue, this, queueStorage);
   }
 
-  public void locateRecoveredPaths(String walGroupId) throws IOException {
+  public void locateRecoveredPaths(PriorityBlockingQueue<Path> queue) throws IOException {
     boolean hasPathChanged = false;
-    PriorityBlockingQueue<Path> queue = logQueue.getQueue(walGroupId);
     PriorityBlockingQueue<Path> newPaths = new PriorityBlockingQueue<Path>(queueSizePerGroup,
       new AbstractFSWALProvider.WALStartTimeComparator());
     pathsLoop: for (Path path : queue) {
@@ -93,7 +96,7 @@ public class RecoveredReplicationSource extends ReplicationSource {
               deadRsDirectory.suffix(AbstractFSWALProvider.SPLITTING_EXT), path.getName()) };
           for (Path possibleLogLocation : locs) {
             LOG.info("Possible location " + possibleLogLocation.toUri().toString());
-            if (manager.getFs().exists(possibleLogLocation)) {
+            if (this.fs.exists(possibleLogLocation)) {
               // We found the right new location
               LOG.info("Log " + path + " still exists at " + possibleLogLocation);
               newPaths.add(possibleLogLocation);
@@ -116,9 +119,9 @@ public class RecoveredReplicationSource extends ReplicationSource {
       // put the correct locations in the queue
       // since this is a recovered queue with no new incoming logs,
       // there shouldn't be any concurrency issues
-      logQueue.clear(walGroupId);
+      queue.clear();
       for (Path path : newPaths) {
-        logQueue.enqueueLog(path, walGroupId);
+        queue.add(path);
       }
     }
   }
@@ -126,7 +129,7 @@ public class RecoveredReplicationSource extends ReplicationSource {
   // N.B. the ReplicationSyncUp tool sets the manager.getWALDir to the root of the wal
   // area rather than to the wal area for a particular region server.
   private Path getReplSyncUpPath(Path path) throws IOException {
-    FileStatus[] rss = fs.listStatus(manager.getLogDir());
+    FileStatus[] rss = fs.listStatus(walDir);
     for (FileStatus rs : rss) {
       Path p = rs.getPath();
       FileStatus[] logs = fs.listStatus(p);
@@ -145,7 +148,7 @@ public class RecoveredReplicationSource extends ReplicationSource {
   void tryFinish() {
     if (workerThreads.isEmpty()) {
       this.getSourceMetrics().clear();
-      manager.finishRecoveredSource(this);
+      controller.finishRecoveredSource(this);
     }
   }
 

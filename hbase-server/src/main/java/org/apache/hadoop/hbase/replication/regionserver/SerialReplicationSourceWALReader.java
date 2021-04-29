@@ -18,6 +18,8 @@
 package org.apache.hadoop.hbase.replication.regionserver;
 
 import java.io.IOException;
+import java.util.concurrent.PriorityBlockingQueue;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -43,14 +45,14 @@ public class SerialReplicationSourceWALReader extends ReplicationSourceWALReader
   private final SerialReplicationChecker checker;
 
   public SerialReplicationSourceWALReader(FileSystem fs, Configuration conf,
-      ReplicationSourceLogQueue logQueue, long startPosition, WALEntryFilter filter,
-      ReplicationSource source, String walGroupId) {
-    super(fs, conf, logQueue, startPosition, filter, source, walGroupId);
+      PriorityBlockingQueue<Path> logQueue, long startPosition, WALEntryFilter filter,
+      ReplicationSource source) {
+    super(fs, conf, logQueue, startPosition, filter, source);
     checker = new SerialReplicationChecker(conf, source);
   }
 
   @Override
-  protected WALEntryBatch readWALEntries(WALEntryStream entryStream, WALEntryBatch batch)
+  protected WALEntryBatch readWALEntries(WALEntryStream entryStream)
       throws IOException, InterruptedException {
     Path currentPath = entryStream.getCurrentPath();
     if (!entryStream.hasNext()) {
@@ -70,7 +72,7 @@ public class SerialReplicationSourceWALReader extends ReplicationSourceWALReader
       currentPath = entryStream.getCurrentPath();
     }
     long positionBefore = entryStream.getPosition();
-    batch = createBatch(entryStream);
+    WALEntryBatch batch = createBatch(entryStream);
     for (;;) {
       Entry entry = entryStream.peek();
       boolean doFiltering = true;

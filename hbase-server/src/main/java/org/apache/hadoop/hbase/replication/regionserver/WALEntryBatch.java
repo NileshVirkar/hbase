@@ -31,7 +31,7 @@ import org.apache.yetus.audience.InterfaceAudience;
  * Holds a batch of WAL entries to replicate, along with some statistics
  */
 @InterfaceAudience.Private
-class WALEntryBatch {
+public class WALEntryBatch {
 
   // used by recovered replication queue to indicate that all the entries have been read.
   public static final WALEntryBatch NO_MORE_DATA = new WALEntryBatch(0, null);
@@ -92,10 +92,6 @@ class WALEntryBatch {
    */
   public Path getLastWalPath() {
     return lastWalPath;
-  }
-
-  public void setLastWalPath(Path lastWalPath) {
-    this.lastWalPath = lastWalPath;
   }
 
   /**

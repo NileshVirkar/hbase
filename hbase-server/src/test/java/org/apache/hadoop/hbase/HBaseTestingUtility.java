@@ -118,6 +118,7 @@ import org.apache.hadoop.hbase.security.HBaseKerberosUtils;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.security.visibility.VisibilityLabelsCache;
+import org.apache.hadoop.hbase.trace.TraceUtil;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSUtils;
@@ -603,6 +604,8 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
     Log4jUtils.setLogLevel(org.apache.hadoop.metrics2.impl.MetricsSystemImpl.class.getName(),
       "ERROR");
 
+    TraceUtil.initTracer(conf);
+
     this.dfsCluster = new MiniDFSCluster(0, this.conf, servers, true, true,
         true, null, racks, hosts, null);
 
@@ -636,6 +639,7 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
    * This is used before starting HDFS and map-reduce mini-clusters Run something like the below to
    * check for the likes of '/tmp' references -- i.e. references outside of the test data dir -- in
    * the conf.
+   *
    * <pre>
    * Configuration conf = TEST_UTIL.getConfiguration();
    * for (Iterator&lt;Map.Entry&lt;String, String&gt;&gt; i = conf.iterator(); i.hasNext();) {
@@ -1109,9 +1113,10 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
     Log4jUtils.setLogLevel(org.apache.hadoop.hbase.ScheduledChore.class.getName(), "INFO");
 
     Configuration c = new Configuration(this.conf);
+    TraceUtil.initTracer(c);
     this.hbaseCluster = new MiniHBaseCluster(c, option.getNumMasters(),
-      option.getNumAlwaysStandByMasters(), option.getNumRegionServers(), option.getRsPorts(),
-      option.getMasterClass(), option.getRsClass());
+        option.getNumAlwaysStandByMasters(), option.getNumRegionServers(), option.getRsPorts(),
+        option.getNumReplicationServers(), option.getMasterClass(), option.getRsClass());
     // Populate the master address configuration from mini cluster configuration.
     conf.set(HConstants.MASTER_ADDRS_KEY, MasterRegistry.getMasterAddr(c));
     // Don't leave here till we've done a successful scan of the hbase:meta
@@ -1236,8 +1241,8 @@ public class HBaseTestingUtility extends HBaseZKTestingUtility {
     closeConnection();
     this.hbaseCluster =
         new MiniHBaseCluster(this.conf, option.getNumMasters(), option.getNumAlwaysStandByMasters(),
-            option.getNumRegionServers(), option.getRsPorts(), option.getMasterClass(),
-            option.getRsClass());
+            option.getNumRegionServers(), option.getRsPorts(), option.getNumReplicationServers(),
+            option.getMasterClass(), option.getRsClass());
     // Don't leave here till we've done a successful scan of the hbase:meta
     Connection conn = ConnectionFactory.createConnection(this.conf);
     Table t = conn.getTable(TableName.META_TABLE_NAME);

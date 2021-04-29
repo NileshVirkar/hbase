@@ -154,6 +154,11 @@ public class MockNoopMasterServices implements MasterServices {
   }
 
   @Override
+  public ReplicationServerManager getReplicationServerManager() {
+    return null;
+  }
+
+  @Override
   public ZKWatcher getZooKeeper() {
     return null;
   }
@@ -518,6 +523,11 @@ public class MockNoopMasterServices implements MasterServices {
 
   @Override
   public MetaLocationSyncer getMetaLocationSyncer() {
+    return null;
+  }
+
+  @Override
+  public List<ServerName> listReplicationSinkServers() throws IOException {
     return null;
   }
 }

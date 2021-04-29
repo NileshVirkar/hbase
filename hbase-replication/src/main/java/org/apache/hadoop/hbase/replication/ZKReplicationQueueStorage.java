@@ -51,6 +51,7 @@ import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.org.apache.commons.collections4.CollectionUtils;
 
 /**
@@ -79,7 +80,7 @@ import org.apache.hbase.thirdparty.org.apache.commons.collections4.CollectionUti
  * </pre>
  */
 @InterfaceAudience.Private
-class ZKReplicationQueueStorage extends ZKReplicationStorageBase
+public class ZKReplicationQueueStorage extends ZKReplicationStorageBase
     implements ReplicationQueueStorage {
 
   private static final Logger LOG = LoggerFactory.getLogger(ZKReplicationQueueStorage.class);
@@ -102,6 +103,7 @@ class ZKReplicationQueueStorage extends ZKReplicationStorageBase
    */
   private final String hfileRefsZNode;
 
+  @VisibleForTesting
   final String regionsZNode;
 
   public ZKReplicationQueueStorage(ZKWatcher zookeeper, Configuration conf) {
@@ -121,7 +123,7 @@ class ZKReplicationQueueStorage extends ZKReplicationStorageBase
     return ZNodePaths.joinZNode(queuesZNode, serverName.getServerName());
   }
 
-  private String getQueueNode(ServerName serverName, String queueId) {
+  public String getQueueNode(ServerName serverName, String queueId) {
     return ZNodePaths.joinZNode(getRsNode(serverName), queueId);
   }
 
@@ -156,6 +158,7 @@ class ZKReplicationQueueStorage extends ZKReplicationStorageBase
    * @return ZNode path to persist the max sequence id that we've pushed for the given region and
    *         peer.
    */
+  @VisibleForTesting
   String getSerialReplicationRegionPeerNode(String encodedRegionName, String peerId) {
     if (encodedRegionName == null || encodedRegionName.length() != RegionInfo.MD5_HEX_LENGTH) {
       throw new IllegalArgumentException(
@@ -261,6 +264,7 @@ class ZKReplicationQueueStorage extends ZKReplicationStorageBase
    * Return the {lastPushedSequenceId, ZNodeDataVersion} pair. if ZNodeDataVersion is -1, it means
    * that the ZNode does not exist.
    */
+  @VisibleForTesting
   protected Pair<Long, Integer> getLastSequenceIdWithVersion(String encodedRegionName,
       String peerId) throws KeeperException {
     Stat stat = new Stat();
@@ -499,6 +503,7 @@ class ZKReplicationQueueStorage extends ZKReplicationStorageBase
   }
 
   // will be overridden in UTs
+  @VisibleForTesting
   protected int getQueuesZNodeCversion() throws KeeperException {
     Stat stat = new Stat();
     ZKUtil.getDataNoWatch(this.zookeeper, this.queuesZNode, stat);
@@ -636,6 +641,7 @@ class ZKReplicationQueueStorage extends ZKReplicationStorageBase
   }
 
   // will be overridden in UTs
+  @VisibleForTesting
   protected int getHFileRefsZNodeCversion() throws ReplicationException {
     Stat stat = new Stat();
     try {

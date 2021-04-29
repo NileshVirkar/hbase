@@ -56,7 +56,7 @@ import org.apache.hadoop.hbase.security.access.AccessChecker;
 import org.apache.hadoop.hbase.security.access.ZKPermissionWatcher;
 import org.apache.hadoop.hbase.zookeeper.LoadBalancerTracker;
 import org.apache.yetus.audience.InterfaceAudience;
-
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.protobuf.Service;
 
 /**
@@ -103,6 +103,11 @@ public interface MasterServices extends Server {
   ServerManager getServerManager();
 
   /**
+   * @return Master's {@link ReplicationServerManager} instance.
+   */
+  ReplicationServerManager getReplicationServerManager();
+
+  /**
    * @return Master's instance of {@link ExecutorService}
    */
   ExecutorService getExecutorService();
@@ -140,6 +145,7 @@ public interface MasterServices extends Server {
   /**
    * @return Tripped when Master has finished initialization.
    */
+  @VisibleForTesting
   public ProcedureEvent<?> getInitializedEvent();
 
   /**
@@ -577,4 +583,10 @@ public interface MasterServices extends Server {
    * We need to get this in MTP to tell the syncer the new meta replica count.
    */
   MetaLocationSyncer getMetaLocationSyncer();
+
+  /**
+   * Get a list of servers' addresses for replication sink.
+   * @return a list of servers' address
+   */
+  List<ServerName> listReplicationSinkServers() throws IOException;
 }

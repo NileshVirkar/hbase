@@ -101,8 +101,8 @@ public class TestGlobalReplicationThrottler {
     utility2.setZkCluster(miniZK);
     new ZKWatcher(conf2, "cluster2", null, true);
 
-    ReplicationPeerConfig rpc = ReplicationPeerConfig.newBuilder()
-      .setClusterKey(utility2.getClusterKey()).build();
+    ReplicationPeerConfig rpc = new ReplicationPeerConfig();
+    rpc.setClusterKey(utility2.getClusterKey());
 
     utility1.startMiniCluster();
     utility2.startMiniCluster();
@@ -118,6 +118,10 @@ public class TestGlobalReplicationThrottler {
 
   @AfterClass
   public static void tearDownAfterClass() throws Exception {
+    Admin admin1 = utility1.getAdmin();
+    admin1.removeReplicationPeer("peer1");
+    admin1.removeReplicationPeer("peer2");
+    admin1.removeReplicationPeer("peer3");
     utility2.shutdownMiniCluster();
     utility1.shutdownMiniCluster();
   }
