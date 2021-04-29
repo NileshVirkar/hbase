@@ -346,9 +346,9 @@ public class TestHRegion {
       }
 
       @Override
-      protected void doSync(long txid, boolean forceSync) throws IOException {
+      public void sync(long txid) throws IOException {
         storeFlushCtx.prepare();
-        super.doSync(txid, forceSync);
+        super.sync(txid);
       }
     }
 
@@ -1276,9 +1276,6 @@ public class TestHRegion {
     try {
       region.flush(true);
       fail("This should have thrown exception");
-    } catch (DroppedSnapshotException unexpected) {
-      // this should not be a dropped snapshot exception. Meaning that RS will not abort
-      throw unexpected;
     } catch (IOException expected) {
       // expected
     }
