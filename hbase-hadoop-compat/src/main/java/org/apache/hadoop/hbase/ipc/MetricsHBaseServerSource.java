@@ -20,9 +20,7 @@
 package org.apache.hadoop.hbase.ipc;
 
 import org.apache.hadoop.hbase.metrics.ExceptionTrackingSource;
-import org.apache.yetus.audience.InterfaceAudience;
 
-@InterfaceAudience.Private
 public interface MetricsHBaseServerSource extends ExceptionTrackingSource {
   String AUTHORIZATION_SUCCESSES_NAME = "authorizationSuccesses";
   String AUTHORIZATION_SUCCESSES_DESC =
@@ -54,18 +52,14 @@ public interface MetricsHBaseServerSource extends ExceptionTrackingSource {
   String TOTAL_CALL_TIME_NAME = "totalCallTime";
   String TOTAL_CALL_TIME_DESC = "Total call time, including both queued and processing time.";
   String QUEUE_SIZE_NAME = "queueSize";
-  String QUEUE_SIZE_DESC = "Number of bytes in the call queues; request has been read and " +
-    "parsed and is waiting to run or is currently being executed.";
+  String QUEUE_SIZE_DESC = "Number of bytes in the call queues.";
   String GENERAL_QUEUE_NAME = "numCallsInGeneralQueue";
-  String GENERAL_QUEUE_DESC = "Number of calls in the general call queue; " +
-    "parsed requests waiting in scheduler to be executed";
+  String GENERAL_QUEUE_DESC = "Number of calls in the general call queue.";
   String PRIORITY_QUEUE_NAME = "numCallsInPriorityQueue";
-  String METAPRIORITY_QUEUE_NAME = "numCallsInMetaPriorityQueue";
   String REPLICATION_QUEUE_NAME = "numCallsInReplicationQueue";
   String REPLICATION_QUEUE_DESC =
-      "Number of calls in the replication call queue waiting to be run";
-  String PRIORITY_QUEUE_DESC = "Number of calls in the priority call queue waiting to be run";
-  String METAPRIORITY_QUEUE_DESC = "Number of calls in the priority call queue waiting to be run";
+      "Number of calls in the replication call queue.";
+  String PRIORITY_QUEUE_DESC = "Number of calls in the priority call queue.";
   String WRITE_QUEUE_NAME = "numCallsInWriteQueue";
   String WRITE_QUEUE_DESC = "Number of calls in the write call queue; " +
     "parsed requests waiting in scheduler to be executed";
@@ -99,13 +93,8 @@ public interface MetricsHBaseServerSource extends ExceptionTrackingSource {
     "were served from the tail of the queue";
   String NUM_CALL_RESPONSE_QUEUE_NAME = "numCallsInResponseQueue";
   String NUM_CALL_RESPONSE_QUEUE_DESC = "Number of calls in response queue.";
-  String NUM_SIZE_RESPONSE_QUEUE_NAME = "numSizeInResponseQueue";
-  String NUM_SIZE_RESPONSE_QUEUE_DESC = "Size in response queue.";
-  // Direct Memory Usage metrics
-  String NETTY_DM_USAGE_NAME = "nettyDirectMemoryUsage";
-
-  String NETTY_DM_USAGE_DESC = "Current Netty direct memory usage.";
-
+  String SIZE_RESPONSE_QUEUE_NAME = "sizeOfResponseQueue";
+  String SIZE_RESPONSE_QUEUE_DESC = "Size of response queue.";
 
   void authorizationSuccess();
 
@@ -131,7 +120,10 @@ public interface MetricsHBaseServerSource extends ExceptionTrackingSource {
 
   void queuedAndProcessedCall(int totalTime);
 
-  void addCallToResponseQueue(long size);
+  void addCallToResponseQueue();
 
-  void removeCallFromResponseQueue(long size);
+  void removeCallFromResponseQueue();
+
+  void updateResponseQueueSize(long size);
+
 }

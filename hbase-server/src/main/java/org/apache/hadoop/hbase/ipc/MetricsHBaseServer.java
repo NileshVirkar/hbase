@@ -24,7 +24,7 @@ import org.apache.hadoop.hbase.MultiActionResultTooLarge;
 import org.apache.hadoop.hbase.NotServingRegionException;
 import org.apache.hadoop.hbase.RegionTooBusyException;
 import org.apache.hadoop.hbase.UnknownScannerException;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
 import org.apache.hadoop.hbase.exceptions.FailedSanityCheckException;
 import org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException;
@@ -86,12 +86,16 @@ public class MetricsHBaseServer {
     source.queuedAndProcessedCall(totalTime);
   }
 
-  void addCallToResponseQueue(int size) {
-    source.addCallToResponseQueue(size);
+  void addCallToResponseQueue() {
+    source.addCallToResponseQueue();
   }
 
-  void removeCallFromResponseQueue(int size) {
-    source.removeCallFromResponseQueue(size);
+  void removeCallFromResponseQueue() {
+    source.removeCallFromResponseQueue();
+  }
+
+  void updateResponseQueueSize(long size) {
+    source.updateResponseQueueSize(size);
   }
 
   public void exception(Throwable throwable) {
