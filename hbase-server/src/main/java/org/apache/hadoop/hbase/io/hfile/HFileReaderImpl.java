@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.hbase.io.hfile;
 
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.context.Scope;
 import java.io.DataInput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -50,9 +48,11 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.IdLock;
 import org.apache.hadoop.hbase.util.ObjectIntPair;
 import org.apache.hadoop.io.WritableUtils;
+import org.apache.htrace.core.TraceScope;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Implementation that can handle all hfile versions of {@link HFile.Reader}.
@@ -233,6 +233,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
     return this.hfileContext.getCellComparator();
   }
 
+  @VisibleForTesting
   public Compression.Algorithm getCompressionAlgorithm() {
     return trailer.getCompressionCodec();
   }
@@ -326,6 +327,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
     private ByteBufferKeyOnlyKeyValue bufBackedKeyOnlyKv = new ByteBufferKeyOnlyKeyValue();
     // A pair for reusing in blockSeek() so that we don't garbage lot of objects
     final ObjectIntPair<ByteBuffer> pair = new ObjectIntPair<>();
+    private boolean seekToSameBlock;
 
     /**
      * The next indexed key is to keep track of the indexed key of the next data block.
@@ -382,6 +384,11 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
     @Override
     public boolean isSeeked(){
       return blockBuffer != null;
+    }
+
+    @Override
+    public boolean isSeekToSameBlock() {
+      return seekToSameBlock;
     }
 
     @Override
@@ -980,8 +987,11 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
         Cell key, boolean seekBefore) throws IOException {
       if (this.curBlock == null || this.curBlock.getOffset() != seekToBlock.getOffset()) {
         updateCurrentBlock(seekToBlock);
+        seekToSameBlock = false;
       } else if (rewind) {
         blockBuffer.rewind();
+      } else {
+        seekToSameBlock = true;
       }
       // Update the nextIndexedKey
       this.nextIndexedKey = nextIndexedKey;
@@ -1289,8 +1299,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
 
     boolean useLock = false;
     IdLock.Entry lockEntry = null;
-    Span span = TraceUtil.getGlobalTracer().spanBuilder("HFileReaderImpl.readBlock").startSpan();
-    try (Scope traceScope = span.makeCurrent()) {
+    try (TraceScope traceScope = TraceUtil.createTrace("HFileReaderImpl.readBlock")) {
       while (true) {
         // Check cache for block. If found return.
         if (cacheConf.shouldReadBlockFromCache(expectedBlockType)) {
@@ -1305,7 +1314,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
             if (LOG.isTraceEnabled()) {
               LOG.trace("From Cache " + cachedBlock);
             }
-            span.addEvent("blockCacheHit");
+            TraceUtil.addTimelineAnnotation("blockCacheHit");
             assert cachedBlock.isUnpacked() : "Packed block leak.";
             if (cachedBlock.getBlockType().isData()) {
               if (updateCacheMetrics) {
@@ -1335,7 +1344,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
           // Carry on, please load.
         }
 
-        span.addEvent("blockCacheMiss");
+        TraceUtil.addTimelineAnnotation("blockCacheMiss");
         // Load block from filesystem.
         HFileBlock hfileBlock = fsBlockReader.readBlockData(dataBlockOffset, onDiskBlockSize, pread,
           !isCompaction, shouldUseHeap(expectedBlockType));
@@ -1365,7 +1374,6 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
       if (lockEntry != null) {
         offsetLock.releaseLockEntry(lockEntry);
       }
-      span.end();
     }
   }
 
@@ -1628,6 +1636,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
    * not completed, true otherwise
    */
   @Override
+  @VisibleForTesting
   public boolean prefetchComplete() {
     return PrefetchExecutor.isCompleted(path);
   }
@@ -1645,6 +1654,7 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
    * @return Scanner on this file.
    */
   @Override
+  @VisibleForTesting
   public HFileScanner getScanner(boolean cacheBlocks, final boolean pread) {
     return getScanner(cacheBlocks, pread, false);
   }

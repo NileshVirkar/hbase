@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hbase.regionserver;
 
+import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
@@ -25,13 +26,15 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeepDeletedCells;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ClassSize;
-import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Immutable information for scans over a store.
  */
 // Has to be public for PartitionedMobCompactor to access; ditto on tests making use of a few of
 // the accessors below. Shutdown access. TODO
+@VisibleForTesting
 @InterfaceAudience.Private
 public class ScanInfo {
   private byte[] family;
@@ -47,10 +50,11 @@ public class ScanInfo {
   private boolean parallelSeekEnabled;
   private final long preadMaxBytes;
   private final boolean newVersionBehavior;
+  private final long switchToNextBytes;
 
   public static final long FIXED_OVERHEAD = ClassSize.align(ClassSize.OBJECT
       + (2 * ClassSize.REFERENCE) + (2 * Bytes.SIZEOF_INT)
-      + (4 * Bytes.SIZEOF_LONG) + (4 * Bytes.SIZEOF_BOOLEAN));
+      + (5 * Bytes.SIZEOF_LONG) + (4 * Bytes.SIZEOF_BOOLEAN));
 
   /**
    * @param conf
@@ -74,6 +78,10 @@ public class ScanInfo {
         : StoreScanner.DEFAULT_HBASE_CELLS_SCANNED_PER_HEARTBEAT_CHECK;
   }
 
+  private static long getSwitchOverToNextBytes(Configuration conf, long preadMaxBytes) {
+    return conf.getLong(StoreScanner.HBASE_SWITCH_TO_NEXT_AFTER_BYTES_READ, preadMaxBytes);
+  }
+
   /**
    * @param conf
    * @param family Name of this store's column family
@@ -93,13 +101,15 @@ public class ScanInfo {
         conf.getLong(HConstants.TABLE_MAX_ROWSIZE_KEY, HConstants.TABLE_MAX_ROWSIZE_DEFAULT),
         conf.getBoolean("hbase.storescanner.use.pread", false), getCellsPerTimeoutCheck(conf),
         conf.getBoolean(StoreScanner.STORESCANNER_PARALLEL_SEEK_ENABLE, false),
-        conf.getLong(StoreScanner.STORESCANNER_PREAD_MAX_BYTES, 4 * blockSize), newVersionBehavior);
+        conf.getLong(StoreScanner.STORESCANNER_PREAD_MAX_BYTES, 4 * blockSize), newVersionBehavior,
+        getSwitchOverToNextBytes(conf, 4 * blockSize));
   }
 
   private ScanInfo(byte[] family, int minVersions, int maxVersions, long ttl,
       KeepDeletedCells keepDeletedCells, long timeToPurgeDeletes, CellComparator comparator,
       long tableMaxRowSize, boolean usePread, long cellsPerTimeoutCheck,
-      boolean parallelSeekEnabled, long preadMaxBytes, boolean newVersionBehavior) {
+      boolean parallelSeekEnabled, long preadMaxBytes, boolean newVersionBehavior,
+      long switchToNextBytes) {
     this.family = family;
     this.minVersions = minVersions;
     this.maxVersions = maxVersions;
@@ -113,6 +123,7 @@ public class ScanInfo {
     this.parallelSeekEnabled = parallelSeekEnabled;
     this.preadMaxBytes = preadMaxBytes;
     this.newVersionBehavior = newVersionBehavior;
+    this.switchToNextBytes = switchToNextBytes;
   }
 
   long getTableMaxRowSize() {
@@ -167,21 +178,21 @@ public class ScanInfo {
     return newVersionBehavior;
   }
 
-  /**
-   * Used by CP users for customizing max versions, ttl and keepDeletedCells.
-   */
-  ScanInfo customize(int maxVersions, long ttl, KeepDeletedCells keepDeletedCells) {
-    return customize(maxVersions, ttl, keepDeletedCells, minVersions, timeToPurgeDeletes);
+  long getSwitchToNextBytes() {
+    return switchToNextBytes;
   }
 
   /**
-   * Used by CP users for customizing max versions, ttl, keepDeletedCells, min versions,
-   * and time to purge deletes.
+   * Used for CP users for customizing max versions, ttl and keepDeletedCells.
    */
+  ScanInfo customize(int maxVersions, long ttl, KeepDeletedCells keepDeletedCells) {
+    return customize(maxVersions, ttl, keepDeletedCells, minVersions);
+  }
+
   ScanInfo customize(int maxVersions, long ttl, KeepDeletedCells keepDeletedCells,
-    int minVersions, long timeToPurgeDeletes) {
+    int minVersions) {
     return new ScanInfo(family, minVersions, maxVersions, ttl, keepDeletedCells, timeToPurgeDeletes,
       comparator, tableMaxRowSize, usePread, cellsPerTimeoutCheck, parallelSeekEnabled,
-      preadMaxBytes, newVersionBehavior);
+      preadMaxBytes, newVersionBehavior, switchToNextBytes);
   }
 }
