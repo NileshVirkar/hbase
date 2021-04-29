@@ -21,19 +21,19 @@ package org.apache.hadoop.hbase.util.compaction;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
-import java.util.Optional;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 
 /**
@@ -44,17 +44,17 @@ public class MajorCompactionTTLRequest extends MajorCompactionRequest {
 
   private static final Logger LOG = LoggerFactory.getLogger(MajorCompactionTTLRequest.class);
 
-  MajorCompactionTTLRequest(Configuration conf, RegionInfo region) {
+  MajorCompactionTTLRequest(Configuration conf, HRegionInfo region) {
     super(conf, region);
   }
 
-  static Optional<MajorCompactionRequest> newRequest(Configuration conf, RegionInfo info,
-      TableDescriptor htd) throws IOException {
+  static Optional<MajorCompactionRequest> newRequest(Configuration conf, HRegionInfo info,
+      HTableDescriptor htd) throws IOException {
     MajorCompactionTTLRequest request = new MajorCompactionTTLRequest(conf, info);
     return request.createRequest(conf, htd);
   }
 
-  private Optional<MajorCompactionRequest> createRequest(Configuration conf, TableDescriptor htd)
+  private Optional<MajorCompactionRequest> createRequest(Configuration conf, HTableDescriptor htd)
       throws IOException {
     Map<String, Long> familiesToCompact = getStoresRequiringCompaction(htd);
     MajorCompactionRequest request = null;
@@ -62,14 +62,14 @@ public class MajorCompactionTTLRequest extends MajorCompactionRequest {
       LOG.debug("Compaction families for region: " + region + " CF: " + familiesToCompact.keySet());
       request = new MajorCompactionTTLRequest(conf, region);
     }
-    return Optional.ofNullable(request);
+    return Optional.fromNullable(request);
   }
 
-  Map<String, Long> getStoresRequiringCompaction(TableDescriptor htd) throws IOException {
+  Map<String, Long> getStoresRequiringCompaction(HTableDescriptor htd) throws IOException {
     try(Connection connection = getConnection(configuration)) {
       HRegionFileSystem fileSystem = getFileSystem(connection);
       Map<String, Long> familyTTLMap = Maps.newHashMap();
-      for (ColumnFamilyDescriptor descriptor : htd.getColumnFamilies()) {
+      for (HColumnDescriptor descriptor : htd.getColumnFamilies()) {
         long ts = getColFamilyCutoffTime(descriptor);
         // If the table's TTL is forever, lets not compact any of the regions.
         if (ts > 0 && shouldCFBeCompacted(fileSystem, descriptor.getNameAsString(), ts)) {
@@ -81,7 +81,7 @@ public class MajorCompactionTTLRequest extends MajorCompactionRequest {
   }
 
   // If the CF has no TTL, return -1, else return the current time - TTL.
-  private long getColFamilyCutoffTime(ColumnFamilyDescriptor colDesc) {
+  private long getColFamilyCutoffTime(HColumnDescriptor colDesc) {
     if (colDesc.getTimeToLive() == HConstants.FOREVER) {
       return -1;
     }

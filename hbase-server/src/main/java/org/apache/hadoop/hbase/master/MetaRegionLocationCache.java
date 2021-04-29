@@ -17,26 +17,27 @@
  */
 package org.apache.hadoop.hbase.master;
 
+import static org.apache.hadoop.hbase.zookeeper.ZKUtil.joinZNode;
+
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ThreadFactory;
 import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.types.CopyOnWriteArrayMap;
 import org.apache.hadoop.hbase.util.RetryCounter;
 import org.apache.hadoop.hbase.util.RetryCounterFactory;
-import org.apache.hadoop.hbase.zookeeper.ZKListener;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
-import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
-import org.apache.hadoop.hbase.zookeeper.ZNodePaths;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.zookeeper.ZooKeeperListener;
+import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 
 /**
  * A cache of meta region location metadata. Registers a listener on ZK to track changes to the
@@ -45,7 +46,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
  * conditions).
  */
 @InterfaceAudience.Private
-public class MetaRegionLocationCache extends ZKListener {
+public class MetaRegionLocationCache extends ZooKeeperListener {
 
   private static final Logger LOG = LoggerFactory.getLogger(MetaRegionLocationCache.class);
 
@@ -77,7 +78,7 @@ public class MetaRegionLocationCache extends ZKListener {
     DELETED
   }
 
-  public MetaRegionLocationCache(ZKWatcher zkWatcher) {
+  public MetaRegionLocationCache(ZooKeeperWatcher zkWatcher) {
     super(zkWatcher);
     cachedMetaLocations = new CopyOnWriteArrayMap<>();
     watcher.registerListener(this);
@@ -87,10 +88,16 @@ public class MetaRegionLocationCache extends ZKListener {
     // are established. Subsequent updates are handled by the registered listener. Also, this runs
     // in a separate thread in the background to not block master init.
     ThreadFactory threadFactory = new ThreadFactoryBuilder().setDaemon(true).build();
-    RetryCounterFactory retryFactory = new RetryCounterFactory(
+    final RetryCounterFactory retryFactory = new RetryCounterFactory(
         Integer.MAX_VALUE, SLEEP_INTERVAL_MS_BETWEEN_RETRIES, SLEEP_INTERVAL_MS_MAX);
     threadFactory.newThread(
-      ()->loadMetaLocationsFromZk(retryFactory.create(), ZNodeOpType.INIT)).start();
+        new Runnable() {
+          @Override
+          public void run() {
+            MetaRegionLocationCache.this.loadMetaLocationsFromZk(
+                retryFactory.create(), ZNodeOpType.INIT);
+          }
+        }).start();
   }
 
   /**
@@ -131,7 +138,7 @@ public class MetaRegionLocationCache extends ZKListener {
       return;
     }
     for (String znode: znodes) {
-      String path = ZNodePaths.joinZNode(watcher.getZNodePaths().baseZNode, znode);
+      String path = joinZNode(watcher.baseZNode, znode);
       updateMetaLocation(path, opType);
     }
   }
@@ -148,7 +155,7 @@ public class MetaRegionLocationCache extends ZKListener {
     RegionState metaRegionState;
     try {
       byte[] data = ZKUtil.getDataAndWatch(watcher,
-          watcher.getZNodePaths().getZNodeForReplica(replicaId));
+          watcher.getZNodeForReplica(replicaId));
       metaRegionState = ProtobufUtil.parseMetaRegionStateFrom(data, replicaId);
     } catch (DeserializationException e) {
       throw ZKUtil.convert(e);
@@ -157,11 +164,11 @@ public class MetaRegionLocationCache extends ZKListener {
   }
 
   private void updateMetaLocation(String path, ZNodeOpType opType) {
-    if (!isValidMetaPath(path)) {
+    if (!isValidMetaZNode(path)) {
       return;
     }
     LOG.debug("Updating meta znode for path {}: {}", path, opType.name());
-    int replicaId = watcher.getZNodePaths().getMetaReplicaIdFromPath(path);
+    int replicaId = watcher.getMetaReplicaIdFromPath(path);
     RetryCounter retryCounter = retryCounterFactory.create();
     HRegionLocation location = null;
     while (retryCounter.shouldRetry()) {
@@ -201,27 +208,29 @@ public class MetaRegionLocationCache extends ZKListener {
    * @return Optional list of HRegionLocations for meta replica(s), null if the cache is empty.
    *
    */
-  public Optional<List<HRegionLocation>> getMetaRegionLocations() {
+  public List<HRegionLocation> getMetaRegionLocations() {
     ConcurrentNavigableMap<Integer, HRegionLocation> snapshot =
         cachedMetaLocations.tailMap(cachedMetaLocations.firstKey());
+    List<HRegionLocation> result = new ArrayList<>();
     if (snapshot.isEmpty()) {
       // This could be possible if the master has not successfully initialized yet or meta region
       // is stuck in some weird state.
-      return Optional.empty();
+      return result;
     }
-    List<HRegionLocation> result = new ArrayList<>();
     // Explicitly iterate instead of new ArrayList<>(snapshot.values()) because the underlying
     // ArrayValueCollection does not implement toArray().
-    snapshot.values().forEach(location -> result.add(location));
-    return Optional.of(result);
+    for (HRegionLocation location: snapshot.values()) {
+      result.add(location);
+    }
+    return result;
   }
 
   /**
    * Helper to check if the given 'path' corresponds to a meta znode. This listener is only
    * interested in changes to meta znodes.
    */
-  private boolean isValidMetaPath(String path) {
-    return watcher.getZNodePaths().isMetaZNodePath(path);
+  private boolean isValidMetaZNode(String path) {
+    return watcher.isAnyMetaReplicaZNode(path);
   }
 
   @Override
@@ -241,7 +250,7 @@ public class MetaRegionLocationCache extends ZKListener {
 
   @Override
   public void nodeChildrenChanged(String path) {
-    if (!path.equals(watcher.getZNodePaths().baseZNode)) {
+    if (!path.equals(watcher.baseZNode)) {
       return;
     }
     loadMetaLocationsFromZk(retryCounterFactory.create(), ZNodeOpType.CHANGED);

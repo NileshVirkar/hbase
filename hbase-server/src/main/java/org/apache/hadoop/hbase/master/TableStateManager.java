@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,166 +17,203 @@
  */
 package org.apache.hadoop.hbase.master;
 
-import edu.umd.cs.findbugs.annotations.NonNull;
-import edu.umd.cs.findbugs.annotations.Nullable;
 import java.io.IOException;
+import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.locks.ReadWriteLock;
-import org.apache.hadoop.hbase.CatalogFamilyFormat;
-import org.apache.hadoop.hbase.ClientMetaTableAccessor;
-import org.apache.hadoop.hbase.MetaTableAccessor;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.TableDescriptor;
+import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
-import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.TableState;
-import org.apache.hadoop.hbase.exceptions.IllegalArgumentIOException;
-import org.apache.hadoop.hbase.util.IdReadWriteLock;
-import org.apache.hadoop.hbase.util.IdReadWriteLockWithObjectPool;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
 /**
- * This is a helper class used to manage table states. This class uses hbase:meta as its store for
- * table state so hbase:meta must be online before accessing its methods.
+ * This is a helper class used to manage table states.
+ * States persisted in tableinfo and cached internally.
  */
 @InterfaceAudience.Private
 public class TableStateManager {
+  private static final Log LOG = LogFactory.getLog(TableStateManager.class);
+  private final TableDescriptors descriptors;
 
-  private static final Logger LOG = LoggerFactory.getLogger(TableStateManager.class);
+  private final Map<TableName, TableState.State> tableStates = Maps.newConcurrentMap();
 
-  private final IdReadWriteLock<TableName> tnLock = new IdReadWriteLockWithObjectPool<>();
-  private final MasterServices master;
+  public TableStateManager(MasterServices master) {
+    this.descriptors = master.getTableDescriptors();
+  }
 
-  private final ConcurrentMap<TableName, TableState.State> tableName2State =
-    new ConcurrentHashMap<>();
-
-  TableStateManager(MasterServices master) {
-    this.master = master;
+  public void start() throws IOException {
+    Map<String, TableDescriptor> all = descriptors.getAllDescriptors();
+    for (TableDescriptor table : all.values()) {
+      TableName tableName = table.getHTableDescriptor().getTableName();
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Adding table state: " + tableName
+            + ": " + table.getTableState());
+      }
+      tableStates.put(tableName, table.getTableState());
+    }
   }
 
   /**
-   * Set table state to provided. Caller should lock table on write.
+   * Set table state to provided.
+   * Caller should lock table on write.
    * @param tableName table to change state for
    * @param newState new state
+   * @throws IOException
    */
   public void setTableState(TableName tableName, TableState.State newState) throws IOException {
-    ReadWriteLock lock = tnLock.getLock(tableName);
-    lock.writeLock().lock();
-    try {
-      updateMetaState(tableName, newState);
-    } finally {
-      lock.writeLock().unlock();
+    synchronized (tableStates) {
+      TableDescriptor descriptor = readDescriptor(tableName);
+      if (descriptor == null) {
+        throw new TableNotFoundException(tableName);
+      }
+      if (descriptor.getTableState() != newState) {
+        writeDescriptor(
+            new TableDescriptor(descriptor.getHTableDescriptor(), newState));
+      }
+    }
+  }
+
+  /**
+   * Set table state to provided but only if table in specified states
+   * Caller should lock table on write.
+   * @param tableName table to change state for
+   * @param newState new state
+   * @param states states to check against
+   * @throws IOException
+   */
+  public boolean setTableStateIfInStates(TableName tableName,
+                                         TableState.State newState,
+                                         TableState.State... states)
+          throws IOException {
+    synchronized (tableStates) {
+      TableDescriptor descriptor = readDescriptor(tableName);
+      if (descriptor == null) {
+        throw new TableNotFoundException(tableName);
+      }
+      if (TableState.isInStates(descriptor.getTableState(), states)) {
+        writeDescriptor(
+            new TableDescriptor(descriptor.getHTableDescriptor(), newState));
+        return true;
+      } else {
+        return false;
+      }
+    }
+  }
+
+
+  /**
+   * Set table state to provided but only if table not in specified states
+   * Caller should lock table on write.
+   * @param tableName table to change state for
+   * @param newState new state
+   * @param states states to check against
+   * @throws IOException
+   */
+  public boolean setTableStateIfNotInStates(TableName tableName,
+                                            TableState.State newState,
+                                            TableState.State... states)
+          throws IOException {
+    synchronized (tableStates) {
+      TableDescriptor descriptor = readDescriptor(tableName);
+      if (descriptor == null) {
+        throw new TableNotFoundException(tableName);
+      }
+      if (!TableState.isInStates(descriptor.getTableState(), states)) {
+        writeDescriptor(
+            new TableDescriptor(descriptor.getHTableDescriptor(), newState));
+        return true;
+      } else {
+        return false;
+      }
     }
   }
 
   public boolean isTableState(TableName tableName, TableState.State... states) {
+    TableState.State tableState = null;
     try {
-      TableState tableState = getTableState(tableName);
-      return tableState.isInStates(states);
+      tableState = getTableState(tableName);
     } catch (IOException e) {
-      LOG.error("Unable to get table " + tableName + " state", e);
-      // XXX: is it safe to just return false here?
+      LOG.error("Unable to get table state, probably table not exists");
       return false;
     }
+    return tableState != null && TableState.isInStates(tableState, states);
   }
 
   public void setDeletedTable(TableName tableName) throws IOException {
-    if (tableName.equals(TableName.META_TABLE_NAME)) {
-      // Can't delete the hbase:meta table.
-      return;
-    }
-    ReadWriteLock lock = tnLock.getLock(tableName);
-    lock.writeLock().lock();
-    try {
-      MetaTableAccessor.deleteTableState(master.getConnection(), tableName);
-    } finally {
-      tableName2State.remove(tableName);
-      lock.writeLock().unlock();
+    TableState.State remove = tableStates.remove(tableName);
+    if (remove == null) {
+      LOG.warn("Moving table " + tableName + " state to deleted but was " +
+              "already deleted");
     }
   }
 
   public boolean isTablePresent(TableName tableName) throws IOException {
-    ReadWriteLock lock = tnLock.getLock(tableName);
-    lock.readLock().lock();
-    try {
-      return readMetaState(tableName) != null;
-    } finally {
-      lock.readLock().unlock();
-    }
+    return getTableState(tableName) != null;
   }
 
   /**
    * Return all tables in given states.
+   *
    * @param states filter by states
    * @return tables in given states
+   * @throws IOException
    */
-  Set<TableName> getTablesInStates(TableState.State... states) throws IOException {
-    // Only be called in region normalizer, will not use cache.
-    final Set<TableName> rv = Sets.newHashSet();
-    MetaTableAccessor.fullScanTables(master.getConnection(), new ClientMetaTableAccessor.Visitor() {
-      @Override
-      public boolean visit(Result r) throws IOException {
-        TableState tableState = CatalogFamilyFormat.getTableState(r);
-        if (tableState != null && tableState.inStates(states)) {
-          rv.add(tableState.getTableName());
-        }
-        return true;
+  public Set<TableName> getTablesInStates(TableState.State... states) throws IOException {
+    Set<TableName> rv = Sets.newHashSet();
+    for (Map.Entry<TableName, TableState.State> entry : tableStates.entrySet()) {
+      if (TableState.isInStates(entry.getValue(), states)) {
+        rv.add(entry.getKey());
       }
-    });
+    }
     return rv;
   }
 
-  @NonNull
-  public TableState getTableState(TableName tableName) throws IOException {
-    ReadWriteLock lock = tnLock.getLock(tableName);
-    lock.readLock().lock();
-    try {
-      TableState currentState = readMetaState(tableName);
-      if (currentState == null) {
-        throw new TableNotFoundException("No state found for " + tableName);
+  public TableState.State getTableState(TableName tableName) throws IOException {
+    TableState.State tableState = tableStates.get(tableName);
+    if (tableState == null) {
+      TableDescriptor descriptor = readDescriptor(tableName);
+      if (descriptor != null) {
+        tableState = descriptor.getTableState();
       }
-      return currentState;
-    } finally {
-      lock.readLock().unlock();
-    }
-  }
-
-  private void updateMetaState(TableName tableName, TableState.State newState) throws IOException {
-    if (tableName.equals(TableName.META_TABLE_NAME)) {
-      if (TableState.State.DISABLING.equals(newState) ||
-          TableState.State.DISABLED.equals(newState)) {
-        throw new IllegalArgumentIOException("Cannot disable meta table; " + newState);
-      }
-      // Otherwise, just return; no need to set ENABLED on meta -- it is always ENABLED.
-      return;
-    }
-    boolean succ = false;
-    try {
-      MetaTableAccessor.updateTableState(master.getConnection(), tableName, newState);
-      tableName2State.put(tableName, newState);
-      succ = true;
-    } finally {
-      if (!succ) {
-        this.tableName2State.remove(tableName);
-      }
-    }
-  }
-
-  @Nullable
-  private TableState readMetaState(TableName tableName) throws IOException {
-    TableState.State state = tableName2State.get(tableName);
-    if (state != null) {
-      return new TableState(tableName, state);
-    }
-    TableState tableState = MetaTableAccessor.getTableState(master.getConnection(), tableName);
-    if (tableState != null) {
-      tableName2State.putIfAbsent(tableName, tableState.getState());
     }
     return tableState;
+  }
+
+  /**
+   * Write descriptor in place, update cache of states.
+   * Write lock should be hold by caller.
+   *
+   * @param descriptor what to write
+   */
+  private void writeDescriptor(TableDescriptor descriptor) throws IOException {
+    TableName tableName = descriptor.getHTableDescriptor().getTableName();
+    TableState.State state = descriptor.getTableState();
+    descriptors.add(descriptor);
+    LOG.debug("Table " + tableName + " written descriptor for state " + state);
+    tableStates.put(tableName, state);
+    LOG.debug("Table " + tableName + " updated state to " + state);
+  }
+
+  /**
+   * Read current descriptor for table, update cache of states.
+   *
+   * @param table descriptor to read
+   * @return descriptor
+   * @throws IOException
+   */
+  private TableDescriptor readDescriptor(TableName tableName) throws IOException {
+    TableDescriptor descriptor = descriptors.getDescriptor(tableName);
+    if (descriptor == null) {
+      tableStates.remove(tableName);
+    } else {
+      tableStates.put(tableName, descriptor.getTableState());
+    }
+    return descriptor;
   }
 }

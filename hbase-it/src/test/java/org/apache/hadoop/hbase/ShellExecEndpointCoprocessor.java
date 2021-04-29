@@ -17,27 +17,25 @@
  */
 package org.apache.hadoop.hbase;
 
+import com.google.protobuf.RpcCallback;
+import com.google.protobuf.RpcController;
+import com.google.protobuf.Service;
 import java.io.IOException;
-import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.chaos.monkies.ChaosMonkey;
-import org.apache.hadoop.hbase.coprocessor.MasterCoprocessor;
-import org.apache.hadoop.hbase.coprocessor.RegionServerCoprocessor;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.coprocessor.CoprocessorService;
 import org.apache.hadoop.hbase.coprocessor.protobuf.generated.ShellExecEndpoint;
 import org.apache.hadoop.hbase.coprocessor.protobuf.generated.ShellExecEndpoint.ShellExecRequest;
 import org.apache.hadoop.hbase.coprocessor.protobuf.generated.ShellExecEndpoint.ShellExecResponse;
-import org.apache.hadoop.hbase.ipc.CoprocessorRpcUtils;
 import org.apache.hadoop.util.Shell;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
-import org.apache.hbase.thirdparty.com.google.protobuf.RpcCallback;
-import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
-import org.apache.hbase.thirdparty.com.google.protobuf.Service;
 
 /**
  * Receives shell commands from the client and executes them blindly. Intended only for use
@@ -45,11 +43,11 @@ import org.apache.hbase.thirdparty.com.google.protobuf.Service;
  */
 @InterfaceAudience.Private
 public class ShellExecEndpointCoprocessor extends ShellExecEndpoint.ShellExecService implements
-  MasterCoprocessor, RegionServerCoprocessor {
+  Coprocessor, CoprocessorService {
   private static final Logger LOG = LoggerFactory.getLogger(ShellExecEndpointCoprocessor.class);
 
-  public static final String BACKGROUND_DELAY_MS_KEY = "hbase.it.shellexeccoproc.async.delay.ms";
-  public static final long DEFAULT_BACKGROUND_DELAY_MS = 1_000;
+  private static final String BACKGROUND_DELAY_MS_KEY = "hbase.it.shellexeccoproc.async.delay.ms";
+  private static final long DEFAULT_BACKGROUND_DELAY_MS = 1_000;
 
   private final ExecutorService backgroundExecutor;
   private Configuration conf;
@@ -59,19 +57,21 @@ public class ShellExecEndpointCoprocessor extends ShellExecEndpoint.ShellExecSer
       new ThreadFactoryBuilder()
         .setNameFormat(ShellExecEndpointCoprocessor.class.getSimpleName() + "-{}")
         .setDaemon(true)
-        .setUncaughtExceptionHandler((t, e) -> LOG.warn("Thread {} threw", t, e))
-        .build());
-  }
-
-  @Override
-  public Iterable<Service> getServices() {
-    return Collections.singletonList(this);
+        .setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+          @Override
+          public void uncaughtException(Thread t, Throwable e) {
+            LOG.warn(String.format("Thread %s threw %s", t, e));
+          }
+        }).build());
   }
 
   @Override
   public void start(CoprocessorEnvironment env) {
     conf = env.getConfiguration();
   }
+
+  @Override
+  public void stop(CoprocessorEnvironment env) throws IOException {}
 
   @Override
   public void shellExec(
@@ -108,7 +108,7 @@ public class ShellExecEndpointCoprocessor extends ShellExecEndpoint.ShellExecSer
       doExec(shell, builder);
     } catch (IOException e) {
       LOG.error("Failure launching process", e);
-      CoprocessorRpcUtils.setControllerException(controller, e);
+      controller.setFailed(e.getMessage());
     }
     done.run(builder.build());
   }
@@ -118,16 +118,19 @@ public class ShellExecEndpointCoprocessor extends ShellExecEndpoint.ShellExecSer
     final RpcCallback<ShellExecResponse> done
   ) {
     final long sleepDuration = conf.getLong(BACKGROUND_DELAY_MS_KEY, DEFAULT_BACKGROUND_DELAY_MS);
-    backgroundExecutor.submit(() -> {
-      try {
-        // sleep first so that the RPC can ACK. race condition here as we have no means of blocking
-        // until the IPC response has been acknowledged by the client.
-        Thread.sleep(sleepDuration);
-        doExec(shell, ShellExecResponse.newBuilder());
-      } catch (InterruptedException e) {
-        LOG.warn("Interrupted before launching process.", e);
-      } catch (IOException e) {
-        LOG.error("Failure launching process", e);
+    backgroundExecutor.submit(new Runnable() {
+      @Override
+      public void run() {
+        try {
+          // sleep first so that the RPC can ACK. race condition here as we have no means of
+          // blocking until the IPC response has been acknowledged by the client.
+          Thread.sleep(sleepDuration);
+          ShellExecEndpointCoprocessor.this.doExec(shell, ShellExecResponse.newBuilder());
+        } catch (InterruptedException e) {
+          LOG.warn("Interrupted before launching process.", e);
+        } catch (IOException e) {
+          LOG.error("Failure launching process", e);
+        }
       }
     });
     done.run(ShellExecResponse.newBuilder().build());
@@ -152,5 +155,10 @@ public class ShellExecEndpointCoprocessor extends ShellExecEndpoint.ShellExecSer
         .setStdout(shell.getOutput())
         .setStderr(e.getMessage());
     }
+  }
+
+  @Override
+  public Service getService() {
+    return this;
   }
 }

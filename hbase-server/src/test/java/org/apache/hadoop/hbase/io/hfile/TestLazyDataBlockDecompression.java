@@ -17,9 +17,7 @@
  */
 package org.apache.hadoop.hbase.io.hfile;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -27,28 +25,25 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.io.FSDataInputStreamWrapper;
 import org.apache.hadoop.hbase.io.compress.Compression;
-import org.apache.hadoop.hbase.testclassification.IOTests;
-import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
 
@@ -56,15 +51,10 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
  * A kind of integration test at the intersection of {@link HFileBlock}, {@link CacheConfig},
  * and {@link LruBlockCache}.
  */
-@Category({IOTests.class, SmallTests.class})
+@Category(SmallTests.class)
 @RunWith(Parameterized.class)
 public class TestLazyDataBlockDecompression {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestLazyDataBlockDecompression.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestLazyDataBlockDecompression.class);
+  private static final Log LOG = LogFactory.getLog(TestLazyDataBlockDecompression.class);
   private static final HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
 
   private FileSystem fs;
@@ -82,11 +72,13 @@ public class TestLazyDataBlockDecompression {
 
   @Before
   public void setUp() throws IOException {
+    CacheConfig.GLOBAL_BLOCK_CACHE_INSTANCE = null;
     fs = FileSystem.get(TEST_UTIL.getConfiguration());
   }
 
   @After
   public void tearDown() {
+    CacheConfig.GLOBAL_BLOCK_CACHE_INSTANCE = null;
     fs = null;
   }
 
@@ -96,7 +88,8 @@ public class TestLazyDataBlockDecompression {
    */
   private static void writeHFile(Configuration conf, CacheConfig cc, FileSystem fs, Path path,
       HFileContext cxt, int entryCount) throws IOException {
-    HFile.Writer writer = new HFile.WriterFactory(conf, cc)
+    HFileWriterV2 writer = (HFileWriterV2)
+      new HFileWriterV2.WriterFactoryV2(conf, cc)
         .withPath(fs, path)
         .withFileContext(cxt)
         .create();
@@ -107,8 +100,8 @@ public class TestLazyDataBlockDecompression {
     final byte[] qualifier = Bytes.toBytes("q");
 
     for (int i = 0; i < entryCount; i++) {
-      byte[] keyBytes = RandomKeyValueUtil.randomOrderedKey(rand, i);
-      byte[] valueBytes = RandomKeyValueUtil.randomValue(rand);
+      byte[] keyBytes = TestHFileWriterV2.randomOrderedKey(rand, i);
+      byte[] valueBytes = TestHFileWriterV2.randomValue(rand);
       // make a real keyvalue so that hfile tool can examine it
       writer.append(new KeyValue(keyBytes, family, qualifier, valueBytes));
     }
@@ -124,18 +117,12 @@ public class TestLazyDataBlockDecompression {
     long fileSize = fs.getFileStatus(path).getLen();
     FixedFileTrailer trailer =
       FixedFileTrailer.readFromStream(fsdis.getStream(false), fileSize);
-    ReaderContext context = new ReaderContextBuilder()
-        .withFilePath(path)
-        .withFileSize(fileSize)
-        .withFileSystem(fsdis.getHfs())
-        .withInputStreamWrapper(fsdis)
-        .build();
-    HFileInfo fileInfo = new HFileInfo(context, conf);
-    HFile.Reader reader = new HFilePreadReader(context, fileInfo, cacheConfig, conf);
-    fileInfo.initMetaAndIndex(reader);
+    HFileReaderV2 reader = new HFileReaderV2(path, trailer, fsdis, fileSize, cacheConfig,
+      fsdis.getHfs(), conf);
+    reader.loadFileInfo();
     long offset = trailer.getFirstDataBlockOffset(),
       max = trailer.getLastDataBlockOffset();
-    List<HFileBlock> blocks = new ArrayList<>(4);
+    List<HFileBlock> blocks = new ArrayList<HFileBlock>(4);
     HFileBlock block;
     while (offset <= max) {
       block = reader.readBlock(offset, -1, /* cacheBlock */ true, /* pread */ false,
@@ -144,7 +131,6 @@ public class TestLazyDataBlockDecompression {
       blocks.add(block);
     }
     LOG.info("read " + Iterables.toString(blocks));
-    reader.close();
   }
 
   @Test
@@ -164,11 +150,12 @@ public class TestLazyDataBlockDecompression {
     lazyCompressDisabled.setBoolean(CacheConfig.CACHE_BLOOM_BLOCKS_ON_WRITE_KEY, cacheOnWrite);
     lazyCompressDisabled.setBoolean(CacheConfig.CACHE_INDEX_BLOCKS_ON_WRITE_KEY, cacheOnWrite);
     lazyCompressDisabled.setBoolean(CacheConfig.CACHE_DATA_BLOCKS_COMPRESSED_KEY, false);
-    CacheConfig cc = new CacheConfig(lazyCompressDisabled,
-        new LruBlockCache(maxSize, HConstants.DEFAULT_BLOCKSIZE, false, lazyCompressDisabled));
+    CacheConfig.GLOBAL_BLOCK_CACHE_INSTANCE =
+      new LruBlockCache(maxSize, HConstants.DEFAULT_BLOCKSIZE, false, lazyCompressDisabled);
+    CacheConfig cc = new CacheConfig(lazyCompressDisabled);
     assertFalse(cc.shouldCacheDataCompressed());
-    assertFalse(cc.isCombinedBlockCache());
-    LruBlockCache disabledBlockCache = (LruBlockCache) cc.getBlockCache().get();
+    assertTrue(cc.getBlockCache() instanceof LruBlockCache);
+    LruBlockCache disabledBlockCache = (LruBlockCache) cc.getBlockCache();
     LOG.info("disabledBlockCache=" + disabledBlockCache);
     assertEquals("test inconsistency detected.", maxSize, disabledBlockCache.getMaxSize());
     assertTrue("eviction thread spawned unintentionally.",
@@ -198,11 +185,12 @@ public class TestLazyDataBlockDecompression {
     lazyCompressEnabled.setBoolean(CacheConfig.CACHE_BLOOM_BLOCKS_ON_WRITE_KEY, cacheOnWrite);
     lazyCompressEnabled.setBoolean(CacheConfig.CACHE_INDEX_BLOCKS_ON_WRITE_KEY, cacheOnWrite);
     lazyCompressEnabled.setBoolean(CacheConfig.CACHE_DATA_BLOCKS_COMPRESSED_KEY, true);
-    cc = new CacheConfig(lazyCompressEnabled,
-        new LruBlockCache(maxSize, HConstants.DEFAULT_BLOCKSIZE, false, lazyCompressEnabled));
+    CacheConfig.GLOBAL_BLOCK_CACHE_INSTANCE =
+      new LruBlockCache(maxSize, HConstants.DEFAULT_BLOCKSIZE, false, lazyCompressEnabled);
+    cc = new CacheConfig(lazyCompressEnabled);
     assertTrue("test improperly configured.", cc.shouldCacheDataCompressed());
-    assertTrue(cc.getBlockCache().get() instanceof LruBlockCache);
-    LruBlockCache enabledBlockCache = (LruBlockCache) cc.getBlockCache().get();
+    assertTrue(cc.getBlockCache() instanceof LruBlockCache);
+    LruBlockCache enabledBlockCache = (LruBlockCache) cc.getBlockCache();
     LOG.info("enabledBlockCache=" + enabledBlockCache);
     assertEquals("test inconsistency detected", maxSize, enabledBlockCache.getMaxSize());
     assertTrue("eviction thread spawned unintentionally.",

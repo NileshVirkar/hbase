@@ -18,12 +18,12 @@
  */
 package org.apache.hadoop.hbase.io.hfile.bucket;
 
-
 import java.util.Comparator;
 import java.util.Map;
-
-import org.apache.yetus.audience.InterfaceAudience;
+import java.util.Map.Entry;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.io.hfile.BlockCacheKey;
+import org.apache.hadoop.hbase.io.hfile.bucket.BucketCache.BucketEntry;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.MinMaxPriorityQueue;
 
@@ -41,9 +41,6 @@ import org.apache.hbase.thirdparty.com.google.common.collect.MinMaxPriorityQueue
 @InterfaceAudience.Private
 public class CachedEntryQueue {
 
-  private static final Comparator<Map.Entry<BlockCacheKey, BucketEntry>> COMPARATOR =
-    (a, b) -> BucketEntry.COMPARATOR.compare(a.getValue(), b.getValue());
-
   private MinMaxPriorityQueue<Map.Entry<BlockCacheKey, BucketEntry>> queue;
 
   private long cacheSize;
@@ -58,7 +55,14 @@ public class CachedEntryQueue {
     if (initialSize == 0) {
       initialSize++;
     }
-    queue = MinMaxPriorityQueue.orderedBy(COMPARATOR).expectedSize(initialSize).create();
+    queue = MinMaxPriorityQueue.orderedBy(new Comparator<Map.Entry<BlockCacheKey, BucketEntry>>() {
+      @Override
+      public int compare(Entry<BlockCacheKey, BucketEntry> entry1,
+          Entry<BlockCacheKey, BucketEntry> entry2) {
+        return BucketEntry.COMPARATOR.compare(entry1.getValue(), entry2.getValue());
+      }
+
+    }).expectedSize(initialSize).create();
     cacheSize = 0;
     this.maxSize = maxSize;
   }
@@ -104,5 +108,13 @@ public class CachedEntryQueue {
    */
   public Map.Entry<BlockCacheKey, BucketEntry> pollLast() {
     return queue.pollLast();
+  }
+
+  /**
+   * Total size of all elements in this queue.
+   * @return size of all elements currently in queue, in bytes
+   */
+  public long cacheSize() {
+    return cacheSize;
   }
 }

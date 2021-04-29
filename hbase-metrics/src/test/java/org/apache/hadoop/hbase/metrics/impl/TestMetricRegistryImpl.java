@@ -1,4 +1,5 @@
 /**
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -7,7 +8,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,6 +16,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+
 package org.apache.hadoop.hbase.metrics.impl;
 
 import static org.junit.Assert.assertEquals;
@@ -22,8 +25,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Map;
-import java.util.Optional;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.metrics.Counter;
 import org.apache.hadoop.hbase.metrics.Gauge;
 import org.apache.hadoop.hbase.metrics.Meter;
@@ -32,17 +33,13 @@ import org.apache.hadoop.hbase.metrics.MetricRegistryInfo;
 import org.apache.hadoop.hbase.metrics.Timer;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
+
 @Category(SmallTests.class)
 public class TestMetricRegistryImpl {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestMetricRegistryImpl.class);
-
   private MetricRegistryInfo info;
   private MetricRegistryImpl registry;
 
@@ -78,7 +75,13 @@ public class TestMetricRegistryImpl {
   @Test
   public void testRegisterGaugeLambda() {
     // register a Gauge using lambda expression
-    registry.register("gaugeLambda", () -> 42L);
+    registry.register("gaugeLambda", new Gauge<Long>(){
+
+      @Override
+      public Long getValue() {
+        return 42L;
+      }
+    });
     Optional<Metric> metric = registry.get("gaugeLambda");
     assertTrue(metric.isPresent());
     assertEquals(42L, (long)((Gauge<Long>)metric.get()).getValue());
@@ -111,8 +114,18 @@ public class TestMetricRegistryImpl {
 
   @Test
   public void testDoubleRegister() {
-    Gauge g1 = registry.register("mygauge", () -> 42L);
-    Gauge g2 = registry.register("mygauge", () -> 52L);
+    Gauge g1 = registry.register("mygauge", new Gauge<Long>(){
+
+      @Override
+      public Long getValue() {
+        return 42L;
+      }});
+    Gauge g2 = registry.register("mygauge", new Gauge<Long>(){
+
+      @Override
+      public Long getValue() {
+        return 52L;
+      }});
 
     // second gauge is ignored if it exists
     assertEquals(g1, g2);
@@ -132,7 +145,12 @@ public class TestMetricRegistryImpl {
   public void testGetMetrics() {
     CounterImpl counter = new CounterImpl();
     registry.register("mycounter", counter);
-    Gauge gauge = registry.register("mygauge", () -> 42L);
+    Gauge gauge = registry.register("mygauge", new Gauge<Long>(){
+
+      @Override
+      public Long getValue() {
+        return 42L;
+      }});
     Timer timer = registry.timer("mytimer");
 
     Map<String, Metric> metrics = registry.getMetrics();

@@ -20,71 +20,71 @@ package org.apache.hadoop.hbase.regionserver.compactions;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.regionserver.HStore;
-import org.apache.hadoop.hbase.regionserver.HStoreFile;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
-import org.apache.hadoop.hbase.regionserver.StoreFileWriter;
+import org.apache.hadoop.hbase.regionserver.Store;
+import org.apache.hadoop.hbase.regionserver.StoreFile;
+import org.apache.hadoop.hbase.regionserver.StoreFile.Writer;
 import org.apache.hadoop.hbase.regionserver.throttle.NoLimitThroughputController;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.security.User;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Compact passed set of files. Create an instance and then call
- * {@link #compact(CompactionRequestImpl, ThroughputController, User)}
+ * {@link #compact(CompactionRequest, ThroughputController, User)}
  */
 @InterfaceAudience.Private
-public class DefaultCompactor extends Compactor<StoreFileWriter> {
-  private static final Logger LOG = LoggerFactory.getLogger(DefaultCompactor.class);
+public class DefaultCompactor extends Compactor<Writer> {
+  private static final Log LOG = LogFactory.getLog(DefaultCompactor.class);
 
-  public DefaultCompactor(Configuration conf, HStore store) {
+  public DefaultCompactor(final Configuration conf, final Store store) {
     super(conf, store);
   }
 
-  private final CellSinkFactory<StoreFileWriter> writerFactory =
-      new CellSinkFactory<StoreFileWriter>() {
-        @Override
-        public StoreFileWriter createWriter(InternalScanner scanner,
-            org.apache.hadoop.hbase.regionserver.compactions.Compactor.FileDetails fd,
-            boolean shouldDropBehind, boolean major) throws IOException {
-          return createTmpWriter(fd, shouldDropBehind, major);
-        }
-      };
+  private final CellSinkFactory<Writer> writerFactory = new CellSinkFactory<Writer>() {
+
+    @Override
+    public Writer createWriter(InternalScanner scanner,
+        org.apache.hadoop.hbase.regionserver.compactions.Compactor.FileDetails fd,
+        boolean shouldDropBehind) throws IOException {
+      return createTmpWriter(fd, shouldDropBehind);
+    }
+  };
 
   /**
    * Do a minor/major compaction on an explicit set of storefiles from a Store.
    */
-  public List<Path> compact(final CompactionRequestImpl request,
+  public List<Path> compact(final CompactionRequest request,
       ThroughputController throughputController, User user) throws IOException {
     return compact(request, defaultScannerFactory, writerFactory, throughputController, user);
   }
 
   /**
-   * Compact a list of files for testing. Creates a fake {@link CompactionRequestImpl} to pass to
-   * {@link #compact(CompactionRequestImpl, ThroughputController, User)};
+   * Compact a list of files for testing. Creates a fake {@link CompactionRequest} to pass to
+   * {@link #compact(CompactionRequest, ThroughputController, User)};
    * @param filesToCompact the files to compact. These are used as the compactionSelection for the
-   *          generated {@link CompactionRequestImpl}.
+   *          generated {@link CompactionRequest}.
    * @param isMajor true to major compact (prune all deletes, max versions, etc)
    * @return Product of compaction or an empty list if all cells expired or deleted and nothing \
    *         made it through the compaction.
    * @throws IOException
    */
-  public List<Path> compactForTesting(Collection<HStoreFile> filesToCompact, boolean isMajor)
+  public List<Path> compactForTesting(final Collection<StoreFile> filesToCompact, boolean isMajor)
       throws IOException {
-    CompactionRequestImpl cr = new CompactionRequestImpl(filesToCompact);
+    CompactionRequest cr = new CompactionRequest(filesToCompact);
     cr.setIsMajor(isMajor, isMajor);
     return compact(cr, NoLimitThroughputController.INSTANCE, null);
   }
 
   @Override
-  protected List<Path> commitWriter(StoreFileWriter writer, FileDetails fd,
-      CompactionRequestImpl request) throws IOException {
+  protected List<Path> commitWriter(Writer writer, FileDetails fd,
+      CompactionRequest request) throws IOException {
     List<Path> newFiles = Lists.newArrayList(writer.getPath());
     writer.appendMetadata(fd.maxSeqId, request.isAllFiles(), request.getFiles());
     writer.close();
@@ -92,7 +92,7 @@ public class DefaultCompactor extends Compactor<StoreFileWriter> {
   }
 
   @Override
-  protected void abortWriter(StoreFileWriter writer) throws IOException {
+  protected void abortWriter(Writer writer) throws IOException {
     Path leftoverFile = writer.getPath();
     try {
       writer.close();

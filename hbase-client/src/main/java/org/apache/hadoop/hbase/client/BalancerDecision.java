@@ -19,14 +19,16 @@
 
 package org.apache.hadoop.hbase.client;
 
+import java.lang.reflect.Type;
 import java.util.List;
-
-import org.apache.commons.lang3.builder.ToStringBuilder;
+import org.apache.commons.lang.builder.ToStringBuilder;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.util.GsonUtil;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.apache.yetus.audience.InterfaceStability;
 
 import org.apache.hbase.thirdparty.com.google.gson.Gson;
+import org.apache.hbase.thirdparty.com.google.gson.JsonElement;
+import org.apache.hbase.thirdparty.com.google.gson.JsonSerializationContext;
 import org.apache.hbase.thirdparty.com.google.gson.JsonSerializer;
 
 /**
@@ -47,15 +49,18 @@ final public class BalancerDecision extends LogEntry {
   // used by toJsonPrettyPrint()
   private static final Gson GSON = GsonUtil.createGson()
     .setPrettyPrinting()
-    .registerTypeAdapter(BalancerDecision.class, (JsonSerializer<BalancerDecision>)
-      (balancerDecision, type, jsonSerializationContext) -> {
+    .registerTypeAdapter(BalancerDecision.class, new JsonSerializer<BalancerDecision>() {
+      @Override
+      public JsonElement serialize(BalancerDecision balancerDecision, Type type,
+        JsonSerializationContext jsonSerializationContext) {
         Gson gson = new Gson();
         return gson.toJsonTree(balancerDecision);
-      }).create();
+      }
+    }).create();
 
   private BalancerDecision(String initialFunctionCosts, String finalFunctionCosts,
-      double initTotalCost, double computedTotalCost, List<String> regionPlans,
-      long computedSteps) {
+    double initTotalCost, double computedTotalCost, List<String> regionPlans,
+    long computedSteps) {
     this.initialFunctionCosts = initialFunctionCosts;
     this.finalFunctionCosts = finalFunctionCosts;
     this.initTotalCost = initTotalCost;
@@ -105,6 +110,8 @@ final public class BalancerDecision extends LogEntry {
     return GSON.toJson(this);
   }
 
+  @InterfaceAudience.Public
+  @InterfaceStability.Evolving
   public static class Builder {
     private String initialFunctionCosts;
     private String finalFunctionCosts;

@@ -26,30 +26,22 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.io.CountingInputStream;
 import org.apache.hbase.thirdparty.com.google.common.io.CountingOutputStream;
 
-@Category({MiscTests.class, SmallTests.class})
+@Category(SmallTests.class)
 public class TestCellMessageCodec {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestCellMessageCodec.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestCellMessageCodec.class);
+  private static final Log LOG = LogFactory.getLog(TestCellMessageCodec.class);
 
   @Test
   public void testEmptyWorks() throws IOException {
@@ -113,13 +105,13 @@ public class TestCellMessageCodec {
     Codec.Decoder decoder = cmc.getDecoder(dis);
     assertTrue(decoder.advance());
     Cell c = decoder.current();
-    assertTrue(CellUtil.equals(c, kv1));
+    assertTrue(CellComparator.equals(c, kv1));
     assertTrue(decoder.advance());
     c = decoder.current();
-    assertTrue(CellUtil.equals(c, kv2));
+    assertTrue(CellComparator.equals(c, kv2));
     assertTrue(decoder.advance());
     c = decoder.current();
-    assertTrue(CellUtil.equals(c, kv3));
+    assertTrue(CellComparator.equals(c, kv3));
     assertFalse(decoder.advance());
     dis.close();
     assertEquals(offset, cis.getCount());

@@ -20,23 +20,21 @@
 package org.apache.hadoop.hbase.regionserver.wal;
 
 import java.io.IOException;
-
-import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.wal.WALEdit;
 import org.apache.hadoop.hbase.wal.WALKey;
+import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Class used to push numbers about the WAL into the metrics subsystem.  This will take a
  * single function call and turn it into multiple manipulations of the hadoop metrics system.
  */
 @InterfaceAudience.Private
-public class MetricsWAL implements WALActionsListener {
-  private static final Logger LOG = LoggerFactory.getLogger(MetricsWAL.class);
+public class MetricsWAL extends WALActionsListener.Base {
+  private static final Log LOG = LogFactory.getLog(MetricsWAL.class);
 
   private final MetricsWALSource source;
 
@@ -56,7 +54,7 @@ public class MetricsWAL implements WALActionsListener {
   @Override
   public void postAppend(final long size, final long time, final WALKey logkey,
       final WALEdit logEdit) throws IOException {
-    TableName tableName = logkey.getTableName();
+    TableName tableName = logkey.getTablename();
     source.incrementAppendCount(tableName);
     source.incrementAppendTime(time);
     source.incrementAppendSize(tableName, size);

@@ -17,11 +17,11 @@
  */
 package org.apache.hadoop.hbase.regionserver.compactions;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.math.LongMath;
 
@@ -30,8 +30,8 @@ import org.apache.hbase.thirdparty.com.google.common.math.LongMath;
  */
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.CONFIG)
 public class ExponentialCompactionWindowFactory extends CompactionWindowFactory {
-  private static final Logger LOG =
-      LoggerFactory.getLogger(ExponentialCompactionWindowFactory.class);
+
+  private static final Log LOG = LogFactory.getLog(ExponentialCompactionWindowFactory.class);
 
   public static final String BASE_WINDOW_MILLIS_KEY =
     "hbase.hstore.compaction.date.tiered.base.window.millis";
@@ -128,7 +128,7 @@ public class ExponentialCompactionWindowFactory extends CompactionWindowFactory 
     windowsPerTier = conf.getInt(WINDOWS_PER_TIER_KEY, 4);
     maxTierAgeMillis = conf.getLong(MAX_TIER_AGE_MILLIS_KEY,
       comConf.getDateTieredMaxStoreFileAgeMillis());
-    LOG.info(toString());
+    LOG.info(this);
   }
 
   @Override

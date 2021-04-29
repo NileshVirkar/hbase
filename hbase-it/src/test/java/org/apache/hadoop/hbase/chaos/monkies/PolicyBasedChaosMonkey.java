@@ -23,16 +23,16 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import org.apache.commons.lang3.RandomUtils;
+import org.apache.commons.lang.math.RandomUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
 import org.apache.hadoop.hbase.chaos.policies.Policy;
 import org.apache.hadoop.hbase.util.Pair;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
@@ -40,14 +40,13 @@ import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFacto
  */
 public class PolicyBasedChaosMonkey extends ChaosMonkey {
 
-  private static final Logger LOG = LoggerFactory.getLogger(PolicyBasedChaosMonkey.class);
+  private static final Log LOG = LogFactory.getLog(PolicyBasedChaosMonkey.class);
   private static final long ONE_SEC = 1000;
   private static final long ONE_MIN = 60 * ONE_SEC;
 
   public static final long TIMEOUT = ONE_MIN;
 
   final IntegrationTestingUtility util;
-  final Properties monkeyProps;
 
   private final Policy[] policies;
   private final ExecutorService monkeyThreadPool;
@@ -57,22 +56,11 @@ public class PolicyBasedChaosMonkey extends ChaosMonkey {
    * @param util the HBaseIntegrationTestingUtility already configured
    * @param policies custom policies to use
    */
-  public PolicyBasedChaosMonkey(IntegrationTestingUtility util, Policy... policies) {
-    this(null, util, policies);
-  }
-
   public PolicyBasedChaosMonkey(IntegrationTestingUtility util, Collection<Policy> policies) {
-    this(null, util, policies);
+    this(util, policies.toArray(new Policy[0]));
   }
 
-  public PolicyBasedChaosMonkey(Properties monkeyProps, IntegrationTestingUtility util,
-    Collection<Policy> policies) {
-    this(monkeyProps, util, policies.toArray(new Policy[0]));
-  }
-
-  public PolicyBasedChaosMonkey(Properties monkeyProps, IntegrationTestingUtility util,
-    Policy... policies) {
-    this.monkeyProps = monkeyProps;
+  public PolicyBasedChaosMonkey(IntegrationTestingUtility util, Policy... policies) {
     this.util = Objects.requireNonNull(util);
     this.policies = Objects.requireNonNull(policies);
     if (policies.length == 0) {
@@ -85,15 +73,17 @@ public class PolicyBasedChaosMonkey extends ChaosMonkey {
     return Executors.newFixedThreadPool(size, new ThreadFactoryBuilder()
       .setDaemon(false)
       .setNameFormat("ChaosMonkey-%d")
-      .setUncaughtExceptionHandler((t, e) -> {
-        throw new RuntimeException(e);
+      .setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+        @Override public void uncaughtException(Thread t, Throwable e) {
+          throw new RuntimeException(e);
+        }
       })
       .build());
   }
 
   /** Selects a random item from the given items */
   public static <T> T selectRandomItem(T[] items) {
-    return items[RandomUtils.nextInt(0, items.length)];
+    return items[RandomUtils.nextInt(items.length)];
   }
 
   /** Selects a random item from the given items with weights*/
@@ -103,7 +93,7 @@ public class PolicyBasedChaosMonkey extends ChaosMonkey {
       totalWeight += pair.getSecond();
     }
 
-    int cutoff = RandomUtils.nextInt(0, totalWeight);
+    int cutoff = RandomUtils.nextInt(totalWeight);
     int cummulative = 0;
     T item = null;
 
@@ -126,14 +116,13 @@ public class PolicyBasedChaosMonkey extends ChaosMonkey {
 
     List<T> originalItems = Arrays.asList(items);
     Collections.shuffle(originalItems);
-
-    int startIndex = RandomUtils.nextInt(0, items.length - selectedNumber);
+    int startIndex = RandomUtils.nextInt(items.length - selectedNumber);
     return originalItems.subList(startIndex, startIndex + selectedNumber);
   }
 
   @Override
   public void start() throws Exception {
-    final Policy.PolicyContext context = new Policy.PolicyContext(monkeyProps, util);
+    final Policy.PolicyContext context = new Policy.PolicyContext(this.util);
     for (final Policy policy : policies) {
       policy.init(context);
       monkeyThreadPool.execute(policy);

@@ -18,12 +18,12 @@
  */
 package org.apache.hadoop.hbase;
 
-import com.google.errorprone.annotations.RestrictedApi;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 
 /**
  * ScheduledChore is a task performed on a period in hbase. ScheduledChores become active once
@@ -34,13 +34,14 @@ import org.slf4j.LoggerFactory;
  * execute within the defined period. It is bad practice to define a ScheduledChore whose execution
  * time exceeds its period since it will try to hog one of the threads in the {@link ChoreService}'s
  * thread pool.
- * <p/>
+ * <p>
  * Don't subclass ScheduledChore if the task relies on being woken up for something to do, such as
  * an entry being added to a queue, etc.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public abstract class ScheduledChore implements Runnable {
-  private static final Logger LOG = LoggerFactory.getLogger(ScheduledChore.class);
+  private static final Log LOG = LogFactory.getLog(ScheduledChore.class);
 
   private final String name;
 
@@ -61,7 +62,7 @@ public abstract class ScheduledChore implements Runnable {
    * Interface to the ChoreService that this ScheduledChore is scheduled with. null if the chore is
    * not scheduled.
    */
-  private ChoreService choreService;
+  private ChoreServicer choreServicer;
 
   /**
    * Variables that encapsulate the meaningful state information
@@ -78,12 +79,49 @@ public abstract class ScheduledChore implements Runnable {
    */
   private final Stoppable stopper;
 
+  interface ChoreServicer {
+    /**
+     * Cancel any ongoing schedules that this chore has with the implementer of this interface.
+     */
+    public void cancelChore(ScheduledChore chore);
+    public void cancelChore(ScheduledChore chore, boolean mayInterruptIfRunning);
+
+    /**
+     * @return true when the chore is scheduled with the implementer of this interface
+     */
+    public boolean isChoreScheduled(ScheduledChore chore);
+
+    /**
+     * This method tries to execute the chore immediately. If the chore is executing at the time of
+     * this call, the chore will begin another execution as soon as the current execution finishes
+     * <p>
+     * If the chore is not scheduled with a ChoreService, this call will fail.
+     * @return false when the chore could not be triggered immediately
+     */
+    public boolean triggerNow(ScheduledChore chore);
+
+    /**
+     * A callback that tells the implementer of this interface that one of the scheduled chores is
+     * missing its start time. The implication of a chore missing its start time is that the
+     * service's current means of scheduling may not be sufficient to handle the number of ongoing
+     * chores (the other explanation is that the chore's execution time is greater than its
+     * scheduled period). The service should try to increase its concurrency when this callback is
+     * received.
+     * @param chore The chore that missed its start time
+     */
+    public void onChoreMissedStartTime(ScheduledChore chore);
+  }
+
   /**
    * This constructor is for test only. It allows us to create an object and to call chore() on it.
    */
   @InterfaceAudience.Private
   protected ScheduledChore() {
-    this("TestChore", null, 0, DEFAULT_INITIAL_DELAY, DEFAULT_TIME_UNIT);
+    this.name = null;
+    this.stopper = null;
+    this.period = 0;
+    this.initialDelay = DEFAULT_INITIAL_DELAY;
+    this.timeUnit = DEFAULT_TIME_UNIT;
   }
 
   /**
@@ -134,33 +172,23 @@ public abstract class ScheduledChore implements Runnable {
     updateTimeTrackingBeforeRun();
     if (missedStartTime() && isScheduled()) {
       onChoreMissedStartTime();
-      LOG.info("Chore: {} missed its start time", getName());
+      if (LOG.isInfoEnabled()) LOG.info("Chore: " + getName() + " missed its start time");
     } else if (stopper.isStopped() || !isScheduled()) {
-      // call shutdown here to cleanup the ScheduledChore.
-      shutdown(false);
-      LOG.info("Chore: {} was stopped", getName());
+      cancel(false);
+      cleanup();
+      if (LOG.isInfoEnabled()) LOG.info("Chore: " + getName() + " was stopped");
     } else {
       try {
-        // TODO: Histogram metrics per chore name.
-        // For now, just measure and log if DEBUG level logging is enabled.
-        long start = 0;
-        if (LOG.isDebugEnabled()) {
-          start = System.nanoTime();
-        }
         if (!initialChoreComplete) {
           initialChoreComplete = initialChore();
         } else {
           chore();
         }
-        if (LOG.isDebugEnabled() && start > 0) {
-          long end = System.nanoTime();
-          LOG.debug("{} execution time: {} ms.", getName(),
-            TimeUnit.NANOSECONDS.toMillis(end - start));
-        }
       } catch (Throwable t) {
-        LOG.error("Caught error", t);
+        if (LOG.isErrorEnabled()) LOG.error("Caught error", t);
         if (this.stopper.isStopped()) {
           cancel(false);
+          cleanup();
         }
       }
     }
@@ -181,9 +209,7 @@ public abstract class ScheduledChore implements Runnable {
    * pool threads
    */
   private synchronized void onChoreMissedStartTime() {
-    if (choreService != null) {
-      choreService.onChoreMissedStartTime(this);
-    }
+    if (choreServicer != null) choreServicer.onChoreMissedStartTime(this);
   }
 
   /**
@@ -222,18 +248,21 @@ public abstract class ScheduledChore implements Runnable {
    * @return false when the Chore is not currently scheduled with a ChoreService
    */
   public synchronized boolean triggerNow() {
-    if (choreService == null) {
+    if (choreServicer != null) {
+      return choreServicer.triggerNow(this);
+    } else {
       return false;
     }
-    choreService.triggerNow(this);
-    return true;
   }
 
-  @RestrictedApi(explanation = "Should only be called in ChoreService", link = "",
-    allowedOnPath = ".*/org/apache/hadoop/hbase/ChoreService.java")
-  synchronized void setChoreService(ChoreService service) {
-    choreService = service;
-    timeOfThisRun = -1;
+  synchronized void setChoreServicer(ChoreServicer service) {
+    // Chores should only ever be scheduled with a single ChoreService. If the choreServicer
+    // is changing, cancel any existing schedules of this chore.
+    if (choreServicer != null && choreServicer != service) {
+      choreServicer.cancelChore(this, false);
+    }
+    choreServicer = service;
+    timeOfThisRun = System.currentTimeMillis();
   }
 
   public synchronized void cancel() {
@@ -241,10 +270,9 @@ public abstract class ScheduledChore implements Runnable {
   }
 
   public synchronized void cancel(boolean mayInterruptIfRunning) {
-    if (isScheduled()) {
-      choreService.cancelChore(this, mayInterruptIfRunning);
-    }
-    choreService = null;
+    if (isScheduled()) choreServicer.cancelChore(this, mayInterruptIfRunning);
+
+    choreServicer = null;
   }
 
   public String getName() {
@@ -277,14 +305,17 @@ public abstract class ScheduledChore implements Runnable {
     return initialChoreComplete;
   }
 
-  synchronized ChoreService getChoreService() {
-    return choreService;
+  @InterfaceAudience.Private
+  synchronized ChoreServicer getChoreServicer() {
+    return choreServicer;
   }
 
+  @InterfaceAudience.Private
   synchronized long getTimeOfLastRun() {
     return timeOfLastRun;
   }
 
+  @InterfaceAudience.Private
   synchronized long getTimeOfThisRun() {
     return timeOfThisRun;
   }
@@ -293,12 +324,10 @@ public abstract class ScheduledChore implements Runnable {
    * @return true when this Chore is scheduled with a ChoreService
    */
   public synchronized boolean isScheduled() {
-    return choreService != null && choreService.isChoreScheduled(this);
+    return choreServicer != null && choreServicer.isChoreScheduled(this);
   }
 
   @InterfaceAudience.Private
-  @RestrictedApi(explanation = "Should only be called in tests", link = "",
-    allowedOnPath = ".*/src/test/.*")
   public synchronized void choreForTesting() {
     chore();
   }
@@ -320,26 +349,7 @@ public abstract class ScheduledChore implements Runnable {
   /**
    * Override to run cleanup tasks when the Chore encounters an error and must stop running
    */
-  protected void cleanup() {
-  }
-
-  /**
-   * Call {@link #shutdown(boolean)} with {@code true}.
-   * @see ScheduledChore#shutdown(boolean)
-   */
-  public synchronized void shutdown() {
-    shutdown(true);
-  }
-
-  /**
-   * Completely shutdown the ScheduleChore, which means we will call cleanup and you should not
-   * schedule it again.
-   * <p/>
-   * This is another path to cleanup the chore, comparing to stop the stopper instance passed in.
-   */
-  public synchronized void shutdown(boolean mayInterruptIfRunning) {
-    cancel(mayInterruptIfRunning);
-    cleanup();
+  protected synchronized void cleanup() {
   }
 
   /**
@@ -350,7 +360,7 @@ public abstract class ScheduledChore implements Runnable {
   @InterfaceAudience.Private
   @Override
   public String toString() {
-    return "ScheduledChore name=" + getName() + ", period=" + getPeriod() +
-      ", unit=" + getTimeUnit();
+    return "[ScheduledChore: Name: " + getName() + " Period: " + getPeriod() + " Unit: "
+        + getTimeUnit() + "]";
   }
 }

@@ -19,21 +19,18 @@
 
 package org.apache.hadoop.hbase.filter;
 
-import java.io.IOException;
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.ArrayList;
-
-import org.apache.hadoop.hbase.ByteBufferExtendedCell;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.PrivateCellUtil;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.KeyValueUtil;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
-import org.apache.hadoop.hbase.util.ByteBufferUtils;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.ByteStringer;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
 
 /**
  * This filter is used for selecting only those keys with columns that matches
@@ -41,6 +38,7 @@ import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
  * columns like 'and', 'anti' but not keys with columns like 'ball', 'act'.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class ColumnPrefixFilter extends FilterBase {
   protected byte [] prefix = null;
 
@@ -53,31 +51,33 @@ public class ColumnPrefixFilter extends FilterBase {
   }
 
   @Override
-  public boolean filterRowKey(Cell cell) throws IOException {
-    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
-    return false;
-  }
-
-  @Override
-  public ReturnCode filterCell(final Cell cell) {
-    if (this.prefix == null) {
+  public ReturnCode filterKeyValue(Cell kv) {
+    if (this.prefix == null || kv.getQualifierArray() == null) {
       return ReturnCode.INCLUDE;
     } else {
-      return filterColumn(cell);
+      return filterColumn(kv.getQualifierArray(), kv.getQualifierOffset(), kv.getQualifierLength());
     }
   }
 
-  public ReturnCode filterColumn(Cell cell) {
-    int qualifierLength = cell.getQualifierLength();
+  // Override here explicitly as the method in super class FilterBase might do a KeyValue recreate.
+  // See HBASE-12068
+  @Override
+  public Cell transformCell(Cell v) {
+    return v;
+  }
+
+  public ReturnCode filterColumn(byte[] buffer, int qualifierOffset, int qualifierLength) {
     if (qualifierLength < prefix.length) {
-      int cmp = compareQualifierPart(cell, qualifierLength, this.prefix);
+      int cmp = Bytes.compareTo(buffer, qualifierOffset, qualifierLength, this.prefix, 0,
+          qualifierLength);
       if (cmp <= 0) {
         return ReturnCode.SEEK_NEXT_USING_HINT;
       } else {
         return ReturnCode.NEXT_ROW;
       }
     } else {
-      int cmp = compareQualifierPart(cell, this.prefix.length, this.prefix);
+      int cmp = Bytes.compareTo(buffer, qualifierOffset, this.prefix.length, this.prefix, 0,
+          this.prefix.length);
       if (cmp < 0) {
         return ReturnCode.SEEK_NEXT_USING_HINT;
       } else if (cmp > 0) {
@@ -86,15 +86,6 @@ public class ColumnPrefixFilter extends FilterBase {
         return ReturnCode.INCLUDE;
       }
     }
-  }
-
-  private static int compareQualifierPart(Cell cell, int length, byte[] prefix) {
-    if (cell instanceof ByteBufferExtendedCell) {
-      return ByteBufferUtils.compareTo(((ByteBufferExtendedCell) cell).getQualifierByteBuffer(),
-          ((ByteBufferExtendedCell) cell).getQualifierPosition(), length, prefix, 0, length);
-    }
-    return Bytes.compareTo(cell.getQualifierArray(), cell.getQualifierOffset(), length, prefix, 0,
-        length);
   }
 
   public static Filter createFilterFromArguments(ArrayList<byte []> filterArguments) {
@@ -111,7 +102,7 @@ public class ColumnPrefixFilter extends FilterBase {
   public byte [] toByteArray() {
     FilterProtos.ColumnPrefixFilter.Builder builder =
       FilterProtos.ColumnPrefixFilter.newBuilder();
-    if (this.prefix != null) builder.setPrefix(UnsafeByteOperations.unsafeWrap(this.prefix));
+    if (this.prefix != null) builder.setPrefix(ByteStringer.wrap(this.prefix));
     return builder.build().toByteArray();
   }
 
@@ -133,7 +124,7 @@ public class ColumnPrefixFilter extends FilterBase {
   }
 
   /**
-   * @param o the other filter to compare with
+   * @param other
    * @return true if and only if the fields of the filter that are serialized
    * are equal to the corresponding fields in other.  Used for testing.
    */
@@ -147,8 +138,10 @@ public class ColumnPrefixFilter extends FilterBase {
   }
 
   @Override
-  public Cell getNextCellHint(Cell cell) {
-    return PrivateCellUtil.createFirstOnRowCol(cell, prefix, 0, prefix.length);
+  public Cell getNextCellHint(Cell kv) {
+    return KeyValueUtil.createFirstOnRow(
+        kv.getRowArray(), kv.getRowOffset(), kv.getRowLength(), kv.getFamilyArray(),
+        kv.getFamilyOffset(), kv.getFamilyLength(), prefix, 0, prefix.length);
   }
 
   @Override

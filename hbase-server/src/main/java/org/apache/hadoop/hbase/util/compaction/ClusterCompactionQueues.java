@@ -19,13 +19,13 @@ package org.apache.hadoop.hbase.util.compaction;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
@@ -63,7 +63,12 @@ class ClusterCompactionQueues {
   boolean hasWorkItems() {
     lock.readLock().lock();
     try {
-      return !this.compactionQueues.values().stream().allMatch(List::isEmpty);
+      for (List<MajorCompactionRequest> majorCompactionRequests : this.compactionQueues.values()) {
+        if (!majorCompactionRequests.isEmpty()) {
+          return true;
+        }
+      }
+      return false;
     } finally {
       lock.readLock().unlock();
     }
@@ -125,13 +130,19 @@ class ClusterCompactionQueues {
   Optional<ServerName> getLargestQueueFromServersNotCompacting() {
     lock.readLock().lock();
     try {
-      return compactionQueues.entrySet().stream()
-          .filter(entry -> !compactingServers.contains(entry.getKey()))
-          .max(Map.Entry.comparingByValue(
-            (o1, o2) -> Integer.compare(o1.size(), o2.size()))).map(Map.Entry::getKey);
+      Sets.SetView<ServerName> difference =
+          Sets.difference(compactionQueues.keySet(), compactingServers);
+      ServerName serverName = null;
+      int maxItems = 0;
+      for (ServerName server : difference) {
+        if (compactionQueues.get(server).size() > maxItems) {
+          maxItems = compactionQueues.get(server).size();
+          serverName = server;
+        }
+      }
+      return Optional.fromNullable(serverName);
     } finally {
       lock.readLock().unlock();
     }
   }
-
 }

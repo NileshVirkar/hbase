@@ -20,6 +20,7 @@
 package org.apache.hadoop.hbase.security;
 
 import java.io.IOException;
+import java.lang.reflect.UndeclaredThrowableException;
 import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
@@ -27,18 +28,18 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ExecutionException;
-
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.AuthUtil;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.util.Methods;
+import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.security.Groups;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
-import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.cache.LoadingCache;
 
@@ -54,6 +55,7 @@ import org.apache.hbase.thirdparty.com.google.common.cache.LoadingCache;
  * </p>
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public abstract class User {
   public static final String HBASE_SECURITY_CONF_KEY =
       "hbase.security.authentication";
@@ -105,6 +107,30 @@ public abstract class User {
       throws IOException, InterruptedException;
 
   /**
+   * Requests an authentication token for this user and stores it in the
+   * user's credentials.
+   *
+   * @throws IOException
+   * @deprecated Use {@code TokenUtil.obtainAuthTokenForJob(Connection,User,Job)}
+   *     instead.
+   */
+  @Deprecated
+  public abstract void obtainAuthTokenForJob(Configuration conf, Job job)
+      throws IOException, InterruptedException;
+
+  /**
+   * Requests an authentication token for this user and stores it in the
+   * user's credentials.
+   *
+   * @throws IOException
+   * @deprecated Use {@code TokenUtil.obtainAuthTokenForJob(Connection,JobConf,User)}
+   *     instead.
+   */
+  @Deprecated
+  public abstract void obtainAuthTokenForJob(JobConf job)
+      throws IOException, InterruptedException;
+
+  /**
    * Returns the Token of the specified kind associated with this user,
    * or null if the Token is not present.
    *
@@ -136,13 +162,6 @@ public abstract class User {
    */
   public void addToken(Token<? extends TokenIdentifier> token) {
     ugi.addToken(token);
-  }
-
-  /**
-   * @return true if user credentials are obtained from keytab.
-   */
-  public boolean isLoginFromKeytab() {
-    return ugi.isFromKeytab();
   }
 
   @Override
@@ -241,16 +260,6 @@ public abstract class User {
   }
 
   /**
-   * Login with the given keytab and principal.
-   * @param keytabLocation path of keytab
-   * @param pricipalName login principal
-   * @throws IOException underlying exception from UserGroupInformation.loginUserFromKeytab
-   */
-  public static void login(String keytabLocation, String pricipalName) throws IOException {
-    SecureHadoopUser.login(keytabLocation, pricipalName);
-  }
-
-  /**
    * Returns whether or not Kerberos authentication is configured for Hadoop.
    * For non-secure Hadoop, this always returns <code>false</code>.
    * For secure Hadoop, it will return the value from
@@ -267,21 +276,6 @@ public abstract class User {
    */
   public static boolean isHBaseSecurityEnabled(Configuration conf) {
     return "kerberos".equalsIgnoreCase(conf.get(HBASE_SECURITY_CONF_KEY));
-  }
-
-  /**
-   * In secure environment, if a user specified his keytab and principal,
-   * a hbase client will try to login with them. Otherwise, hbase client will try to obtain
-   * ticket(through kinit) from system.
-   * @param conf configuration file
-   * @return true if keytab and principal are configured
-   */
-  public static boolean shouldLoginFromKeytab(Configuration conf) {
-    Optional<String> keytab =
-      Optional.ofNullable(conf.get(AuthUtil.HBASE_CLIENT_KEYTAB_FILE));
-    Optional<String> principal =
-      Optional.ofNullable(conf.get(AuthUtil.HBASE_CLIENT_KERBEROS_PRINCIPAL));
-    return keytab.isPresent() && principal.isPresent();
   }
 
   /* Concrete implementations */
@@ -347,12 +341,60 @@ public abstract class User {
       return ugi.doAs(action);
     }
 
+    @Override
+    public void obtainAuthTokenForJob(Configuration conf, Job job)
+        throws IOException, InterruptedException {
+      try {
+        Class<?> c = Class.forName(
+            "org.apache.hadoop.hbase.security.token.TokenUtil");
+        Methods.call(c, null, "obtainTokenForJob",
+            new Class[]{Configuration.class, UserGroupInformation.class,
+                Job.class},
+            new Object[]{conf, ugi, job});
+      } catch (ClassNotFoundException cnfe) {
+        throw new RuntimeException("Failure loading TokenUtil class, "
+            +"is secure RPC available?", cnfe);
+      } catch (IOException ioe) {
+        throw ioe;
+      } catch (InterruptedException ie) {
+        throw ie;
+      } catch (RuntimeException re) {
+        throw re;
+      } catch (Exception e) {
+        throw new UndeclaredThrowableException(e,
+            "Unexpected error calling TokenUtil.obtainAndCacheToken()");
+      }
+    }
+
+    @Override
+    public void obtainAuthTokenForJob(JobConf job)
+        throws IOException, InterruptedException {
+      try {
+        Class<?> c = Class.forName(
+            "org.apache.hadoop.hbase.security.token.TokenUtil");
+        Methods.call(c, null, "obtainTokenForJob",
+            new Class[]{JobConf.class, UserGroupInformation.class},
+            new Object[]{job, ugi});
+      } catch (ClassNotFoundException cnfe) {
+        throw new RuntimeException("Failure loading TokenUtil class, "
+            +"is secure RPC available?", cnfe);
+      } catch (IOException ioe) {
+        throw ioe;
+      } catch (InterruptedException ie) {
+        throw ie;
+      } catch (RuntimeException re) {
+        throw re;
+      } catch (Exception e) {
+        throw new UndeclaredThrowableException(e,
+            "Unexpected error calling TokenUtil.obtainAndCacheToken()");
+      }
+    }
+
     /** @see User#createUserForTesting(org.apache.hadoop.conf.Configuration, String, String[]) */
     public static User createUserForTesting(Configuration conf,
         String name, String[] groups) {
       synchronized (UserProvider.class) {
-        if (!(UserProvider.groups instanceof TestingGroups) ||
-            conf.getBoolean(TestingGroups.TEST_CONF, false)) {
+        if (!(UserProvider.groups instanceof TestingGroups)) {
           UserProvider.groups = new TestingGroups(UserProvider.groups);
         }
       }
@@ -381,19 +423,6 @@ public abstract class User {
     }
 
     /**
-     * Login through configured keytab and pricipal.
-     * @param keytabLocation location of keytab
-     * @param principalName principal in keytab
-     * @throws IOException exception from UserGroupInformation.loginUserFromKeytab
-     */
-    public static void login(String keytabLocation, String principalName)
-        throws IOException {
-      if (isSecurityEnabled()) {
-        UserGroupInformation.loginUserFromKeytab(principalName, keytabLocation);
-      }
-    }
-
-    /**
      * Returns the result of {@code UserGroupInformation.isSecurityEnabled()}.
      */
     public static boolean isSecurityEnabled() {
@@ -401,13 +430,12 @@ public abstract class User {
     }
   }
 
-  public static class TestingGroups extends Groups {
-    public static final String TEST_CONF = "hbase.group.service.for.test.only";
-
-    private final Map<String, List<String>> userToGroupsMapping = new HashMap<>();
+  static class TestingGroups extends Groups {
+    private final Map<String, List<String>> userToGroupsMapping =
+        new HashMap<String,List<String>>();
     private Groups underlyingImplementation;
 
-    public TestingGroups(Groups underlyingImplementation) {
+    TestingGroups(Groups underlyingImplementation) {
       super(new Configuration());
       this.underlyingImplementation = underlyingImplementation;
     }

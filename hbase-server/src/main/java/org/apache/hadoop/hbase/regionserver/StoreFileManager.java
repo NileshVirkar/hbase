@@ -23,13 +23,10 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Optional;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.yetus.audience.InterfaceAudience;
-
-import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableCollection;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
 /**
  * Manages the store files and basic metadata about that that determines the logical structure
@@ -46,13 +43,13 @@ public interface StoreFileManager {
    * Loads the initial store files into empty StoreFileManager.
    * @param storeFiles The files to load.
    */
-  void loadFiles(List<HStoreFile> storeFiles);
+  void loadFiles(List<StoreFile> storeFiles);
 
   /**
    * Adds new files, either for from MemStore flush or bulk insert, into the structure.
    * @param sfs New store files.
    */
-  void insertNewFiles(Collection<HStoreFile> sfs) throws IOException;
+  void insertNewFiles(Collection<StoreFile> sfs) throws IOException;
 
   /**
    * Adds only the new compaction results into the structure.
@@ -60,34 +57,34 @@ public interface StoreFileManager {
    * @param results The resulting files for the compaction.
    */
   void addCompactionResults(
-      Collection<HStoreFile> compactedFiles, Collection<HStoreFile> results) throws IOException;
+      Collection<StoreFile> compactedFiles, Collection<StoreFile> results) throws IOException;
 
   /**
    * Remove the compacted files
    * @param compactedFiles the list of compacted files
    * @throws IOException
    */
-  void removeCompactedFiles(Collection<HStoreFile> compactedFiles) throws IOException;
+  void removeCompactedFiles(Collection<StoreFile> compactedFiles) throws IOException;
 
   /**
    * Clears all the files currently in use and returns them.
    * @return The files previously in use.
    */
-  ImmutableCollection<HStoreFile> clearFiles();
+  Collection<StoreFile> clearFiles();
 
   /**
    * Clears all the compacted files and returns them. This method is expected to be
    * accessed single threaded.
    * @return The files compacted previously.
    */
-  Collection<HStoreFile> clearCompactedFiles();
+  Collection<StoreFile> clearCompactedFiles();
 
   /**
    * Gets the snapshot of the store files currently in use. Can be used for things like metrics
    * and checks; should not assume anything about relations between store files in the list.
    * @return The list of StoreFiles.
    */
-  Collection<HStoreFile> getStorefiles();
+  Collection<StoreFile> getStorefiles();
 
   /**
    * List of compacted files inside this store that needs to be excluded in reads
@@ -96,7 +93,7 @@ public interface StoreFileManager {
    * compacted files are done.
    * @return the list of compacted files
    */
-  Collection<HStoreFile> getCompactedfiles();
+  Collection<StoreFile> getCompactedfiles();
 
   /**
    * Returns the number of files currently in use.
@@ -105,19 +102,13 @@ public interface StoreFileManager {
   int getStorefileCount();
 
   /**
-   * Returns the number of compacted files.
-   * @return The number of files.
-   */
-  int getCompactedFilesCount();
-
-  /**
    * Gets the store files to scan for a Scan or Get request.
    * @param startRow Start row of the request.
    * @param stopRow Stop row of the request.
    * @return The list of files that are to be read for this request.
    */
-  Collection<HStoreFile> getFilesForScan(byte[] startRow, boolean includeStartRow, byte[] stopRow,
-      boolean includeStopRow);
+  Collection<StoreFile> getFilesForScanOrGet(byte[] startRow, boolean includeStartRow,
+      byte[] stopRow, boolean includeStopRow);
 
   /**
    * Gets initial, full list of candidate store files to check for row-key-before.
@@ -125,7 +116,9 @@ public interface StoreFileManager {
    * @return The files that may have the key less than or equal to targetKey, in reverse
    *         order of new-ness, and preference for target key.
    */
-  Iterator<HStoreFile> getCandidateFilesForRowKeyBefore(KeyValue targetKey);
+  Iterator<StoreFile> getCandidateFilesForRowKeyBefore(
+    KeyValue targetKey
+  );
 
   /**
    * Updates the candidate list for finding row key before. Based on the list of candidates
@@ -138,16 +131,17 @@ public interface StoreFileManager {
    * @param candidate The current best candidate found.
    * @return The list to replace candidateFiles.
    */
-  Iterator<HStoreFile> updateCandidateFilesForRowKeyBefore(Iterator<HStoreFile> candidateFiles,
-      KeyValue targetKey, Cell candidate);
+  Iterator<StoreFile> updateCandidateFilesForRowKeyBefore(
+    Iterator<StoreFile> candidateFiles, KeyValue targetKey, Cell candidate
+  );
 
 
   /**
    * Gets the split point for the split of this set of store files (approx. middle).
-   * @return The mid-point if possible.
+   * @return The mid-point, or null if no split is possible.
    * @throws IOException
    */
-  Optional<byte[]> getSplitPoint() throws IOException;
+  byte[] getSplitPoint() throws IOException;
 
   /**
    * @return The store compaction priority.
@@ -159,17 +153,17 @@ public interface StoreFileManager {
    * @param filesCompacting Files that are currently compacting.
    * @return The files which don't have any necessary data according to TTL and other criteria.
    */
-  Collection<HStoreFile> getUnneededFiles(long maxTs, List<HStoreFile> filesCompacting);
+  Collection<StoreFile> getUnneededFiles(long maxTs, List<StoreFile> filesCompacting);
 
   /**
    * @return the compaction pressure used for compaction throughput tuning.
-   * @see HStore#getCompactionPressure()
+   * @see Store#getCompactionPressure()
    */
   double getCompactionPressure();
 
   /**
    * @return the comparator used to sort storefiles. Usually, the
-   *         {@link HStoreFile#getMaxSequenceId()} is the first priority.
+   *         {@link StoreFile#getMaxSequenceId()} is the first priority.
    */
-  Comparator<HStoreFile> getStoreFileComparator();
+  Comparator<StoreFile> getStoreFileComparator();
 }

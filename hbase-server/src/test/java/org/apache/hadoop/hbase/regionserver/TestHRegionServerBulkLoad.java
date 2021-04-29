@@ -17,73 +17,66 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
-import static org.apache.hadoop.hbase.regionserver.HStoreFile.BULKLOAD_TIME_KEY;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertThat;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.HColumnDescriptor;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
+import org.apache.hadoop.hbase.coprocessor.ObserverContext;
+import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.MultithreadedTestUtil.RepeatingTestThread;
 import org.apache.hadoop.hbase.MultithreadedTestUtil.TestContext;
-import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableExistsException;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
-import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.RegionLocator;
+import org.apache.hadoop.hbase.client.HConnection;
+import org.apache.hadoop.hbase.client.RegionServerCallable;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
+import org.apache.hadoop.hbase.client.RpcRetryingCaller;
+import org.apache.hadoop.hbase.client.RpcRetryingCallerFactory;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
-import org.apache.hadoop.hbase.coprocessor.ObserverContext;
-import org.apache.hadoop.hbase.coprocessor.RegionCoprocessor;
-import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
-import org.apache.hadoop.hbase.coprocessor.RegionObserver;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.compress.Compression.Algorithm;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.io.hfile.HFileContext;
 import org.apache.hadoop.hbase.io.hfile.HFileContextBuilder;
-import org.apache.hadoop.hbase.regionserver.compactions.CompactionLifeCycleTracker;
-import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequest;
+import org.apache.hadoop.hbase.protobuf.RequestConverter;
+import org.apache.hadoop.hbase.protobuf.generated.AdminProtos;
+import org.apache.hadoop.hbase.protobuf.generated.AdminProtos.CompactRegionRequest;
+import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.BulkLoadHFileRequest;
 import org.apache.hadoop.hbase.regionserver.wal.TestWALActionsListener;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
-import org.apache.hadoop.hbase.testclassification.RegionServerTests;
-import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.WAL;
-import org.apache.hadoop.hbase.wal.WALEdit;
 import org.apache.hadoop.hbase.wal.WALKey;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
@@ -92,23 +85,18 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
  * the region server's bullkLoad functionality.
  */
 @RunWith(Parameterized.class)
-@Category({RegionServerTests.class, LargeTests.class})
+@Category(LargeTests.class)
 public class TestHRegionServerBulkLoad {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestHRegionServerBulkLoad.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestHRegionServerBulkLoad.class);
-  protected static HBaseTestingUtility UTIL = new HBaseTestingUtility();
-  protected final static Configuration conf = UTIL.getConfiguration();
-  protected final static byte[] QUAL = Bytes.toBytes("qual");
-  protected final static int NUM_CFS = 10;
+  private static final Log LOG = LogFactory.getLog(TestHRegionServerBulkLoad.class);
+  private static HBaseTestingUtility UTIL = new HBaseTestingUtility();
+  private final static Configuration conf = UTIL.getConfiguration();
+  private final static byte[] QUAL = Bytes.toBytes("qual");
+  private final static int NUM_CFS = 10;
   private int sleepDuration;
   public static int BLOCKSIZE = 64 * 1024;
   public static Algorithm COMPRESSION = Compression.Algorithm.NONE;
 
-  protected final static byte[][] families = new byte[NUM_CFS][];
+  private final static byte[][] families = new byte[NUM_CFS][];
   static {
     for (int i = 0; i < NUM_CFS; i++) {
       families[i] = Bytes.toBytes(family(i));
@@ -117,7 +105,7 @@ public class TestHRegionServerBulkLoad {
   @Parameters
   public static final Collection<Object[]> parameters() {
     int[] sleepDurations = new int[] { 0, 30000 };
-    List<Object[]> configurations = new ArrayList<>();
+    List<Object[]> configurations = new ArrayList<Object[]>();
     for (int i : sleepDurations) {
       configurations.add(new Object[] { i });
     }
@@ -165,7 +153,7 @@ public class TestHRegionServerBulkLoad {
         KeyValue kv = new KeyValue(rowkey(i), family, qualifier, now, value);
         writer.append(kv);
       }
-      writer.appendFileInfo(BULKLOAD_TIME_KEY, Bytes.toBytes(now));
+      writer.appendFileInfo(StoreFile.BULKLOAD_TIME_KEY, Bytes.toBytes(now));
     } finally {
       writer.close();
     }
@@ -190,7 +178,6 @@ public class TestHRegionServerBulkLoad {
       this.tableName = tableName;
     }
 
-    @Override
     public void doAnAction() throws Exception {
       long iteration = numBulkLoads.getAndIncrement();
       Path dir =  UTIL.getDataTestDirOnTestFS(String.format("bulkLoad_%08d",
@@ -199,41 +186,63 @@ public class TestHRegionServerBulkLoad {
       // create HFiles for different column families
       FileSystem fs = UTIL.getTestFileSystem();
       byte[] val = Bytes.toBytes(String.format("%010d", iteration));
-      Map<byte[], List<Path>> family2Files = new TreeMap<>(Bytes.BYTES_COMPARATOR);
+      final List<Pair<byte[], String>> famPaths = new ArrayList<Pair<byte[], String>>(
+          NUM_CFS);
       for (int i = 0; i < NUM_CFS; i++) {
         Path hfile = new Path(dir, family(i));
         byte[] fam = Bytes.toBytes(family(i));
         createHFile(fs, hfile, fam, QUAL, val, 1000);
-        family2Files.put(fam, Collections.singletonList(hfile));
+        famPaths.add(new Pair<byte[], String>(fam, hfile.toString()));
       }
+
       // bulk load HFiles
-      BulkLoadHFiles.create(UTIL.getConfiguration()).bulkLoad(tableName, family2Files);
-      final Connection conn = UTIL.getConnection();
+      final HConnection conn = UTIL.getHBaseAdmin().getConnection();
+      RegionServerCallable<Void> callable =
+          new RegionServerCallable<Void>(conn, tableName, Bytes.toBytes("aaa")) {
+        @Override
+        public Void call(int callTimeout) throws Exception {
+          LOG.debug("Going to connect to server " + getLocation() + " for row "
+              + Bytes.toStringBinary(getRow()));
+          byte[] regionName = getLocation().getRegionInfo().getRegionName();
+          BulkLoadHFileRequest request =
+            RequestConverter.buildBulkLoadHFileRequest(famPaths, regionName, true);
+          getStub().bulkLoadHFile(null, request);
+          return null;
+        }
+      };
+      RpcRetryingCallerFactory factory = new RpcRetryingCallerFactory(conf);
+      RpcRetryingCaller<Void> caller = factory.<Void> newCaller();
+      caller.callWithRetries(callable, Integer.MAX_VALUE);
+
       // Periodically do compaction to reduce the number of open file handles.
       if (numBulkLoads.get() % 5 == 0) {
         // 5 * 50 = 250 open file handles!
-        try (RegionLocator locator = conn.getRegionLocator(tableName)) {
-          HRegionLocation loc = locator.getRegionLocation(Bytes.toBytes("aaa"), true);
-          conn.getAdmin().compactRegion(loc.getRegion().getRegionName());
-          numCompactions.incrementAndGet();
-        }
+        callable = new RegionServerCallable<Void>(conn, tableName, Bytes.toBytes("aaa")) {
+          @Override
+          public Void call(int callTimeout) throws Exception {
+            LOG.debug("compacting " + getLocation() + " for row "
+                + Bytes.toStringBinary(getRow()));
+            AdminProtos.AdminService.BlockingInterface server =
+              conn.getAdmin(getLocation().getServerName());
+            CompactRegionRequest request =
+              RequestConverter.buildCompactRegionRequest(
+                getLocation().getRegionInfo().getRegionName(), true, null);
+            server.compactRegion(null, request);
+            numCompactions.incrementAndGet();
+            return null;
+          }
+        };
+        caller.callWithRetries(callable, Integer.MAX_VALUE);
       }
     }
   }
 
-  public static class MyObserver implements RegionCoprocessor, RegionObserver {
+  public static class MyObserver extends BaseRegionObserver {
     static int sleepDuration;
-
     @Override
-    public Optional<RegionObserver> getRegionObserver() {
-      return Optional.of(this);
-    }
-
-    @Override
-    public InternalScanner preCompact(ObserverContext<RegionCoprocessorEnvironment> e, Store store,
-        InternalScanner scanner, ScanType scanType, CompactionLifeCycleTracker tracker,
-        CompactionRequest request)
-        throws IOException {
+    public InternalScanner preCompact(ObserverContext<RegionCoprocessorEnvironment> e,
+        final Store store, final InternalScanner scanner, final ScanType scanType)
+            throws IOException {
       try {
         Thread.sleep(sleepDuration);
       } catch (InterruptedException ie) {
@@ -251,7 +260,7 @@ public class TestHRegionServerBulkLoad {
    */
   public static class AtomicScanReader extends RepeatingTestThread {
     byte targetFamilies[][];
-    Table table;
+    HTable table;
     AtomicLong numScans = new AtomicLong();
     AtomicLong numRowsScanned = new AtomicLong();
     TableName TABLE_NAME;
@@ -261,10 +270,9 @@ public class TestHRegionServerBulkLoad {
       super(ctx);
       this.TABLE_NAME = TABLE_NAME;
       this.targetFamilies = targetFamilies;
-      table = UTIL.getConnection().getTable(TABLE_NAME);
+      table = new HTable(conf, TABLE_NAME);
     }
 
-    @Override
     public void doAnAction() throws Exception {
       Scan s = new Scan();
       for (byte[] family : targetFamilies) {
@@ -309,21 +317,17 @@ public class TestHRegionServerBulkLoad {
    * Creates a table with given table name and specified number of column
    * families if the table does not already exist.
    */
-  public void setupTable(TableName table, int cfs) throws IOException {
+  private void setupTable(TableName table, int cfs) throws IOException {
     try {
       LOG.info("Creating table " + table);
-      TableDescriptorBuilder tableDescriptorBuilder =
-        TableDescriptorBuilder.newBuilder(table);
-
-      tableDescriptorBuilder.setCoprocessor(MyObserver.class.getName());
+      HTableDescriptor htd = new HTableDescriptor(table);
+      htd.addCoprocessor(MyObserver.class.getName());
       MyObserver.sleepDuration = this.sleepDuration;
       for (int i = 0; i < 10; i++) {
-        ColumnFamilyDescriptor columnFamilyDescriptor =
-          ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes(family(i))).build();
-        tableDescriptorBuilder.setColumnFamily(columnFamilyDescriptor);
+        htd.addFamily(new HColumnDescriptor(family(i)));
       }
 
-      UTIL.getAdmin().createTable(tableDescriptorBuilder.build());
+      UTIL.getHBaseAdmin().createTable(htd);
     } catch (TableExistsException tee) {
       LOG.info("Table " + table + " already exists");
     }
@@ -339,8 +343,7 @@ public class TestHRegionServerBulkLoad {
     int millisToRun = 30000;
     int numScanners = 50;
 
-    // Set createWALDir to true and use default values for other options.
-    UTIL.startMiniCluster(StartMiniClusterOption.builder().createWALDir(true).build());
+    UTIL.startMiniCluster(1, false, true);
     try {
       WAL log = UTIL.getHBaseCluster().getRegionServer(0).getWAL(null);
       FindBulkHBaseListener listener = new FindBulkHBaseListener();
@@ -406,7 +409,7 @@ public class TestHRegionServerBulkLoad {
     private boolean found = false;
 
     @Override
-    public void visitLogEntryBeforeWrite(WALKey logKey, WALEdit logEdit) {
+    public void visitLogEntryBeforeWrite(HTableDescriptor htd, WALKey logKey, WALEdit logEdit) {
       for (Cell cell : logEdit.getCells()) {
         KeyValue kv = KeyValueUtil.ensureKeyValue(cell);
         for (Map.Entry entry : kv.toStringMap().entrySet()) {

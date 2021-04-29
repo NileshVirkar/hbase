@@ -18,21 +18,23 @@
 
 package org.apache.hadoop.hbase.util;
 
-import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.apache.hadoop.util.StringUtils;
-
 import java.util.AbstractMap;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
+
+import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Utilities for storing more complex collection types in
  * {@link org.apache.hadoop.conf.Configuration} instances.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Evolving
 public final class ConfigurationUtil {
   // TODO: hopefully this is a good delimiter; it's not in the base64 alphabet, 
   // nor is it valid for paths
@@ -116,7 +118,7 @@ public final class ConfigurationUtil {
                 + delimiter + "<value>; was " + kvp + " instead");
       }
 
-      rtn.add(new AbstractMap.SimpleImmutableEntry<>(splitKvp[0], splitKvp[1]));
+      rtn.add(new AbstractMap.SimpleImmutableEntry<String, String>(splitKvp[0], splitKvp[1]));
     }
     return rtn;
   }

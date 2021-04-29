@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,34 +22,34 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.RegionInfoBuilder;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionConfiguration;
-import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequestImpl;
+import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequest;
 import org.apache.hadoop.hbase.regionserver.compactions.RatioBasedCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.wal.FSHLog;
+import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.junit.experimental.categories.Category;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
+@Category(SmallTests.class)
 public class TestCompactionPolicy {
-  private final static Logger LOG = LoggerFactory.getLogger(TestCompactionPolicy.class);
+  private final static Log LOG = LogFactory.getLog(TestCompactionPolicy.class);
   protected final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
 
   protected Configuration conf;
@@ -93,27 +93,22 @@ public class TestCompactionPolicy {
     Path basedir = new Path(DIR);
     String logName = "logs";
     Path logdir = new Path(DIR, logName);
-    ColumnFamilyDescriptor familyDescriptor =
-      ColumnFamilyDescriptorBuilder.of(Bytes.toBytes("family"));
+    HColumnDescriptor hcd = new HColumnDescriptor(Bytes.toBytes("family"));
     FileSystem fs = FileSystem.get(conf);
 
     fs.delete(logdir, true);
 
-    TableDescriptor tableDescriptor =
-      TableDescriptorBuilder.newBuilder(TableName.valueOf(Bytes.toBytes("table")))
-        .setColumnFamily(familyDescriptor).build();
-    RegionInfo info = RegionInfoBuilder.newBuilder(tableDescriptor.getTableName()).build();
+    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(Bytes.toBytes("table")));
+    htd.addFamily(hcd);
+    HRegionInfo info = new HRegionInfo(htd.getTableName(), null, null, false);
 
     hlog = new FSHLog(fs, basedir, logName, conf);
-    hlog.init();
-    ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false, 0, 0,
-      0, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
-    region = HRegion.createHRegion(info, basedir, conf, tableDescriptor, hlog);
+    region = HRegion.createHRegion(info, basedir, conf, htd, hlog);
     region.close();
-    Path tableDir = CommonFSUtils.getTableDir(basedir, tableDescriptor.getTableName());
-    region = new HRegion(tableDir, hlog, fs, conf, info, tableDescriptor, null);
+    Path tableDir = FSUtils.getTableDir(basedir, htd.getTableName());
+    region = new HRegion(tableDir, hlog, fs, conf, info, htd, null);
 
-    store = new HStore(region, familyDescriptor, conf, false);
+    store = new HStore(region, hcd, conf);
 
     TEST_FILE = region.getRegionFileSystem().createTempName();
     fs.createNewFile(TEST_FILE);
@@ -140,44 +135,44 @@ public class TestCompactionPolicy {
   }
 
   ArrayList<Long> toArrayList(long... numbers) {
-    ArrayList<Long> result = new ArrayList<>();
+    ArrayList<Long> result = new ArrayList<Long>();
     for (long i : numbers) {
       result.add(i);
     }
     return result;
   }
 
-  List<HStoreFile> sfCreate(long... sizes) throws IOException {
-    ArrayList<Long> ageInDisk = new ArrayList<>();
+  List<StoreFile> sfCreate(long... sizes) throws IOException {
+    ArrayList<Long> ageInDisk = new ArrayList<Long>();
     for (int i = 0; i < sizes.length; i++) {
       ageInDisk.add(0L);
     }
     return sfCreate(toArrayList(sizes), ageInDisk);
   }
 
-  List<HStoreFile> sfCreate(ArrayList<Long> sizes, ArrayList<Long> ageInDisk) throws IOException {
+  List<StoreFile> sfCreate(ArrayList<Long> sizes, ArrayList<Long> ageInDisk) throws IOException {
     return sfCreate(false, sizes, ageInDisk);
   }
 
-  List<HStoreFile> sfCreate(boolean isReference, long... sizes) throws IOException {
-    ArrayList<Long> ageInDisk = new ArrayList<>(sizes.length);
+  List<StoreFile> sfCreate(boolean isReference, long... sizes) throws IOException {
+    ArrayList<Long> ageInDisk = new ArrayList<Long>(sizes.length);
     for (int i = 0; i < sizes.length; i++) {
       ageInDisk.add(0L);
     }
     return sfCreate(isReference, toArrayList(sizes), ageInDisk);
   }
 
-  List<HStoreFile> sfCreate(boolean isReference, ArrayList<Long> sizes, ArrayList<Long> ageInDisk)
+  List<StoreFile> sfCreate(boolean isReference, ArrayList<Long> sizes, ArrayList<Long> ageInDisk)
       throws IOException {
-    List<HStoreFile> ret = Lists.newArrayList();
+    List<StoreFile> ret = Lists.newArrayList();
     for (int i = 0; i < sizes.size(); i++) {
-      ret.add(new MockHStoreFile(TEST_UTIL, TEST_FILE, sizes.get(i), ageInDisk.get(i), isReference,
+      ret.add(new MockStoreFile(TEST_UTIL, TEST_FILE, sizes.get(i), ageInDisk.get(i), isReference,
           i));
     }
     return ret;
   }
 
-  long[] getSizes(List<HStoreFile> sfList) {
+  long[] getSizes(List<StoreFile> sfList) {
     long[] aNums = new long[sfList.size()];
     for (int i = 0; i < sfList.size(); ++i) {
       aNums[i] = sfList.get(i).getReader().length();
@@ -185,23 +180,23 @@ public class TestCompactionPolicy {
     return aNums;
   }
 
-  void compactEquals(List<HStoreFile> candidates, long... expected) throws IOException {
+  void compactEquals(List<StoreFile> candidates, long... expected) throws IOException {
     compactEquals(candidates, false, false, expected);
   }
 
-  void compactEquals(List<HStoreFile> candidates, boolean forcemajor, long... expected)
+  void compactEquals(List<StoreFile> candidates, boolean forcemajor, long... expected)
       throws IOException {
     compactEquals(candidates, forcemajor, false, expected);
   }
 
-  void compactEquals(List<HStoreFile> candidates, boolean forcemajor, boolean isOffPeak,
+  void compactEquals(List<StoreFile> candidates, boolean forcemajor, boolean isOffPeak,
       long... expected) throws IOException {
     store.forceMajor = forcemajor;
     // Test Default compactions
-    CompactionRequestImpl result =
+    CompactionRequest result =
         ((RatioBasedCompactionPolicy) store.storeEngine.getCompactionPolicy()).selectCompaction(
-          candidates, new ArrayList<>(), false, isOffPeak, forcemajor);
-    List<HStoreFile> actual = new ArrayList<>(result.getFiles());
+          candidates, new ArrayList<StoreFile>(), false, isOffPeak, forcemajor);
+    List<StoreFile> actual = new ArrayList<StoreFile>(result.getFiles());
     if (isOffPeak && !forcemajor) {
       Assert.assertTrue(result.isOffPeak());
     }

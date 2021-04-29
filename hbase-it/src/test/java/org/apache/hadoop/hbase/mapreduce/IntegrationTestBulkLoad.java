@@ -26,17 +26,20 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
-import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.lang.RandomStringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.IntegrationTestBase;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
 import org.apache.hadoop.hbase.KeyValue;
@@ -48,16 +51,14 @@ import org.apache.hadoop.hbase.client.Consistency;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
+import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
-import org.apache.hadoop.hbase.coprocessor.RegionCoprocessor;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
-import org.apache.hadoop.hbase.coprocessor.RegionObserver;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
+import org.apache.hadoop.hbase.regionserver.RegionScanner;
 import org.apache.hadoop.hbase.testclassification.IntegrationTests;
-import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.RegionSplitter;
@@ -81,12 +82,9 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.ToolRunner;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
 
 /**
  * Test Bulk Load and MR on a distributed cluster.
@@ -124,7 +122,7 @@ import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
 @Category(IntegrationTests.class)
 public class IntegrationTestBulkLoad extends IntegrationTestBase {
 
-  private static final Logger LOG = LoggerFactory.getLogger(IntegrationTestBulkLoad.class);
+  private static final Log LOG = LogFactory.getLog(IntegrationTestBulkLoad.class);
 
   private static final byte[] CHAIN_FAM = Bytes.toBytes("L");
   private static final byte[] SORT_FAM  = Bytes.toBytes("S");
@@ -153,24 +151,19 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
   private boolean load = false;
   private boolean check = false;
 
-  public static class SlowMeCoproScanOperations implements RegionCoprocessor, RegionObserver {
+  public static class SlowMeCoproScanOperations extends BaseRegionObserver {
     static final AtomicLong sleepTime = new AtomicLong(2000);
     Random r = new Random();
     AtomicLong countOfNext = new AtomicLong(0);
     AtomicLong countOfOpen = new AtomicLong(0);
     public SlowMeCoproScanOperations() {}
-
     @Override
-    public Optional<RegionObserver> getRegionObserver() {
-      return Optional.of(this);
-    }
-
-    @Override
-    public void preScannerOpen(final ObserverContext<RegionCoprocessorEnvironment> e,
-        final Scan scan) throws IOException {
+    public RegionScanner preScannerOpen(final ObserverContext<RegionCoprocessorEnvironment> e,
+        final Scan scan, final RegionScanner s) throws IOException {
       if (countOfOpen.incrementAndGet() == 2) { //slowdown openScanner randomly
         slowdownCode(e);
       }
+      return s;
     }
 
     @Override
@@ -193,7 +186,7 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
             Thread.sleep(sleepTime.get());
           }
         } catch (InterruptedException e1) {
-          LOG.error(e1.toString(), e1);
+          LOG.error(e1);
         }
       }
     }
@@ -207,11 +200,10 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
     if (replicaCount == NUM_REPLICA_COUNT_DEFAULT) return;
 
     TableName t = getTablename();
-    Admin admin = util.getAdmin();
-    TableDescriptor desc = admin.getDescriptor(t);
-    TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(desc);
-    builder.setCoprocessor(SlowMeCoproScanOperations.class.getName());
-    HBaseTestingUtility.modifyTableSync(admin, builder.build());
+    Admin admin = util.getHBaseAdmin();
+    HTableDescriptor desc = admin.getTableDescriptor(t);
+    desc.addCoprocessor(SlowMeCoproScanOperations.class.getName());
+    HBaseTestingUtility.modifyTableSync(admin, desc);
   }
 
   @Test
@@ -238,12 +230,12 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
   }
 
   private void setupTable() throws IOException, InterruptedException {
-    if (util.getAdmin().tableExists(getTablename())) {
+    if (util.getHBaseAdmin().tableExists(getTablename())) {
       util.deleteTable(getTablename());
     }
 
     util.createTable(
-        getTablename(),
+        getTablename().getName(),
         new byte[][]{CHAIN_FAM, SORT_FAM, DATA_FAM},
         getSplits(16)
     );
@@ -252,7 +244,7 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
     if (replicaCount == NUM_REPLICA_COUNT_DEFAULT) return;
 
     TableName t = getTablename();
-    HBaseTestingUtility.setReplicas(util.getAdmin(), t, replicaCount);
+    HBaseTestingUtility.setReplicas(util.getHBaseAdmin(), t, replicaCount);
   }
 
   private void runLinkedListMRJob(int iteration) throws Exception {
@@ -290,18 +282,24 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
 
     // Set where to place the hfiles.
     FileOutputFormat.setOutputPath(job, p);
-    try (Connection conn = ConnectionFactory.createConnection(conf); Admin admin = conn.getAdmin();
-      RegionLocator regionLocator = conn.getRegionLocator(getTablename())) {
+    try (Connection conn = ConnectionFactory.createConnection(conf);
+        Admin admin = conn.getAdmin();
+        Table table = conn.getTable(getTablename());
+        RegionLocator regionLocator = conn.getRegionLocator(getTablename())) {
+
       // Configure the partitioner and other things needed for HFileOutputFormat.
-      HFileOutputFormat2.configureIncrementalLoad(job, admin.getDescriptor(getTablename()),
-        regionLocator);
+      HFileOutputFormat2.configureIncrementalLoad(job, table.getTableDescriptor(), regionLocator);
+
       // Run the job making sure it works.
       assertEquals(true, job.waitForCompletion(true));
+
+      // Create a new loader.
+      LoadIncrementalHFiles loader = new LoadIncrementalHFiles(conf);
+
+      // Load the HFiles in.
+      loader.doBulkLoad(p, admin, table, regionLocator);
     }
-    // Create a new loader.
-    BulkLoadHFiles loader = BulkLoadHFiles.create(conf);
-    // Load the HFiles in.
-    loader.bulkLoad(getTablename(), p);
+
     // Delete the files.
     util.getTestFileSystem().delete(p, true);
   }
@@ -354,7 +352,7 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
     @Override
     public List<InputSplit> getSplits(JobContext context) throws IOException, InterruptedException {
       int numSplits = context.getConfiguration().getInt(NUM_MAPS_KEY, NUM_MAPS);
-      ArrayList<InputSplit> ret = new ArrayList<>(numSplits);
+      ArrayList<InputSplit> ret = new ArrayList<InputSplit>(numSplits);
       for (int i = 0; i < numSplits; ++i) {
         ret.add(new EmptySplit());
       }
@@ -377,7 +375,7 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
       chainId = chainId - (chainId % numMapTasks) + taskId; // ensure that chainId is unique per task and across iterations
       LongWritable[] keys = new LongWritable[] {new LongWritable(chainId)};
 
-      return new FixedRecordReader<>(keys, keys);
+      return new FixedRecordReader<LongWritable, LongWritable>(keys, keys);
     }
   }
 
@@ -662,9 +660,9 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
       LOG.error("Failure in chain verification: " + msg);
       try (Connection connection = ConnectionFactory.createConnection(context.getConfiguration());
           Admin admin = connection.getAdmin()) {
-        LOG.error("cluster metrics:\n" + admin.getClusterMetrics());
+        LOG.error("cluster status:\n" + admin.getClusterStatus());
         LOG.error("table regions:\n"
-            + Joiner.on("\n").join(admin.getRegions(table)));
+            + Joiner.on("\n").join(admin.getTableRegions(table)));
       }
     }
   }
@@ -705,7 +703,7 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
     Scan scan = new Scan();
     scan.addFamily(CHAIN_FAM);
     scan.addFamily(SORT_FAM);
-    scan.readVersions(1);
+    scan.setMaxVersions(1);
     scan.setCacheBlocks(false);
     scan.setBatch(1000);
 
@@ -747,7 +745,8 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
     // Scale this up on a real cluster
     if (util.isDistributedCluster()) {
       util.getConfiguration().setIfUnset(NUM_MAPS_KEY,
-        Integer.toString(util.getAdmin().getRegionServers().size() * 10));
+          Integer.toString(util.getHBaseAdmin().getClusterStatus().getServersSize() * 10)
+      );
       util.getConfiguration().setIfUnset(NUM_IMPORT_ROUNDS_KEY, "5");
     } else {
       util.startMiniMapReduceCluster();

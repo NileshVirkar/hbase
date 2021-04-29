@@ -19,22 +19,23 @@
 
 package org.apache.hadoop.hbase.tool;
 
-
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
 @InterfaceAudience.Public
 public interface Canary {
 
-  static Canary create(Configuration conf, ExecutorService executor) {
-    return new CanaryTool(conf, executor);
-  }
+  public static class Factory {
+    static Canary create(Configuration conf, ExecutorService executor) {
+      return new CanaryTool(conf, executor);
+    }
 
-  @InterfaceAudience.Private
-  static Canary create(Configuration conf, ExecutorService executor, CanaryTool.Sink sink) {
-    return new CanaryTool(conf, executor, sink);
+    @InterfaceAudience.Private
+    static Canary create(Configuration conf, ExecutorService executor, CanaryTool.Sink sink) {
+      return new CanaryTool(conf, executor, sink);
+    }
   }
 
   /**

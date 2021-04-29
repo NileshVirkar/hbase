@@ -24,65 +24,49 @@ import static org.junit.Assert.fail;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
 import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
 import org.apache.hadoop.hbase.snapshot.SnapshotCreationException;
 import org.apache.hadoop.hbase.snapshot.SnapshotDoesNotExistException;
-import org.apache.hadoop.hbase.snapshot.SnapshotManifestV1;
 import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils;
-import org.apache.hadoop.hbase.testclassification.ClientTests;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.snapshot.SnapshotManifestV1;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.junit.rules.TestName;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 
 /**
  * Test create/using/deleting snapshots from the client
  * <p>
  * This is an end-to-end test for the snapshot utility
  */
-@Category({LargeTests.class, ClientTests.class})
+@Category(LargeTests.class)
 public class TestSnapshotFromClient {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestSnapshotFromClient.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestSnapshotFromClient.class);
-
+  private static final Log LOG = LogFactory.getLog(TestSnapshotFromClient.class);
   protected static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
-  protected static final int NUM_RS = 2;
-  protected static final String STRING_TABLE_NAME = "test";
+  private static final int NUM_RS = 2;
+  private static final String STRING_TABLE_NAME = "test";
   protected static final byte[] TEST_FAM = Bytes.toBytes("fam");
   protected static final TableName TABLE_NAME =
       TableName.valueOf(STRING_TABLE_NAME);
-  private static final Pattern MATCH_ALL = Pattern.compile(".*");
-
-  @Rule
-  public TestName name = new TestName();
 
   /**
    * Setup the config for the cluster
@@ -94,7 +78,7 @@ public class TestSnapshotFromClient {
     UTIL.startMiniCluster(NUM_RS);
   }
 
-  protected static void setupConf(Configuration conf) {
+  private static void setupConf(Configuration conf) {
     // disable the ui
     conf.setInt("hbase.regionsever.info.port", -1);
     // change the flush size to a small amount, regulating number of store files
@@ -108,19 +92,14 @@ public class TestSnapshotFromClient {
     // Enable snapshot
     conf.setBoolean(SnapshotManager.HBASE_SNAPSHOT_ENABLED, true);
     conf.set(HConstants.HBASE_REGION_SPLIT_POLICY_KEY,
-        ConstantSizeRegionSplitPolicy.class.getName());
-
+      ConstantSizeRegionSplitPolicy.class.getName());
   }
 
   @Before
   public void setup() throws Exception {
-    createTable();
-  }
-
-  protected void createTable() throws Exception {
-    TableDescriptor htd =
-      TableDescriptorBuilder.newBuilder(TABLE_NAME).setRegionReplication(getNumReplicas()).build();
-    UTIL.createTable(htd, new byte[][] { TEST_FAM }, null);
+    HTableDescriptor htd = new HTableDescriptor(TABLE_NAME);
+    htd.setRegionReplication(getNumReplicas());
+    UTIL.createTable(htd, new byte[][]{TEST_FAM}, UTIL.getConfiguration());
   }
 
   protected int getNumReplicas() {
@@ -130,7 +109,7 @@ public class TestSnapshotFromClient {
   @After
   public void tearDown() throws Exception {
     UTIL.deleteTable(TABLE_NAME);
-    SnapshotTestingUtils.deleteAllSnapshots(UTIL.getAdmin());
+    SnapshotTestingUtils.deleteAllSnapshots(UTIL.getHBaseAdmin());
     SnapshotTestingUtils.deleteArchiveDirectory(UTIL);
   }
 
@@ -145,10 +124,19 @@ public class TestSnapshotFromClient {
 
   /**
    * Test snapshotting not allowed hbase:meta and -ROOT-
+   * @throws Exception
    */
-  @Test(expected = IllegalArgumentException.class)
+  @Test (timeout=300000)
   public void testMetaTablesSnapshot() throws Exception {
-    UTIL.getAdmin().snapshot("metaSnapshot", TableName.META_TABLE_NAME);
+    Admin admin = UTIL.getHBaseAdmin();
+    byte[] snapshotName = Bytes.toBytes("metaSnapshot");
+
+    try {
+      admin.snapshot(snapshotName, TableName.META_TABLE_NAME);
+      fail("taking a snapshot of hbase:meta should not be allowed");
+    } catch (IllegalArgumentException e) {
+      // expected
+    }
   }
 
   /**
@@ -156,34 +144,34 @@ public class TestSnapshotFromClient {
    *
    * @throws Exception
    */
-  @Test
+  @Test (timeout=300000)
   public void testSnapshotDeletionWithRegex() throws Exception {
-    Admin admin = UTIL.getAdmin();
+    Admin admin = UTIL.getHBaseAdmin();
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
 
     // put some stuff in the table
-    Table table = UTIL.getConnection().getTable(TABLE_NAME);
+    HTable table = new HTable(UTIL.getConfiguration(), TABLE_NAME);
     UTIL.loadTable(table, TEST_FAM);
     table.close();
 
-    String snapshot1 = "TableSnapshot1";
+    byte[] snapshot1 = Bytes.toBytes("TableSnapshot1");
     admin.snapshot(snapshot1, TABLE_NAME);
     LOG.debug("Snapshot1 completed.");
 
-    String snapshot2 = "TableSnapshot2";
+    byte[] snapshot2 = Bytes.toBytes("TableSnapshot2");
     admin.snapshot(snapshot2, TABLE_NAME);
     LOG.debug("Snapshot2 completed.");
 
     String snapshot3 = "3rdTableSnapshot";
-    admin.snapshot(snapshot3, TABLE_NAME);
+    admin.snapshot(Bytes.toBytes(snapshot3), TABLE_NAME);
     LOG.debug(snapshot3 + " completed.");
 
     // delete the first two snapshots
-    admin.deleteSnapshots(Pattern.compile("TableSnapshot.*"));
+    admin.deleteSnapshots("TableSnapshot.*");
     List<SnapshotDescription> snapshots = admin.listSnapshots();
     assertEquals(1, snapshots.size());
-    assertEquals(snapshot3, snapshots.get(0).getName());
+    assertEquals(snapshots.get(0).getName(), snapshot3);
 
     admin.deleteSnapshot(snapshot3);
     admin.close();
@@ -192,57 +180,62 @@ public class TestSnapshotFromClient {
    * Test snapshotting a table that is offline
    * @throws Exception
    */
-  @Test
+  @Test (timeout=300000)
   public void testOfflineTableSnapshot() throws Exception {
-    Admin admin = UTIL.getAdmin();
+    Admin admin = UTIL.getHBaseAdmin();
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
 
     // put some stuff in the table
-    Table table = UTIL.getConnection().getTable(TABLE_NAME);
+    HTable table = new HTable(UTIL.getConfiguration(), TABLE_NAME);
     UTIL.loadTable(table, TEST_FAM, false);
 
     LOG.debug("FS state before disable:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
+      FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
     // XXX if this is flakey, might want to consider using the async version and looping as
     // disableTable can succeed and still timeout.
     admin.disableTable(TABLE_NAME);
 
     LOG.debug("FS state before snapshot:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
+      FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
 
     // take a snapshot of the disabled table
     final String SNAPSHOT_NAME = "offlineTableSnapshot";
-    String snapshot = SNAPSHOT_NAME;
+    byte[] snapshot = Bytes.toBytes(SNAPSHOT_NAME);
 
-    admin.snapshot(new SnapshotDescription(SNAPSHOT_NAME, TABLE_NAME,
-        SnapshotType.DISABLED, null, -1, SnapshotManifestV1.DESCRIPTOR_VERSION, null));
+    SnapshotDescription desc = SnapshotDescription.newBuilder()
+      .setType(SnapshotDescription.Type.DISABLED)
+      .setTable(STRING_TABLE_NAME)
+      .setName(SNAPSHOT_NAME)
+      .setVersion(SnapshotManifestV1.DESCRIPTOR_VERSION)
+      .build();
+    admin.snapshot(desc);
     LOG.debug("Snapshot completed.");
 
     // make sure we have the snapshot
-    List<SnapshotDescription> snapshots =
-        SnapshotTestingUtils.assertOneSnapshotThatMatches(admin, snapshot, TABLE_NAME);
+    List<SnapshotDescription> snapshots = SnapshotTestingUtils.assertOneSnapshotThatMatches(admin,
+      snapshot, TABLE_NAME);
 
     // make sure its a valid snapshot
     FileSystem fs = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getFileSystem();
     Path rootDir = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getRootDir();
     LOG.debug("FS state after snapshot:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
-    SnapshotTestingUtils.confirmSnapshotValid(
-      ProtobufUtil.createHBaseProtosSnapshotDesc(snapshots.get(0)), TABLE_NAME, TEST_FAM,
-      rootDir, admin, fs);
+    FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
+      FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+
+    SnapshotTestingUtils.confirmSnapshotValid(snapshots.get(0), TABLE_NAME, TEST_FAM, rootDir,
+      admin, fs);
 
     admin.deleteSnapshot(snapshot);
     snapshots = admin.listSnapshots();
     SnapshotTestingUtils.assertNoSnapshots(admin);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testSnapshotFailsOnNonExistantTable() throws Exception {
-    Admin admin = UTIL.getAdmin();
+    Admin admin = UTIL.getHBaseAdmin();
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
     String tableName = "_not_a_table";
@@ -250,13 +243,13 @@ public class TestSnapshotFromClient {
     // make sure the table doesn't exist
     boolean fail = false;
     do {
-      try {
-        admin.getDescriptor(TableName.valueOf(tableName));
-        fail = true;
-        LOG.error("Table:" + tableName + " already exists, checking a new name");
-        tableName = tableName + "!";
-      } catch (TableNotFoundException e) {
-        fail = false;
+    try {
+      admin.getTableDescriptor(TableName.valueOf(tableName));
+      fail = true;
+          LOG.error("Table:" + tableName + " already exists, checking a new name");
+      tableName = tableName+"!";
+    } catch (TableNotFoundException e) {
+      fail = false;
       }
     } while (fail);
 
@@ -269,58 +262,57 @@ public class TestSnapshotFromClient {
     }
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testOfflineTableSnapshotWithEmptyRegions() throws Exception {
     // test with an empty table with one region
 
-    Admin admin = UTIL.getAdmin();
+    Admin admin = UTIL.getHBaseAdmin();
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
 
     LOG.debug("FS state before disable:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
+      FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
     admin.disableTable(TABLE_NAME);
 
     LOG.debug("FS state before snapshot:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
+      FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
 
     // take a snapshot of the disabled table
-    String snapshot = "testOfflineTableSnapshotWithEmptyRegions";
+    byte[] snapshot = Bytes.toBytes("testOfflineTableSnapshotWithEmptyRegions");
     admin.snapshot(snapshot, TABLE_NAME);
     LOG.debug("Snapshot completed.");
 
     // make sure we have the snapshot
-    List<SnapshotDescription> snapshots =
-        SnapshotTestingUtils.assertOneSnapshotThatMatches(admin, snapshot, TABLE_NAME);
+    List<SnapshotDescription> snapshots = SnapshotTestingUtils.assertOneSnapshotThatMatches(admin,
+      snapshot, TABLE_NAME);
 
     // make sure its a valid snapshot
     FileSystem fs = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getFileSystem();
     Path rootDir = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getRootDir();
     LOG.debug("FS state after snapshot:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils.logFileSystemState(UTIL.getTestFileSystem(),
+      FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
 
     List<byte[]> emptyCfs = Lists.newArrayList(TEST_FAM); // no file in the region
     List<byte[]> nonEmptyCfs = Lists.newArrayList();
-    SnapshotTestingUtils.confirmSnapshotValid(
-      ProtobufUtil.createHBaseProtosSnapshotDesc(snapshots.get(0)), TABLE_NAME, nonEmptyCfs,
-      emptyCfs, rootDir, admin, fs);
+    SnapshotTestingUtils.confirmSnapshotValid(snapshots.get(0), TABLE_NAME, nonEmptyCfs, emptyCfs,
+      rootDir, admin, fs);
 
     admin.deleteSnapshot(snapshot);
     snapshots = admin.listSnapshots();
     SnapshotTestingUtils.assertNoSnapshots(admin);
   }
 
-  @Test
+  @Test(timeout = 300000)
   public void testListTableSnapshots() throws Exception {
     Admin admin = null;
-    final TableName tableName = TableName.valueOf(name.getMethodName());
+    TableName tableName2 = TableName.valueOf("testListTableSnapshots");
     try {
-      admin = UTIL.getAdmin();
+      admin = UTIL.getHBaseAdmin();
 
-      TableDescriptor htd = TableDescriptorBuilder.newBuilder(tableName).build();
+      HTableDescriptor htd = new HTableDescriptor(tableName2);
       UTIL.createTable(htd, new byte[][] { TEST_FAM }, UTIL.getConfiguration());
 
       String table1Snapshot1 = "Table1Snapshot1";
@@ -332,12 +324,11 @@ public class TestSnapshotFromClient {
       LOG.debug("Snapshot2 completed.");
 
       String table2Snapshot1 = "Table2Snapshot1";
-      admin.snapshot(table2Snapshot1, tableName);
+      admin.snapshot(Bytes.toBytes(table2Snapshot1), tableName2);
       LOG.debug(table2Snapshot1 + " completed.");
 
-      List<SnapshotDescription> listTableSnapshots =
-          admin.listTableSnapshots(Pattern.compile("test.*"), MATCH_ALL);
-      List<String> listTableSnapshotNames = new ArrayList<>();
+      List<SnapshotDescription> listTableSnapshots = admin.listTableSnapshots("test.*", ".*");
+      List<String> listTableSnapshotNames = new ArrayList<String>();
       assertEquals(3, listTableSnapshots.size());
       for (SnapshotDescription s : listTableSnapshots) {
         listTableSnapshotNames.add(s.getName());
@@ -348,22 +339,22 @@ public class TestSnapshotFromClient {
     } finally {
       if (admin != null) {
         try {
-          admin.deleteSnapshots(Pattern.compile("Table.*"));
+          admin.deleteSnapshots("Table.*");
         } catch (SnapshotDoesNotExistException ignore) {
         }
-        if (admin.tableExists(tableName)) {
-          UTIL.deleteTable(tableName);
+        if (admin.tableExists(tableName2)) {
+          UTIL.deleteTable(tableName2);
         }
         admin.close();
       }
     }
   }
 
-  @Test
+  @Test(timeout = 300000)
   public void testListTableSnapshotsWithRegex() throws Exception {
     Admin admin = null;
     try {
-      admin = UTIL.getAdmin();
+      admin = UTIL.getHBaseAdmin();
 
       String table1Snapshot1 = "Table1Snapshot1";
       admin.snapshot(table1Snapshot1, TABLE_NAME);
@@ -374,12 +365,11 @@ public class TestSnapshotFromClient {
       LOG.debug("Snapshot2 completed.");
 
       String table2Snapshot1 = "Table2Snapshot1";
-      admin.snapshot(table2Snapshot1, TABLE_NAME);
+      admin.snapshot(Bytes.toBytes(table2Snapshot1), TABLE_NAME);
       LOG.debug(table2Snapshot1 + " completed.");
 
-      List<SnapshotDescription> listTableSnapshots =
-          admin.listTableSnapshots(Pattern.compile("test.*"), Pattern.compile("Table1.*"));
-      List<String> listTableSnapshotNames = new ArrayList<>();
+      List<SnapshotDescription> listTableSnapshots = admin.listTableSnapshots("test.*", "Table1.*");
+      List<String> listTableSnapshotNames = new ArrayList<String>();
       assertEquals(2, listTableSnapshots.size());
       for (SnapshotDescription s : listTableSnapshots) {
         listTableSnapshotNames.add(s.getName());
@@ -390,7 +380,7 @@ public class TestSnapshotFromClient {
     } finally {
       if (admin != null) {
         try {
-          admin.deleteSnapshots(Pattern.compile("Table.*"));
+          admin.deleteSnapshots("Table.*");
         } catch (SnapshotDoesNotExistException ignore) {
         }
         admin.close();
@@ -398,14 +388,14 @@ public class TestSnapshotFromClient {
     }
   }
 
-  @Test
+  @Test(timeout = 300000)
   public void testDeleteTableSnapshots() throws Exception {
     Admin admin = null;
-    final TableName tableName = TableName.valueOf(name.getMethodName());
+    TableName tableName2 = TableName.valueOf("testListTableSnapshots");
     try {
-      admin = UTIL.getAdmin();
+      admin = UTIL.getHBaseAdmin();
 
-      TableDescriptor htd = TableDescriptorBuilder.newBuilder(tableName).build();
+      HTableDescriptor htd = new HTableDescriptor(tableName2);
       UTIL.createTable(htd, new byte[][] { TEST_FAM }, UTIL.getConfiguration());
 
       String table1Snapshot1 = "Table1Snapshot1";
@@ -417,28 +407,26 @@ public class TestSnapshotFromClient {
       LOG.debug("Snapshot2 completed.");
 
       String table2Snapshot1 = "Table2Snapshot1";
-      admin.snapshot(table2Snapshot1, tableName);
+      admin.snapshot(Bytes.toBytes(table2Snapshot1), tableName2);
       LOG.debug(table2Snapshot1 + " completed.");
 
-      Pattern tableNamePattern = Pattern.compile("test.*");
-      admin.deleteTableSnapshots(tableNamePattern, MATCH_ALL);
-      assertEquals(0, admin.listTableSnapshots(tableNamePattern, MATCH_ALL).size());
+      admin.deleteTableSnapshots("test.*", ".*");
+      assertEquals(0, admin.listTableSnapshots("test.*", ".*").size());
     } finally {
       if (admin != null) {
-        if (admin.tableExists(tableName)) {
-          UTIL.deleteTable(tableName);
+        if (admin.tableExists(tableName2)) {
+          UTIL.deleteTable(tableName2);
         }
         admin.close();
       }
     }
   }
 
-  @Test
+  @Test(timeout = 300000)
   public void testDeleteTableSnapshotsWithRegex() throws Exception {
     Admin admin = null;
-    Pattern tableNamePattern = Pattern.compile("test.*");
     try {
-      admin = UTIL.getAdmin();
+      admin = UTIL.getHBaseAdmin();
 
       String table1Snapshot1 = "Table1Snapshot1";
       admin.snapshot(table1Snapshot1, TABLE_NAME);
@@ -449,15 +437,15 @@ public class TestSnapshotFromClient {
       LOG.debug("Snapshot2 completed.");
 
       String table2Snapshot1 = "Table2Snapshot1";
-      admin.snapshot(table2Snapshot1, TABLE_NAME);
+      admin.snapshot(Bytes.toBytes(table2Snapshot1), TABLE_NAME);
       LOG.debug(table2Snapshot1 + " completed.");
 
-      admin.deleteTableSnapshots(tableNamePattern, Pattern.compile("Table1.*"));
-      assertEquals(1, admin.listTableSnapshots(tableNamePattern, MATCH_ALL).size());
+      admin.deleteTableSnapshots("test.*", "Table1.*");
+      assertEquals(1, admin.listTableSnapshots("test.*", ".*").size());
     } finally {
       if (admin != null) {
         try {
-          admin.deleteTableSnapshots(tableNamePattern, MATCH_ALL);
+          admin.deleteTableSnapshots("test.*", ".*");
         } catch (SnapshotDoesNotExistException ignore) {
         }
         admin.close();

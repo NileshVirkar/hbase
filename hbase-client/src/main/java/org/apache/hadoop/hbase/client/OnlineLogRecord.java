@@ -19,15 +19,18 @@
 
 package org.apache.hadoop.hbase.client;
 
-import org.apache.commons.lang3.builder.EqualsBuilder;
-import org.apache.commons.lang3.builder.HashCodeBuilder;
-import org.apache.commons.lang3.builder.ToStringBuilder;
+import java.lang.reflect.Type;
+import org.apache.commons.lang.builder.EqualsBuilder;
+import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.commons.lang.builder.ToStringBuilder;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.util.GsonUtil;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.apache.yetus.audience.InterfaceStability;
 
 import org.apache.hbase.thirdparty.com.google.gson.Gson;
+import org.apache.hbase.thirdparty.com.google.gson.JsonElement;
 import org.apache.hbase.thirdparty.com.google.gson.JsonObject;
+import org.apache.hbase.thirdparty.com.google.gson.JsonSerializationContext;
 import org.apache.hbase.thirdparty.com.google.gson.JsonSerializer;
 
 /**
@@ -37,13 +40,13 @@ import org.apache.hbase.thirdparty.com.google.gson.JsonSerializer;
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
 final public class OnlineLogRecord extends LogEntry {
-
   // used to convert object to pretty printed format
   // used by toJsonPrettyPrint()
-  private static final Gson GSON = GsonUtil.createGson()
-    .setPrettyPrinting()
-    .registerTypeAdapter(OnlineLogRecord.class, (JsonSerializer<OnlineLogRecord>)
-      (slowLogPayload, type, jsonSerializationContext) -> {
+  private static final Gson GSON = GsonUtil.createGson().setPrettyPrinting()
+    .registerTypeAdapter(OnlineLogRecord.class, new JsonSerializer<OnlineLogRecord>() {
+      @Override
+      public JsonElement serialize(OnlineLogRecord slowLogPayload, Type type,
+        JsonSerializationContext jsonSerializationContext) {
         Gson gson = new Gson();
         JsonObject jsonObj = (JsonObject) gson.toJsonTree(slowLogPayload);
         if (slowLogPayload.getMultiGetsCount() == 0) {
@@ -56,7 +59,8 @@ final public class OnlineLogRecord extends LogEntry {
           jsonObj.remove("multiServiceCalls");
         }
         return jsonObj;
-      }).create();
+      }
+    }).create();
 
   private final long startTime;
   private final int processingTime;
@@ -132,10 +136,10 @@ final public class OnlineLogRecord extends LogEntry {
   }
 
   private OnlineLogRecord(final long startTime, final int processingTime, final int queueTime,
-      final long responseSize, final String clientAddress, final String serverClass,
-      final String methodName, final String callDetails, final String param,
-      final String regionName, final String userName, final int multiGetsCount,
-      final int multiMutationsCount, final int multiServiceCalls) {
+    final long responseSize, final String clientAddress, final String serverClass,
+    final String methodName, final String callDetails, final String param,
+    final String regionName, final String userName, final int multiGetsCount,
+    final int multiMutationsCount, final int multiServiceCalls) {
     this.startTime = startTime;
     this.processingTime = processingTime;
     this.queueTime = queueTime;
@@ -152,6 +156,8 @@ final public class OnlineLogRecord extends LogEntry {
     this.multiServiceCalls = multiServiceCalls;
   }
 
+  @InterfaceAudience.Public
+  @InterfaceStability.Evolving
   public static class OnlineLogRecordBuilder {
     private long startTime;
     private int processingTime;
@@ -295,7 +301,6 @@ final public class OnlineLogRecord extends LogEntry {
       .toHashCode();
   }
 
-  @Override
   public String toJsonPrettyPrint() {
     return GSON.toJson(this);
   }

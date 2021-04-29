@@ -21,20 +21,19 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.ClientMetaService;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
-
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.ClientMetaService;
 
 /**
  * Thread safe utility that keeps master end points used by {@link MasterRegistry} up to date. This
@@ -87,13 +86,13 @@ public class MasterAddressRefresher implements Closeable {
           }
           lastRpcTs = currentTs;
           LOG.debug("Attempting to refresh master address end points.");
-          Set<ServerName> newMasters = new HashSet<>(registry.getMasters().get());
+          Set<ServerName> newMasters = new HashSet<>(registry.getMasters());
           registry.populateMasterStubs(newMasters);
           LOG.debug("Finished refreshing master end points. {}", newMasters);
         } catch (InterruptedException e) {
           LOG.debug("Interrupted during wait, aborting refresh-masters-thread.", e);
           break;
-        } catch (ExecutionException | IOException e) {
+        } catch (IOException e) {
           LOG.debug("Error populating latest list of masters.", e);
         }
       }

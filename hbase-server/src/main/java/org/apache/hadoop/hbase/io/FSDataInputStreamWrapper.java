@@ -17,21 +17,19 @@
  */
 package org.apache.hadoop.hbase.io;
 
-import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.concurrent.atomic.AtomicInteger;
-import org.apache.hadoop.fs.CanUnbuffer;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.fs.HFileSystem;
 import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.io.Closeables;
 
 /**
  * Wrapper for input stream(s) that takes care of the interaction of FS and HBase checksums,
@@ -39,16 +37,14 @@ import org.apache.hbase.thirdparty.com.google.common.io.Closeables;
  * see method comments.
  */
 @InterfaceAudience.Private
-public class FSDataInputStreamWrapper implements Closeable {
-  private static final Logger LOG = LoggerFactory.getLogger(FSDataInputStreamWrapper.class);
+public class FSDataInputStreamWrapper {
+  private static final Log LOG = LogFactory.getLog(FSDataInputStreamWrapper.class);
   private static final boolean isLogTraceEnabled = LOG.isTraceEnabled();
 
   private final HFileSystem hfs;
   private final Path path;
   private final FileLink link;
   private final boolean doCloseStreams;
-  private final boolean dropBehind;
-  private final long readahead;
 
   /** Two stream handles, one with and one without FS-level checksum.
    * HDFS checksum setting is on FS level, not single read level, so you have to keep two
@@ -85,7 +81,12 @@ public class FSDataInputStreamWrapper implements Closeable {
 
   // In the case of a checksum failure, do these many succeeding
   // reads without hbase checksum verification.
-  private AtomicInteger hbaseChecksumOffCount = new AtomicInteger(-1);
+  private volatile int hbaseChecksumOffCount = -1;
+
+  private Boolean instanceOfCanUnbuffer = null;
+  // Using reflection to get org.apache.hadoop.fs.CanUnbuffer#unbuffer method to avoid compilation
+  // errors against Hadoop pre 2.6.4 and 2.7.1 versions.
+  private Method unbuffer = null;
 
   private final static ReadStatistics readStatistics = new ReadStatistics();
 
@@ -96,55 +97,43 @@ public class FSDataInputStreamWrapper implements Closeable {
     long totalZeroCopyBytesRead;
   }
 
-  private Boolean instanceOfCanUnbuffer = null;
-  private CanUnbuffer unbuffer = null;
-
   public FSDataInputStreamWrapper(FileSystem fs, Path path) throws IOException {
-    this(fs, path, false, -1L);
+    this(fs, null, path, false);
   }
 
-  public FSDataInputStreamWrapper(FileSystem fs, Path path, boolean dropBehind, long readahead) throws IOException {
-    this(fs, null, path, dropBehind, readahead);
+  public FSDataInputStreamWrapper(FileSystem fs, Path path, boolean dropBehind) throws IOException {
+    this(fs, null, path, dropBehind);
   }
 
+  public FSDataInputStreamWrapper(FileSystem fs, FileLink link) throws IOException {
+    this(fs, link, null, false);
+  }
   public FSDataInputStreamWrapper(FileSystem fs, FileLink link,
-                                  boolean dropBehind, long readahead) throws IOException {
-    this(fs, link, null, dropBehind, readahead);
+                                  boolean dropBehind) throws IOException {
+    this(fs, link, null, dropBehind);
   }
 
-  private FSDataInputStreamWrapper(FileSystem fs, FileLink link, Path path, boolean dropBehind,
-      long readahead) throws IOException {
+  private FSDataInputStreamWrapper(FileSystem fs, FileLink link,
+                                   Path path, boolean dropBehind) throws IOException {
     assert (path == null) != (link == null);
     this.path = path;
     this.link = link;
     this.doCloseStreams = true;
-    this.dropBehind = dropBehind;
-    this.readahead = readahead;
     // If the fs is not an instance of HFileSystem, then create an instance of HFileSystem
     // that wraps over the specified fs. In this case, we will not be able to avoid
     // checksumming inside the filesystem.
-    this.hfs = (fs instanceof HFileSystem) ? (HFileSystem) fs : new HFileSystem(fs);
+    this.hfs = (fs instanceof HFileSystem) ? (HFileSystem)fs : new HFileSystem(fs);
 
     // Initially we are going to read the tail block. Open the reader w/FS checksum.
     this.useHBaseChecksumConfigured = this.useHBaseChecksum = false;
     this.stream = (link != null) ? link.open(hfs) : hfs.open(path);
-    setStreamOptions(stream);
-  }
-
-  private void setStreamOptions(FSDataInputStream in) {
     try {
-      in.setDropBehind(dropBehind);
+      this.stream.setDropBehind(dropBehind);
     } catch (Exception e) {
       // Skipped.
     }
-    if (readahead >= 0) {
-      try {
-        in.setReadahead(readahead);
-      } catch (Exception e) {
-        // Skipped.
-      }
-    }
   }
+
 
   /**
    * Prepares the streams for block reader. NOT THREAD SAFE. Must be called once, after any
@@ -161,7 +150,6 @@ public class FSDataInputStreamWrapper implements Closeable {
     if (useHBaseChecksum) {
       FileSystem fsNc = hfs.getNoChecksumFs();
       this.streamNoFsChecksum = (link != null) ? link.open(fsNc) : fsNc.open(path);
-      setStreamOptions(streamNoFsChecksum);
       this.useHBaseChecksumConfigured = this.useHBaseChecksum = useHBaseChecksum;
       // Close the checksum stream; we will reopen it if we get an HBase checksum failure.
       this.stream.close();
@@ -183,8 +171,6 @@ public class FSDataInputStreamWrapper implements Closeable {
     link = null;
     hfs = null;
     useHBaseChecksumConfigured = useHBaseChecksum = false;
-    dropBehind = false;
-    readahead = 0;
   }
 
   /**
@@ -220,7 +206,7 @@ public class FSDataInputStreamWrapper implements Closeable {
     }
     if (!partOfConvoy) {
       this.useHBaseChecksum = false;
-      this.hbaseChecksumOffCount.set(offCount);
+      this.hbaseChecksumOffCount = offCount;
     }
     return this.stream;
   }
@@ -228,7 +214,7 @@ public class FSDataInputStreamWrapper implements Closeable {
   /** Report that checksum was ok, so we may ponder going back to HBase checksum. */
   public void checksumOk() {
     if (this.useHBaseChecksumConfigured && !this.useHBaseChecksum
-        && (this.hbaseChecksumOffCount.getAndDecrement() < 0)) {
+        && (this.hbaseChecksumOffCount-- < 0)) {
       // The stream we need is already open (because we were using HBase checksum in the past).
       assert this.streamNoFsChecksum != null;
       this.useHBaseChecksum = true;
@@ -281,19 +267,16 @@ public class FSDataInputStreamWrapper implements Closeable {
     }
   }
 
-  /** CloseClose stream(s) if necessary. */
-  @Override
+  /** Close stream(s) if necessary. */
   public void close() {
     if (!doCloseStreams) {
       return;
     }
     updateInputStreamStatistics(this.streamNoFsChecksum);
     // we do not care about the close exception as it is for reading, no data loss issue.
-    Closeables.closeQuietly(streamNoFsChecksum);
-
-
+    IOUtils.closeQuietly(streamNoFsChecksum);
     updateInputStreamStatistics(stream);
-    Closeables.closeQuietly(stream);
+    IOUtils.closeQuietly(stream);
   }
 
   public HFileSystem getHfs() {
@@ -323,23 +306,39 @@ public class FSDataInputStreamWrapper implements Closeable {
       if (this.instanceOfCanUnbuffer == null) {
         // To ensure we compute whether the stream is instance of CanUnbuffer only once.
         this.instanceOfCanUnbuffer = false;
-        if (wrappedStream instanceof CanUnbuffer) {
-          this.unbuffer = (CanUnbuffer) wrappedStream;
-          this.instanceOfCanUnbuffer = true;
+        Class<?>[] streamInterfaces = streamClass.getInterfaces();
+        for (Class c : streamInterfaces) {
+          if (c.getCanonicalName().toString().equals("org.apache.hadoop.fs.CanUnbuffer")) {
+            try {
+              this.unbuffer = streamClass.getDeclaredMethod("unbuffer");
+            } catch (NoSuchMethodException | SecurityException e) {
+              if (isLogTraceEnabled) {
+                LOG.trace("Failed to find 'unbuffer' method in class " + streamClass
+                    + " . So there may be a TCP socket connection "
+                    + "left open in CLOSE_WAIT state.", e);
+              }
+              return;
+            }
+            this.instanceOfCanUnbuffer = true;
+            break;
+          }
         }
       }
       if (this.instanceOfCanUnbuffer) {
         try {
-          this.unbuffer.unbuffer();
-        } catch (UnsupportedOperationException e){
+          this.unbuffer.invoke(wrappedStream);
+        } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
           if (isLogTraceEnabled) {
             LOG.trace("Failed to invoke 'unbuffer' method in class " + streamClass
-                + " . So there may be the stream does not support unbuffering.", e);
+                + " . So there may be a TCP socket connection left open in CLOSE_WAIT state.", e);
           }
         }
       } else {
         if (isLogTraceEnabled) {
-          LOG.trace("Failed to find 'unbuffer' method in class " + streamClass);
+          LOG.trace("Failed to find 'unbuffer' method in class " + streamClass
+              + " . So there may be a TCP socket connection "
+              + "left open in CLOSE_WAIT state. For more details check "
+              + "https://issues.apache.org/jira/browse/HBASE-9393");
         }
       }
     }

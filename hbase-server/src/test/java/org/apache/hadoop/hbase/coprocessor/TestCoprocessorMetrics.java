@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.hadoop.hbase.coprocessor;
 
 import static org.junit.Assert.assertEquals;
@@ -23,29 +24,31 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import com.google.protobuf.RpcCallback;
+import com.google.protobuf.RpcController;
+import com.google.protobuf.ServiceException;
 import java.io.IOException;
 import java.util.List;
-import java.util.Optional;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HColumnDescriptor;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.Waiter.Predicate;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
 import org.apache.hadoop.hbase.metrics.Counter;
 import org.apache.hadoop.hbase.metrics.Metric;
@@ -53,33 +56,24 @@ import org.apache.hadoop.hbase.metrics.MetricRegistries;
 import org.apache.hadoop.hbase.metrics.MetricRegistry;
 import org.apache.hadoop.hbase.metrics.MetricRegistryInfo;
 import org.apache.hadoop.hbase.metrics.Timer;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
+import org.apache.hadoop.hbase.protobuf.generated.MultiRowMutationProtos.MultiRowMutationService;
+import org.apache.hadoop.hbase.protobuf.generated.MultiRowMutationProtos.MutateRowsRequest;
+import org.apache.hadoop.hbase.protobuf.generated.MultiRowMutationProtos.MutateRowsResponse;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.testclassification.CoprocessorTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.wal.WALEdit;
-import org.apache.hadoop.hbase.wal.WALKey;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.junit.rules.TestName;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-import org.apache.hbase.thirdparty.com.google.protobuf.RpcCallback;
-import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
-import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
-
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MultiRowMutationProtos.MultiRowMutationService;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MultiRowMutationProtos.MutateRowsRequest;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MultiRowMutationProtos.MutateRowsResponse;
 
 /**
  * Testing of coprocessor metrics end-to-end.
@@ -87,36 +81,31 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MultiRowMutationProtos.
 @Category({CoprocessorTests.class, MediumTests.class})
 public class TestCoprocessorMetrics {
 
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestCoprocessorMetrics.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestCoprocessorMetrics.class);
+  private static final Log LOG = LogFactory.getLog(TestCoprocessorMetrics.class);
   private static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
 
   private static final byte[] foo = Bytes.toBytes("foo");
   private static final byte[] bar = Bytes.toBytes("bar");
-
-  @Rule
-  public TestName name = new TestName();
-
   /**
    * MasterObserver that has a Timer metric for create table operation.
    */
-  public static class CustomMasterObserver implements MasterCoprocessor, MasterObserver {
+  public static class CustomMasterObserver extends BaseMasterObserver {
     private Timer createTableTimer;
     private long start = Long.MIN_VALUE;
 
     @Override
     public void preCreateTable(ObserverContext<MasterCoprocessorEnvironment> ctx,
-                               TableDescriptor desc, RegionInfo[] regions) throws IOException {
+                               HTableDescriptor desc, HRegionInfo[] regions) throws IOException {
+      super.preCreateTable(ctx, desc, regions);
+
       // we rely on the fact that there is only 1 instance of our MasterObserver
       this.start = System.currentTimeMillis();
     }
 
     @Override
     public void postCreateTable(ObserverContext<MasterCoprocessorEnvironment> ctx,
-                                TableDescriptor desc, RegionInfo[] regions) throws IOException {
+                                HTableDescriptor desc, HRegionInfo[] regions) throws IOException {
+      super.postCreateTable(ctx, desc, regions);
       if (this.start > 0) {
         long time = System.currentTimeMillis() - start;
         LOG.info("Create table took: " + time);
@@ -126,6 +115,7 @@ public class TestCoprocessorMetrics {
 
     @Override
     public void start(CoprocessorEnvironment env) throws IOException {
+      super.start(env);
       if (env instanceof MasterCoprocessorEnvironment) {
         MetricRegistry registry =
             ((MasterCoprocessorEnvironment) env).getMetricRegistryForMaster();
@@ -133,34 +123,25 @@ public class TestCoprocessorMetrics {
         createTableTimer  = registry.timer("CreateTable");
       }
     }
-
-    @Override
-    public Optional<MasterObserver> getMasterObserver() {
-      return Optional.of(this);
-    }
   }
 
   /**
    * RegionServerObserver that has a Counter for rollWAL requests.
    */
-  public static class CustomRegionServerObserver implements RegionServerCoprocessor,
-      RegionServerObserver {
+  public static class CustomRegionServerObserver extends BaseRegionServerObserver {
     /** This is the Counter metric object to keep track of the current count across invocations */
     private Counter rollWALCounter;
-
-    @Override public Optional<RegionServerObserver> getRegionServerObserver() {
-      return Optional.of(this);
-    }
-
     @Override
     public void postRollWALWriterRequest(ObserverContext<RegionServerCoprocessorEnvironment> ctx)
         throws IOException {
       // Increment the Counter whenever the coprocessor is called
       rollWALCounter.increment();
+      super.postRollWALWriterRequest(ctx);
     }
 
     @Override
     public void start(CoprocessorEnvironment env) throws IOException {
+      super.start(env);
       if (env instanceof RegionServerCoprocessorEnvironment) {
         MetricRegistry registry =
             ((RegionServerCoprocessorEnvironment) env).getMetricRegistryForRegionServer();
@@ -175,18 +156,20 @@ public class TestCoprocessorMetrics {
   /**
    * WALObserver that has a Counter for walEdits written.
    */
-  public static class CustomWALObserver implements WALCoprocessor, WALObserver {
+  public static class CustomWALObserver extends BaseWALObserver {
     private Counter walEditsCount;
 
     @Override
     public void postWALWrite(ObserverContext<? extends WALCoprocessorEnvironment> ctx,
-                             RegionInfo info, WALKey logKey,
+                             HRegionInfo info, org.apache.hadoop.hbase.wal.WALKey logKey,
                              WALEdit logEdit) throws IOException {
+      super.postWALWrite(ctx, info, logKey, logEdit);
       walEditsCount.increment();
     }
 
     @Override
     public void start(CoprocessorEnvironment env) throws IOException {
+      super.start(env);
       if (env instanceof WALCoprocessorEnvironment) {
         MetricRegistry registry =
             ((WALCoprocessorEnvironment) env).getMetricRegistryForRegionServer();
@@ -196,31 +179,25 @@ public class TestCoprocessorMetrics {
         }
       }
     }
-
-    @Override public Optional<WALObserver> getWALObserver() {
-      return Optional.of(this);
-    }
   }
 
   /**
    * RegionObserver that has a Counter for preGet()
    */
-  public static class CustomRegionObserver implements RegionCoprocessor, RegionObserver {
+  public static class CustomRegionObserver extends BaseRegionObserver {
     private Counter preGetCounter;
 
     @Override
     public void preGetOp(ObserverContext<RegionCoprocessorEnvironment> e, Get get,
                          List<Cell> results) throws IOException {
+      super.preGetOp(e, get, results);
       preGetCounter.increment();
     }
 
     @Override
-    public Optional<RegionObserver> getRegionObserver() {
-      return Optional.of(this);
-    }
-
-    @Override
     public void start(CoprocessorEnvironment env) throws IOException {
+      super.start(env);
+
       if (env instanceof RegionCoprocessorEnvironment) {
         MetricRegistry registry =
             ((RegionCoprocessorEnvironment) env).getMetricRegistryForRegionServer();
@@ -288,7 +265,7 @@ public class TestCoprocessorMetrics {
   public void setup() throws IOException {
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
          Admin admin = connection.getAdmin()) {
-      for (TableDescriptor htd : admin.listTableDescriptors()) {
+      for (HTableDescriptor htd : admin.listTables()) {
         UTIL.deleteTable(htd.getTableName());
       }
     }
@@ -311,12 +288,10 @@ public class TestCoprocessorMetrics {
       Timer createTableTimer = (Timer)metric.get();
       long prevCount = createTableTimer.getHistogram().getCount();
       LOG.info("Creating table");
-      TableDescriptorBuilder tableDescriptorBuilder =
-        TableDescriptorBuilder.newBuilder(TableName.valueOf(name.getMethodName()));
-      ColumnFamilyDescriptor columnFamilyDescriptor =
-        ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("foo")).build();
-      tableDescriptorBuilder.setColumnFamily(columnFamilyDescriptor);
-      admin.createTable(tableDescriptorBuilder.build());
+      admin.createTable(
+          new HTableDescriptor("testMasterObserver")
+              .addFamily(new HColumnDescriptor("foo")));
+
       assertEquals(1, createTableTimer.getHistogram().getCount() - prevCount);
     }
   }
@@ -357,18 +332,15 @@ public class TestCoprocessorMetrics {
 
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
          Admin admin = connection.getAdmin()) {
-      TableDescriptorBuilder tableDescriptorBuilder =
-        TableDescriptorBuilder.newBuilder(TableName.valueOf(name.getMethodName()));
-      ColumnFamilyDescriptor columnFamilyDescriptor =
-        ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("foo")).build();
-      tableDescriptorBuilder.setColumnFamily(columnFamilyDescriptor);
-      admin.createTable(tableDescriptorBuilder.build());
+      admin.createTable(
+          new HTableDescriptor("testWALObserver")
+              .addFamily(new HColumnDescriptor("foo")));
 
       Counter rollWalRequests = (Counter)metric.get();
       long prevCount = rollWalRequests.getCount();
       assertTrue(prevCount > 0);
 
-      try (Table table = connection.getTable(TableName.valueOf(name.getMethodName()))) {
+      try (Table table = connection.getTable(TableName.valueOf("testWALObserver"))) {
         table.put(new Put(foo).addColumn(foo, foo, foo));
       }
 
@@ -396,13 +368,14 @@ public class TestCoprocessorMetrics {
 
   @Test
   public void testRegionObserverSingleRegion() throws IOException {
-    final TableName tableName = TableName.valueOf(name.getMethodName());
+    TableName tableName = TableName.valueOf("testRegionObserverSingleRegion");
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
-      Admin admin = connection.getAdmin()) {
-      admin.createTable(TableDescriptorBuilder.newBuilder(tableName)
-        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(foo))
-        // add the coprocessor for the region
-        .setCoprocessor(CustomRegionObserver.class.getName()).build());
+         Admin admin = connection.getAdmin()) {
+      admin.createTable(
+          new HTableDescriptor(tableName)
+              .addFamily(new HColumnDescriptor(foo))
+              // add the coprocessor for the region
+              .addCoprocessor(CustomRegionObserver.class.getName()));
       try (Table table = connection.getTable(tableName)) {
         table.get(new Get(foo));
         table.get(new Get(foo)); // 2 gets
@@ -414,21 +387,22 @@ public class TestCoprocessorMetrics {
 
   @Test
   public void testRegionObserverMultiRegion() throws IOException {
-    final TableName tableName = TableName.valueOf(name.getMethodName());
+    TableName tableName = TableName.valueOf("testRegionObserverMultiRegion");
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
          Admin admin = connection.getAdmin()) {
-      admin.createTable(TableDescriptorBuilder.newBuilder(tableName)
-        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(foo))
-        // add the coprocessor for the region
-        .setCoprocessor(CustomRegionObserver.class.getName()).build(), new byte[][] { foo });
-      // create with 2 regions
+      admin.createTable(
+          new HTableDescriptor(tableName)
+              .addFamily(new HColumnDescriptor(foo))
+              // add the coprocessor for the region
+              .addCoprocessor(CustomRegionObserver.class.getName())
+          , new byte[][]{foo}); // create with 2 regions
       try (Table table = connection.getTable(tableName);
            RegionLocator locator = connection.getRegionLocator(tableName)) {
         table.get(new Get(bar));
         table.get(new Get(foo)); // 2 gets to 2 separate regions
         assertEquals(2, locator.getAllRegionLocations().size());
-        assertNotEquals(locator.getRegionLocation(bar).getRegion(),
-            locator.getRegionLocation(foo).getRegion());
+        assertNotEquals(locator.getRegionLocation(bar).getRegionInfo(),
+            locator.getRegionLocation(foo).getRegionInfo());
       }
     }
 
@@ -437,20 +411,22 @@ public class TestCoprocessorMetrics {
 
   @Test
   public void testRegionObserverMultiTable() throws IOException {
-    final TableName tableName1 = TableName.valueOf(name.getMethodName() + "1");
-    final TableName tableName2 = TableName.valueOf(name.getMethodName() + "2");
+    TableName tableName1 = TableName.valueOf("testRegionObserverMultiTable1");
+    TableName tableName2 = TableName.valueOf("testRegionObserverMultiTable2");
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
          Admin admin = connection.getAdmin()) {
-      admin.createTable(TableDescriptorBuilder.newBuilder(tableName1)
-        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(foo))
-        // add the coprocessor for the region
-        .setCoprocessor(CustomRegionObserver.class.getName()).build());
-      admin.createTable(TableDescriptorBuilder.newBuilder(tableName2)
-        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(foo))
-        // add the coprocessor for the region
-        .setCoprocessor(CustomRegionObserver.class.getName()).build());
+      admin.createTable(
+          new HTableDescriptor(tableName1)
+              .addFamily(new HColumnDescriptor(foo))
+              // add the coprocessor for the region
+              .addCoprocessor(CustomRegionObserver.class.getName()));
+      admin.createTable(
+          new HTableDescriptor(tableName2)
+              .addFamily(new HColumnDescriptor(foo))
+              // add the coprocessor for the region
+              .addCoprocessor(CustomRegionObserver.class.getName()));
       try (Table table1 = connection.getTable(tableName1);
-           Table table2 = connection.getTable(tableName2)) {
+           Table table2 = connection.getTable(tableName2);) {
         table1.get(new Get(bar));
         table2.get(new Get(foo)); // 2 gets to 2 separate tables
       }
@@ -460,14 +436,15 @@ public class TestCoprocessorMetrics {
 
   @Test
   public void testRegionObserverMultiCoprocessor() throws IOException {
-    final TableName tableName = TableName.valueOf(name.getMethodName());
+    TableName tableName = TableName.valueOf("testRegionObserverMultiCoprocessor");
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
          Admin admin = connection.getAdmin()) {
-      admin.createTable(TableDescriptorBuilder.newBuilder(tableName)
-        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(foo))
-        // add the coprocessor for the region. We add two different coprocessors
-        .setCoprocessor(CustomRegionObserver.class.getName())
-        .setCoprocessor(CustomRegionObserver2.class.getName()).build());
+      admin.createTable(
+          new HTableDescriptor(tableName)
+              .addFamily(new HColumnDescriptor(foo))
+              // add the coprocessor for the region. We add two different coprocessors
+              .addCoprocessor(CustomRegionObserver.class.getName())
+              .addCoprocessor(CustomRegionObserver2.class.getName()));
       try (Table table = connection.getTable(tableName)) {
         table.get(new Get(foo));
         table.get(new Get(foo)); // 2 gets
@@ -481,14 +458,15 @@ public class TestCoprocessorMetrics {
 
   @Test
   public void testRegionObserverAfterRegionClosed() throws IOException {
-    final TableName tableName = TableName.valueOf(name.getMethodName());
+    TableName tableName = TableName.valueOf("testRegionObserverAfterRegionClosed");
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
          Admin admin = connection.getAdmin()) {
-      admin.createTable(TableDescriptorBuilder.newBuilder(tableName)
-        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(foo))
-        // add the coprocessor for the region
-        .setCoprocessor(CustomRegionObserver.class.getName()).build(), new byte[][] { foo });
-      // create with 2 regions
+      admin.createTable(
+          new HTableDescriptor(tableName)
+              .addFamily(new HColumnDescriptor(foo))
+              // add the coprocessor for the region
+              .addCoprocessor(CustomRegionObserver.class.getName())
+          , new byte[][]{foo}); // create with 2 regions
       try (Table table = connection.getTable(tableName)) {
         table.get(new Get(foo));
         table.get(new Get(foo)); // 2 gets
@@ -498,13 +476,17 @@ public class TestCoprocessorMetrics {
 
       // close one of the regions
       try (RegionLocator locator = connection.getRegionLocator(tableName)) {
-        HRegionLocation loc = locator.getRegionLocation(foo);
-        admin.unassign(loc.getRegion().getEncodedNameAsBytes(), true);
+        final HRegionLocation loc = locator.getRegionLocation(foo);
+        admin.closeRegion(loc.getServerName(), loc.getRegionInfo());
 
-        HRegionServer server = UTIL.getMiniHBaseCluster().getRegionServer(loc.getServerName());
-        UTIL.waitFor(30000,
-          () -> server.getOnlineRegion(loc.getRegion().getRegionName()) == null);
-        assertNull(server.getOnlineRegion(loc.getRegion().getRegionName()));
+        final HRegionServer server = UTIL.getMiniHBaseCluster().getRegionServer(loc.getServerName());
+        UTIL.waitFor(30000,new Predicate<IOException>() {
+          @Override
+          public boolean evaluate() throws IOException {
+            return server.getOnlineRegion(loc.getRegionInfo().getRegionName()) == null;
+          }
+        });
+        assertNull(server.getOnlineRegion(loc.getRegionInfo().getRegionName()));
       }
 
       // with only 1 region remaining, we should still be able to find the Counter
@@ -524,16 +506,17 @@ public class TestCoprocessorMetrics {
 
   @Test
   public void testRegionObserverEndpoint() throws IOException, ServiceException {
-    final TableName tableName = TableName.valueOf(name.getMethodName());
+    TableName tableName = TableName.valueOf("testRegionObserverEndpoint");
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
          Admin admin = connection.getAdmin()) {
-      admin.createTable(TableDescriptorBuilder.newBuilder(tableName)
-        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(foo))
-        // add the coprocessor for the region
-        .setCoprocessor(CustomRegionEndpoint.class.getName()).build());
+      admin.createTable(
+          new HTableDescriptor(tableName)
+              .addFamily(new HColumnDescriptor(foo))
+              // add the coprocessor for the region
+              .addCoprocessor(CustomRegionEndpoint.class.getName()));
 
       try (Table table = connection.getTable(tableName)) {
-        List<Mutation> mutations = Lists.newArrayList(new Put(foo), new Put(bar));
+        List<Put> mutations = Lists.newArrayList(new Put(foo), new Put(bar));
         MutateRowsRequest.Builder mrmBuilder = MutateRowsRequest.newBuilder();
 
         for (Mutation mutation : mutations) {

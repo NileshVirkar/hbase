@@ -21,56 +21,60 @@ package org.apache.hadoop.hbase.security.access;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
+import com.google.protobuf.BlockingRpcChannel;
+import com.google.protobuf.ServiceException;
 import java.io.IOException;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HColumnDescriptor;
+import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotEnabledException;
 import org.apache.hadoop.hbase.Waiter.Predicate;
-import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RetriesExhaustedWithDetailsException;
+import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
+import org.apache.hadoop.hbase.coprocessor.BaseMasterObserver;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
-import org.apache.hadoop.hbase.coprocessor.MasterCoprocessor;
-import org.apache.hadoop.hbase.coprocessor.MasterCoprocessorEnvironment;
-import org.apache.hadoop.hbase.coprocessor.MasterObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
+import org.apache.hadoop.hbase.coprocessor.MasterCoprocessorEnvironment;
 import org.apache.hadoop.hbase.io.hfile.HFile;
-import org.apache.hadoop.hbase.ipc.RemoteWithExtrasException;
-import org.apache.hadoop.hbase.regionserver.HRegion;
+import org.apache.hadoop.hbase.master.HMaster;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos;
+import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos.AccessControlService;
+import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos.CheckPermissionsRequest;
+import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.security.AccessDeniedException;
 import org.apache.hadoop.hbase.security.User;
+import org.apache.hadoop.hbase.security.access.Permission.Action;
 import org.apache.hadoop.hbase.util.JVMClusterUtil.RegionServerThread;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
-import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 
 /**
  * Utility methods for testing security
  */
 public class SecureTestUtil {
 
-  private static final Logger LOG = LoggerFactory.getLogger(SecureTestUtil.class);
+  private static final Log LOG = LogFactory.getLog(SecureTestUtil.class);
   private static final int WAIT_TIME = 10000;
 
   public static void configureSuperuser(Configuration conf) throws IOException {
@@ -79,7 +83,7 @@ public class SecureTestUtil {
     // the superuser list or security won't function properly. We expect the
     // HBase service account(s) to have superuser privilege.
     String currentUser = User.getCurrent().getName();
-    StringBuilder sb = new StringBuilder();
+    StringBuffer sb = new StringBuffer();
     sb.append("admin,");
     sb.append(currentUser);
     // Assumes we won't ever have a minicluster with more than 5 slaves
@@ -87,11 +91,7 @@ public class SecureTestUtil {
       sb.append(',');
       sb.append(currentUser); sb.append(".hfs."); sb.append(i);
     }
-    // Add a supergroup for improving test coverage.
-    sb.append(',').append("@supergroup");
     conf.set("hbase.superuser", sb.toString());
-    // hbase.group.service.for.test.only is used in test only.
-    conf.set(User.TestingGroups.TEST_CONF, "true");
   }
 
   public static void enableSecurity(Configuration conf) throws IOException {
@@ -99,11 +99,12 @@ public class SecureTestUtil {
     conf.set("hadoop.security.authentication", "simple");
     conf.set(CoprocessorHost.MASTER_COPROCESSOR_CONF_KEY, AccessController.class.getName() +
       "," + MasterSyncObserver.class.getName());
-    conf.set(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY, AccessController.class.getName());
+    conf.set(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY, AccessController.class.getName() +
+      "," + SecureBulkLoadEndpoint.class.getName());
     conf.set(CoprocessorHost.REGIONSERVER_COPROCESSOR_CONF_KEY, AccessController.class.getName());
     // Need HFile V3 for tags for security features
     conf.setInt(HFile.FORMAT_VERSION_KEY, 3);
-    conf.set(User.HBASE_SECURITY_AUTHORIZATION_CONF_KEY, "true");
+    conf.setBoolean(User.HBASE_SECURITY_AUTHORIZATION_CONF_KEY, true);
     configureSuperuser(conf);
   }
 
@@ -129,8 +130,37 @@ public class SecureTestUtil {
     }
 
     if (!conf.getBoolean(User.HBASE_SECURITY_AUTHORIZATION_CONF_KEY, false)) {
-      throw new RuntimeException("Post 2.0.0 security features require set "
+      throw new RuntimeException("Post 1.5.0 security features require set "
           + User.HBASE_SECURITY_AUTHORIZATION_CONF_KEY + " to true");
+    }
+  }
+
+  public static void checkTablePerms(Configuration conf, TableName table, byte[] family, byte[] column,
+      Permission.Action... actions) throws IOException {
+    Permission[] perms = new Permission[actions.length];
+    for (int i = 0; i < actions.length; i++) {
+      perms[i] = new TablePermission(table, family, column, actions[i]);
+    }
+
+    checkTablePerms(conf, table, perms);
+  }
+
+  public static void checkTablePerms(Configuration conf, TableName table, Permission... perms)
+  throws IOException {
+    CheckPermissionsRequest.Builder request = CheckPermissionsRequest.newBuilder();
+    for (Permission p : perms) {
+      request.addPermission(ProtobufUtil.toPermission(p));
+    }
+    try (Connection connection = ConnectionFactory.createConnection(conf)) {
+      try (Table acl = connection.getTable(table)) {
+        AccessControlService.BlockingInterface protocol =
+            AccessControlService.newBlockingStub(acl.coprocessorService(new byte[0]));
+        try {
+          protocol.checkPermissions(null, request.build());
+        } catch (ServiceException se) {
+          ProtobufUtil.toIOException(se);
+        }
+      }
     }
   }
 
@@ -144,7 +174,7 @@ public class SecureTestUtil {
    * To indicate the action was not allowed, either throw an AccessDeniedException
    * or return an empty list of KeyValues.
    */
-  public interface AccessTestAction extends PrivilegedExceptionAction<Object> { }
+  public static interface AccessTestAction extends PrivilegedExceptionAction<Object> { }
 
   /** This fails only in case of ADE or empty list for any of the actions. */
   public static void verifyAllowed(User user, AccessTestAction... actions) throws Exception {
@@ -250,9 +280,6 @@ public class SecureTestUtil {
           // is buried in the stack trace
           Throwable ex = e;
           do {
-            if (ex instanceof RemoteWithExtrasException) {
-              ex = ((RemoteWithExtrasException) ex).unwrapRemoteException();
-            }
             if (ex instanceof AccessDeniedException) {
               isAccessDeniedException = true;
               break;
@@ -283,8 +310,9 @@ public class SecureTestUtil {
   private static List<AccessController> getAccessControllers(MiniHBaseCluster cluster) {
     List<AccessController> result = Lists.newArrayList();
     for (RegionServerThread t: cluster.getLiveRegionServerThreads()) {
-      for (HRegion region: t.getRegionServer().getOnlineRegionsLocalContext()) {
-        Coprocessor cp = region.getCoprocessorHost().findCoprocessor(AccessController.class);
+      for (Region region: t.getRegionServer().getOnlineRegionsLocalContext()) {
+        Coprocessor cp = region.getCoprocessorHost()
+          .findCoprocessor(AccessController.class.getName());
         if (cp != null) {
           result.add((AccessController)cp);
         }
@@ -346,28 +374,12 @@ public class SecureTestUtil {
       @Override
       public Void call() throws Exception {
         try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
-          connection.getAdmin().grant(
-            new UserPermission(user, Permission.newBuilder().withActions(actions).build()), false);
-        }
-        return null;
-      }
-    });
-  }
-
-  /**
-   * Grant permissions globally to the given user. Will wait until all active
-   * AccessController instances have updated their permissions caches or will
-   * throw an exception upon timeout (10 seconds).
-   */
-  public static void grantGlobal(final User caller, final HBaseTestingUtility util,
-      final String user, final Permission.Action... actions) throws Exception {
-    SecureTestUtil.updateACLs(util, new Callable<Void>() {
-      @Override
-      public Void call() throws Exception {
-        Configuration conf = util.getConfiguration();
-        try (Connection connection = ConnectionFactory.createConnection(conf, caller)) {
-          connection.getAdmin().grant(
-            new UserPermission(user, Permission.newBuilder().withActions(actions).build()), false);
+          try (Table acl = connection.getTable(AccessControlLists.ACL_TABLE_NAME)) {
+            BlockingRpcChannel service = acl.coprocessorService(HConstants.EMPTY_START_ROW);
+            AccessControlService.BlockingInterface protocol =
+                AccessControlService.newBlockingStub(service);
+            ProtobufUtil.grant(null, protocol, user, false, actions);
+          }
         }
         return null;
       }
@@ -385,28 +397,12 @@ public class SecureTestUtil {
       @Override
       public Void call() throws Exception {
         try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
-          connection.getAdmin().revoke(
-            new UserPermission(user, Permission.newBuilder().withActions(actions).build()));
-        }
-        return null;
-      }
-    });
-  }
-
-  /**
-   * Revoke permissions globally from the given user. Will wait until all active
-   * AccessController instances have updated their permissions caches or will
-   * throw an exception upon timeout (10 seconds).
-   */
-  public static void revokeGlobal(final User caller, final HBaseTestingUtility util,
-      final String user, final Permission.Action... actions) throws Exception {
-    SecureTestUtil.updateACLs(util, new Callable<Void>() {
-      @Override
-      public Void call() throws Exception {
-        Configuration conf = util.getConfiguration();
-        try (Connection connection = ConnectionFactory.createConnection(conf, caller)) {
-          connection.getAdmin().revoke(
-            new UserPermission(user, Permission.newBuilder().withActions(actions).build()));
+          try (Table acl = connection.getTable(AccessControlLists.ACL_TABLE_NAME)) {
+            BlockingRpcChannel service = acl.coprocessorService(HConstants.EMPTY_START_ROW);
+            AccessControlService.BlockingInterface protocol =
+                AccessControlService.newBlockingStub(service);
+            ProtobufUtil.revoke(null, protocol, user, actions);
+          }
         }
         return null;
       }
@@ -424,31 +420,12 @@ public class SecureTestUtil {
       @Override
       public Void call() throws Exception {
         try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
-          connection.getAdmin().grant(
-            new UserPermission(user, Permission.newBuilder(namespace).withActions(actions).build()),
-            false);
-        }
-        return null;
-      }
-    });
-  }
-
-  /**
-   * Grant permissions on a namespace to the given user. Will wait until all active
-   * AccessController instances have updated their permissions caches or will
-   * throw an exception upon timeout (10 seconds).
-   */
-  public static void grantOnNamespace(final User caller, final HBaseTestingUtility util,
-      final String user, final String namespace,
-      final Permission.Action... actions) throws Exception {
-    SecureTestUtil.updateACLs(util, new Callable<Void>() {
-      @Override
-      public Void call() throws Exception {
-        Configuration conf = util.getConfiguration();
-        try (Connection connection = ConnectionFactory.createConnection(conf, caller)) {
-          connection.getAdmin().grant(
-            new UserPermission(user, Permission.newBuilder(namespace).withActions(actions).build()),
-            false);
+          try (Table acl = connection.getTable(AccessControlLists.ACL_TABLE_NAME)) {
+            BlockingRpcChannel service = acl.coprocessorService(HConstants.EMPTY_START_ROW);
+            AccessControlService.BlockingInterface protocol =
+                AccessControlService.newBlockingStub(service);
+            ProtobufUtil.grant(null, protocol, user, namespace, false, actions);
+          }
         }
         return null;
       }
@@ -468,6 +445,22 @@ public class SecureTestUtil {
       public Void call() throws Exception {
         try {
           AccessControlClient.grant(connection, namespace, user, actions);
+        } catch (Throwable t) {
+          LOG.error("grant failed: ", t);
+        }
+        return null;
+      }
+    });
+  }
+
+  public static void grantOnNamespaceUsingAccessControlClient(final HBaseTestingUtility util,
+      final Connection connection, final String user, final String namespace,
+      final boolean mergeExistingPermissions, final Permission.Action... actions) throws Exception {
+    SecureTestUtil.updateACLs(util, new Callable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        try {
+          AccessControlClient.grant(connection, namespace, user, mergeExistingPermissions, actions);
         } catch (Throwable t) {
           LOG.error("grant failed: ", t);
         }
@@ -508,29 +501,12 @@ public class SecureTestUtil {
       @Override
       public Void call() throws Exception {
         try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
-          connection.getAdmin().revoke(new UserPermission(user,
-              Permission.newBuilder(namespace).withActions(actions).build()));
-        }
-        return null;
-      }
-    });
-  }
-
-  /**
-   * Revoke permissions on a namespace from the given user. Will wait until all active
-   * AccessController instances have updated their permissions caches or will
-   * throw an exception upon timeout (10 seconds).
-   */
-  public static void revokeFromNamespace(final User caller, final HBaseTestingUtility util,
-      final String user, final String namespace,
-      final Permission.Action... actions) throws Exception {
-    SecureTestUtil.updateACLs(util, new Callable<Void>() {
-      @Override
-      public Void call() throws Exception {
-        Configuration conf = util.getConfiguration();
-        try (Connection connection = ConnectionFactory.createConnection(conf, caller)) {
-          connection.getAdmin().revoke(new UserPermission(user,
-              Permission.newBuilder(namespace).withActions(actions).build()));
+          try (Table acl = connection.getTable(AccessControlLists.ACL_TABLE_NAME)) {
+            BlockingRpcChannel service = acl.coprocessorService(HConstants.EMPTY_START_ROW);
+            AccessControlService.BlockingInterface protocol =
+                AccessControlService.newBlockingStub(service);
+            ProtobufUtil.revoke(null, protocol, user, namespace, actions);
+          }
         }
         return null;
       }
@@ -549,31 +525,12 @@ public class SecureTestUtil {
       @Override
       public Void call() throws Exception {
         try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
-          connection.getAdmin().grant(new UserPermission(user, Permission.newBuilder(table)
-              .withFamily(family).withQualifier(qualifier).withActions(actions).build()),
-            false);
-        }
-        return null;
-      }
-    });
-  }
-
-  /**
-   * Grant permissions on a table to the given user. Will wait until all active
-   * AccessController instances have updated their permissions caches or will
-   * throw an exception upon timeout (10 seconds).
-   */
-  public static void grantOnTable(final User caller, final HBaseTestingUtility util,
-      final String user, final TableName table, final byte[] family, final byte[] qualifier,
-      final Permission.Action... actions) throws Exception {
-    SecureTestUtil.updateACLs(util, new Callable<Void>() {
-      @Override
-      public Void call() throws Exception {
-        Configuration conf = util.getConfiguration();
-        try (Connection connection = ConnectionFactory.createConnection(conf, caller)) {
-          connection.getAdmin().grant(new UserPermission(user, Permission.newBuilder(table)
-              .withFamily(family).withQualifier(qualifier).withActions(actions).build()),
-            false);
+          try (Table acl = connection.getTable(AccessControlLists.ACL_TABLE_NAME)) {
+            BlockingRpcChannel service = acl.coprocessorService(HConstants.EMPTY_START_ROW);
+            AccessControlService.BlockingInterface protocol =
+                AccessControlService.newBlockingStub(service);
+            ProtobufUtil.grant(null, protocol, user, table, family, qualifier, false, actions);
+          }
         }
         return null;
       }
@@ -601,6 +558,26 @@ public class SecureTestUtil {
     });
   }
 
+  public static void grantOnTableUsingAccessControlClient(final HBaseTestingUtility util,
+      final Connection connection, final String user, final TableName table, final byte[] family,
+      final byte[] qualifier, final boolean mergeExistingPermissions,
+      final Permission.Action... actions) throws Exception {
+    SecureTestUtil.updateACLs(util, new Callable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        try {
+          AccessControlClient.grant(connection, table, user, family, qualifier,
+            mergeExistingPermissions, actions);
+        } catch (Throwable t) {
+          LOG.error("grant failed: ", t);
+        }
+        return null;
+      }
+    });
+  }
+
+
+
   /**
    * Grant global permissions to the given user using AccessControlClient. Will wait until all
    * active AccessController instances have updated their permissions caches or will
@@ -622,6 +599,22 @@ public class SecureTestUtil {
     });
   }
 
+  public static void grantGlobalUsingAccessControlClient(final HBaseTestingUtility util,
+      final Connection connection, final String user, final boolean mergeExistingPermissions,
+      final Permission.Action... actions) throws Exception {
+    SecureTestUtil.updateACLs(util, new Callable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        try {
+          AccessControlClient.grant(connection, user, mergeExistingPermissions, actions);
+        } catch (Throwable t) {
+          LOG.error("grant failed: ", t);
+        }
+        return null;
+      }
+    });
+  }
+
   /**
    * Revoke permissions on a table from the given user. Will wait until all active
    * AccessController instances have updated their permissions caches or will
@@ -634,29 +627,12 @@ public class SecureTestUtil {
       @Override
       public Void call() throws Exception {
         try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
-          connection.getAdmin().revoke(new UserPermission(user, Permission.newBuilder(table)
-              .withFamily(family).withQualifier(qualifier).withActions(actions).build()));
-        }
-        return null;
-      }
-    });
-  }
-
-  /**
-   * Revoke permissions on a table from the given user. Will wait until all active
-   * AccessController instances have updated their permissions caches or will
-   * throw an exception upon timeout (10 seconds).
-   */
-  public static void revokeFromTable(final User caller, final HBaseTestingUtility util,
-      final String user, final TableName table, final byte[] family, final byte[] qualifier,
-      final Permission.Action... actions) throws Exception {
-    SecureTestUtil.updateACLs(util, new Callable<Void>() {
-      @Override
-      public Void call() throws Exception {
-        Configuration conf = util.getConfiguration();
-        try (Connection connection = ConnectionFactory.createConnection(conf, caller)) {
-          connection.getAdmin().revoke(new UserPermission(user, Permission.newBuilder(table)
-              .withFamily(family).withQualifier(qualifier).withActions(actions).build()));
+          try (Table acl = connection.getTable(AccessControlLists.ACL_TABLE_NAME)) {
+            BlockingRpcChannel service = acl.coprocessorService(HConstants.EMPTY_START_ROW);
+            AccessControlService.BlockingInterface protocol =
+                AccessControlService.newBlockingStub(service);
+            ProtobufUtil.revoke(null, protocol, user, table, family, qualifier, actions);
+          }
         }
         return null;
       }
@@ -705,32 +681,25 @@ public class SecureTestUtil {
     });
   }
 
-  public static class MasterSyncObserver implements MasterCoprocessor, MasterObserver {
+  public static class MasterSyncObserver extends BaseMasterObserver {
     volatile CountDownLatch tableCreationLatch = null;
     volatile CountDownLatch tableDeletionLatch = null;
 
     @Override
-    public Optional<MasterObserver> getMasterObserver() {
-      return Optional.of(this);
-    }
-
-    @Override
-    public void postCompletedCreateTableAction(
+    public void postCreateTableHandler(
         final ObserverContext<MasterCoprocessorEnvironment> ctx,
-        TableDescriptor desc, RegionInfo[] regions) throws IOException {
-      // the AccessController test, some times calls only and directly the
-      // postCompletedCreateTableAction()
+        HTableDescriptor desc, HRegionInfo[] regions) throws IOException {
+      // the AccessController test, some times calls only and directly the postCreateTableHandler()
       if (tableCreationLatch != null) {
         tableCreationLatch.countDown();
       }
     }
 
     @Override
-    public void postCompletedDeleteTableAction(
-        final ObserverContext<MasterCoprocessorEnvironment> ctx,
-        final TableName tableName) throws IOException {
-      // the AccessController test, some times calls only and directly the
-      // postCompletedDeleteTableAction()
+    public void postDeleteTableHandler(
+        final ObserverContext<MasterCoprocessorEnvironment> ctx, TableName tableName)
+        throws IOException {
+      // the AccessController test, some times calls only and directly the postDeleteTableHandler()
       if (tableDeletionLatch != null) {
         tableDeletionLatch.countDown();
       }
@@ -739,35 +708,36 @@ public class SecureTestUtil {
 
   public static Table createTable(HBaseTestingUtility testUtil, TableName tableName,
       byte[][] families) throws Exception {
-    TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableName);
+    HTableDescriptor htd = new HTableDescriptor(tableName);
     for (byte[] family : families) {
-      builder.setColumnFamily(ColumnFamilyDescriptorBuilder.of(family));
+      HColumnDescriptor hcd = new HColumnDescriptor(family);
+      htd.addFamily(hcd);
     }
-    createTable(testUtil, testUtil.getAdmin(), builder.build());
-    return testUtil.getConnection().getTable(tableName);
+    createTable(testUtil, testUtil.getHBaseAdmin(), htd);
+    return testUtil.getConnection().getTable(htd.getTableName());
   }
 
-  public static void createTable(HBaseTestingUtility testUtil, TableDescriptor htd)
+  public static void createTable(HBaseTestingUtility testUtil, HTableDescriptor htd)
       throws Exception {
-    createTable(testUtil, testUtil.getAdmin(), htd);
+    createTable(testUtil, testUtil.getHBaseAdmin(), htd);
   }
 
-  public static void createTable(HBaseTestingUtility testUtil, TableDescriptor htd,
+  public static void createTable(HBaseTestingUtility testUtil, HTableDescriptor htd,
       byte[][] splitKeys) throws Exception {
-    createTable(testUtil, testUtil.getAdmin(), htd, splitKeys);
+    createTable(testUtil, testUtil.getHBaseAdmin(), htd, splitKeys);
   }
 
-  public static void createTable(HBaseTestingUtility testUtil, Admin admin, TableDescriptor htd)
+  public static void createTable(HBaseTestingUtility testUtil, Admin admin, HTableDescriptor htd)
       throws Exception {
     createTable(testUtil, admin, htd, null);
   }
 
-  public static void createTable(HBaseTestingUtility testUtil, Admin admin, TableDescriptor htd,
+  public static void createTable(HBaseTestingUtility testUtil, Admin admin, HTableDescriptor htd,
       byte[][] splitKeys) throws Exception {
     // NOTE: We need a latch because admin is not sync,
     // so the postOp coprocessor method may be called after the admin operation returned.
-    MasterSyncObserver observer = testUtil.getHBaseCluster().getMaster()
-      .getMasterCoprocessorHost().findCoprocessor(MasterSyncObserver.class);
+    MasterSyncObserver observer = (MasterSyncObserver)testUtil.getHBaseCluster().getMaster()
+      .getMasterCoprocessorHost().findCoprocessor(MasterSyncObserver.class.getName());
     observer.tableCreationLatch = new CountDownLatch(1);
     if (splitKeys != null) {
       admin.createTable(htd, splitKeys);
@@ -779,52 +749,48 @@ public class SecureTestUtil {
     testUtil.waitUntilAllRegionsAssigned(htd.getTableName());
   }
 
-  public static void createTable(HBaseTestingUtility testUtil, User user, TableDescriptor htd)
-    throws Exception {
-    createTable(testUtil, user, htd, null);
-  }
-
-  public static void createTable(HBaseTestingUtility testUtil, User user, TableDescriptor htd,
-    byte[][] splitKeys) throws Exception {
-    try (Connection con = testUtil.getConnection(user); Admin admin = con.getAdmin()) {
-      createTable(testUtil, admin, htd, splitKeys);
-    }
-  }
-
   public static void deleteTable(HBaseTestingUtility testUtil, TableName tableName)
       throws Exception {
-    deleteTable(testUtil, testUtil.getAdmin(), tableName);
+    deleteTable(testUtil, testUtil.getHBaseAdmin(), tableName);
   }
 
   public static void createNamespace(HBaseTestingUtility testUtil, NamespaceDescriptor nsDesc)
       throws Exception {
-    testUtil.getAdmin().createNamespace(nsDesc);
+    testUtil.getHBaseAdmin().createNamespace(nsDesc);
   }
 
   public static void deleteNamespace(HBaseTestingUtility testUtil, String namespace)
       throws Exception {
-    testUtil.getAdmin().deleteNamespace(namespace);
+    testUtil.getHBaseAdmin().deleteNamespace(namespace);
   }
 
   public static void deleteTable(HBaseTestingUtility testUtil, Admin admin, TableName tableName)
       throws Exception {
     // NOTE: We need a latch because admin is not sync,
     // so the postOp coprocessor method may be called after the admin operation returned.
-    MasterSyncObserver observer = testUtil.getHBaseCluster().getMaster()
-      .getMasterCoprocessorHost().findCoprocessor(MasterSyncObserver.class);
-    observer.tableDeletionLatch = new CountDownLatch(1);
+    MasterSyncObserver observer = null;
+    HMaster master = testUtil.getHBaseCluster().getMaster();
+    if (master != null) {
+      observer = (MasterSyncObserver)master.getMasterCoprocessorHost()
+          .findCoprocessor(MasterSyncObserver.class.getName());
+      if (observer != null) {
+        observer.tableDeletionLatch = new CountDownLatch(1);
+      }
+    }
     try {
       admin.disableTable(tableName);
     } catch (TableNotEnabledException e) {
       LOG.debug("Table: " + tableName + " already disabled, so just deleting it.");
     }
     admin.deleteTable(tableName);
-    observer.tableDeletionLatch.await();
-    observer.tableDeletionLatch = null;
+    if (observer != null) {
+      observer.tableDeletionLatch.await();
+      observer.tableDeletionLatch = null;
+    }
   }
 
   public static String convertToNamespace(String namespace) {
-    return PermissionStorage.NAMESPACE_PREFIX + namespace;
+    return AccessControlLists.NAMESPACE_PREFIX + namespace;
   }
 
   public static void checkGlobalPerms(HBaseTestingUtility testUtil, Permission.Action... actions)
@@ -833,33 +799,53 @@ public class SecureTestUtil {
     for (int i = 0; i < actions.length; i++) {
       perms[i] = new Permission(actions[i]);
     }
-    checkPermissions(testUtil.getConfiguration(), perms);
+    CheckPermissionsRequest.Builder request = CheckPermissionsRequest.newBuilder();
+    for (Action a : actions) {
+      request.addPermission(AccessControlProtos.Permission.newBuilder()
+          .setType(AccessControlProtos.Permission.Type.Global)
+          .setGlobalPermission(
+              AccessControlProtos.GlobalPermission.newBuilder()
+                  .addAction(ProtobufUtil.toPermissionAction(a)).build()));
+    }
+    try(Connection conn = ConnectionFactory.createConnection(testUtil.getConfiguration());
+        Table acl = conn.getTable(AccessControlLists.ACL_TABLE_NAME)) {
+      BlockingRpcChannel channel = acl.coprocessorService(new byte[0]);
+      AccessControlService.BlockingInterface protocol =
+        AccessControlService.newBlockingStub(channel);
+      try {
+        protocol.checkPermissions(null, request.build());
+      } catch (ServiceException se) {
+        ProtobufUtil.toIOException(se);
+      }
+    }
   }
 
   public static void checkTablePerms(HBaseTestingUtility testUtil, TableName table, byte[] family,
       byte[] column, Permission.Action... actions) throws IOException {
     Permission[] perms = new Permission[actions.length];
     for (int i = 0; i < actions.length; i++) {
-      perms[i] = Permission.newBuilder(table).withFamily(family).withQualifier(column)
-          .withActions(actions[i]).build();
+      perms[i] = new TablePermission(table, family, column, actions[i]);
     }
-    checkTablePerms(testUtil, perms);
+    checkTablePerms(testUtil, table, perms);
   }
 
-  public static void checkTablePerms(HBaseTestingUtility testUtil, Permission... perms)
-      throws IOException {
-    checkPermissions(testUtil.getConfiguration(), perms);
-  }
+  public static void checkTablePerms(HBaseTestingUtility testUtil, TableName table,
+      Permission... perms) throws IOException {
+    CheckPermissionsRequest.Builder request = CheckPermissionsRequest.newBuilder();
+    for (Permission p : perms) {
+      request.addPermission(ProtobufUtil.toPermission(p));
+    }
 
-  private static void checkPermissions(Configuration conf, Permission... perms) throws IOException {
-    try (Connection conn = ConnectionFactory.createConnection(conf)) {
-      List<Boolean> hasUserPermissions =
-          conn.getAdmin().hasUserPermissions(Lists.newArrayList(perms));
-      for (int i = 0; i < hasUserPermissions.size(); i++) {
-        if (!hasUserPermissions.get(i).booleanValue()) {
-          throw new AccessDeniedException("Insufficient permissions " + perms[i]);
-        }
+    try(Connection conn = ConnectionFactory.createConnection(testUtil.getConfiguration());
+        Table acl = conn.getTable(table)) {
+      AccessControlService.BlockingInterface protocol =
+        AccessControlService.newBlockingStub(acl.coprocessorService(new byte[0]));
+      try {
+        protocol.checkPermissions(null, request.build());
+      } catch (ServiceException se) {
+        ProtobufUtil.toIOException(se);
       }
     }
   }
+
 }

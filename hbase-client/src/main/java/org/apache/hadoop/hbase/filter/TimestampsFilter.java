@@ -17,20 +17,20 @@
  */
 package org.apache.hadoop.hbase.filter;
 
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.TreeSet;
-
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.PrivateCellUtil;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.KeyValueUtil;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
 
 /**
  * Filter that returns only cells whose timestamp (version) is
@@ -38,11 +38,11 @@ import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferExce
  * <p>
  * Note: Use of this filter overrides any time range/time stamp
  * options specified using {@link org.apache.hadoop.hbase.client.Get#setTimeRange(long, long)},
- * {@link org.apache.hadoop.hbase.client.Scan#setTimeRange(long, long)},
- * {@link org.apache.hadoop.hbase.client.Get#setTimestamp(long)},
- * or {@link org.apache.hadoop.hbase.client.Scan#setTimestamp(long)}.
+ * {@link org.apache.hadoop.hbase.client.Scan#setTimeRange(long, long)}, {@link org.apache.hadoop.hbase.client.Get#setTimeStamp(long)},
+ * or {@link org.apache.hadoop.hbase.client.Scan#setTimeStamp(long)}.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class TimestampsFilter extends FilterBase {
 
   private final boolean canHint;
@@ -50,8 +50,8 @@ public class TimestampsFilter extends FilterBase {
   private static final int MAX_LOG_TIMESTAMPS = 5;
 
   // Used during scans to hint the scan to stop early
-  // once the timestamps fall below the minTimestamp.
-  long minTimestamp = Long.MAX_VALUE;
+  // once the timestamps fall below the minTimeStamp.
+  long minTimeStamp = Long.MAX_VALUE;
 
   /**
    * Constructor for filter that retains only the specified timestamps in the list.
@@ -77,7 +77,7 @@ public class TimestampsFilter extends FilterBase {
       Preconditions.checkArgument(timestamp >= 0, "must be positive %s", timestamp);
     }
     this.canHint = canHint;
-    this.timestamps = new TreeSet<>(timestamps);
+    this.timestamps = new TreeSet<Long>(timestamps);
     init();
   }
 
@@ -85,14 +85,14 @@ public class TimestampsFilter extends FilterBase {
    * @return the list of timestamps
    */
   public List<Long> getTimestamps() {
-    List<Long> list = new ArrayList<>(timestamps.size());
+    List<Long> list = new ArrayList<Long>(timestamps.size());
     list.addAll(timestamps);
     return list;
   }
 
   private void init() {
     if (this.timestamps.size() > 0) {
-      minTimestamp = this.timestamps.first();
+      minTimeStamp = this.timestamps.first();
     }
   }
 
@@ -101,20 +101,14 @@ public class TimestampsFilter extends FilterBase {
    * @return  minimum timestamp requested by filter.
    */
   public long getMin() {
-    return minTimestamp;
+    return minTimeStamp;
   }
 
   @Override
-  public boolean filterRowKey(Cell cell) throws IOException {
-    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
-    return false;
-  }
-
-  @Override
-  public ReturnCode filterCell(final Cell c) {
-    if (this.timestamps.contains(c.getTimestamp())) {
+  public ReturnCode filterKeyValue(Cell v) {
+    if (this.timestamps.contains(v.getTimestamp())) {
       return ReturnCode.INCLUDE;
-    } else if (c.getTimestamp() < minTimestamp) {
+    } else if (v.getTimestamp() < minTimeStamp) {
       // The remaining versions of this column are guaranteed
       // to be lesser than all of the other values.
       return ReturnCode.NEXT_COL;
@@ -143,22 +137,29 @@ public class TimestampsFilter extends FilterBase {
       // This should only happen if the current column's
       // timestamp is below the last one in the list.
       //
-      // It should never happen as the filterCell should return NEXT_COL
+      // It should never happen as the filterKeyValue should return NEXT_COL
       // but it's always better to be extra safe and protect against future
       // behavioral changes.
 
-      return PrivateCellUtil.createLastOnRowCol(currentCell);
+      return KeyValueUtil.createLastOnRowCol(currentCell);
     }
 
     // Since we know the nextTimestampObject isn't null here there must still be
     // timestamps that can be included. Cast the Long to a long and return the
     // a cell with the current row/cf/col and the next found timestamp.
     long nextTimestamp = nextTimestampObject;
-    return PrivateCellUtil.createFirstOnRowColTS(currentCell, nextTimestamp);
+    return KeyValueUtil.createFirstOnRowColTS(currentCell, nextTimestamp);
+  }
+
+  // Override here explicitly as the method in super class FilterBase might do a KeyValue recreate.
+  // See HBASE-12068
+  @Override
+  public Cell transformCell(Cell v) {
+    return v;
   }
 
   public static Filter createFilterFromArguments(ArrayList<byte []> filterArguments) {
-    ArrayList<Long> timestamps = new ArrayList<>(filterArguments.size());
+    ArrayList<Long> timestamps = new ArrayList<Long>();
     for (int i = 0; i<filterArguments.size(); i++) {
       long timestamp = ParseFilter.convertByteArrayToLong(filterArguments.get(i));
       timestamps.add(timestamp);
@@ -197,7 +198,7 @@ public class TimestampsFilter extends FilterBase {
   }
 
   /**
-   * @param o the other filter to compare with
+   * @param other
    * @return true if and only if the fields of the filter that are serialized
    * are equal to the corresponding fields in other.  Used for testing.
    */

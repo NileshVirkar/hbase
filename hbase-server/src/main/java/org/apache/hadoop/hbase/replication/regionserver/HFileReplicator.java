@@ -1,23 +1,15 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed to the Apache Software Foundation (ASF) under one or more contributor license
+ * agreements. See the NOTICE file distributed with this work for additional information regarding
+ * copyright ownership. The ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License. You may obtain a
+ * copy of the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable
+ * law or agreed to in writing, software distributed under the License is distributed on an "AS IS"
+ * BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ * for the specific language governing permissions and limitations under the License.
  */
 package org.apache.hadoop.hbase.replication.regionserver;
 
-import java.io.Closeable;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
@@ -33,40 +25,40 @@ import java.util.Map.Entry;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.AsyncClusterConnection;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.RegionLocator;
+import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.mapreduce.LoadIncrementalHFiles;
+import org.apache.hadoop.hbase.mapreduce.LoadIncrementalHFiles.LoadQueueItem;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.security.token.FsDelegationToken;
-import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
-import org.apache.hadoop.hbase.tool.BulkLoadHFiles.LoadQueueItem;
-import org.apache.hadoop.hbase.tool.BulkLoadHFilesTool;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.Pair;
-import org.apache.hadoop.hbase.util.Threads;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
  * It is used for replicating HFile entries. It will first copy parallely all the hfiles to a local
- * staging directory and then it will use ({@link BulkLoadHFiles} to prepare a collection of
+ * staging directory and then it will use ({@link LoadIncrementalHFiles} to prepare a collection of
  * {@link LoadQueueItem} which will finally be loaded(replicated) into the table of this cluster.
- * Call {@link #close()} when done.
  */
 @InterfaceAudience.Private
-public class HFileReplicator implements Closeable {
+public class HFileReplicator {
   /** Maximum number of threads to allow in pool to copy hfiles during replication */
   public static final String REPLICATION_BULKLOAD_COPY_MAXTHREADS_KEY =
       "hbase.replication.bulkload.copy.maxthreads";
@@ -76,8 +68,8 @@ public class HFileReplicator implements Closeable {
       "hbase.replication.bulkload.copy.hfiles.perthread";
   public static final int REPLICATION_BULKLOAD_COPY_HFILES_PERTHREAD_DEFAULT = 10;
 
-  private static final Logger LOG = LoggerFactory.getLogger(HFileReplicator.class);
-  private static final String UNDERSCORE = "_";
+  private static final Log LOG = LogFactory.getLog(HFileReplicator.class);
+  private final String UNDERSCORE = "_";
   private final static FsPermission PERM_ALL_ACCESS = FsPermission.valueOf("-rwxrwxrwx");
 
   private Configuration sourceClusterConf;
@@ -88,8 +80,8 @@ public class HFileReplicator implements Closeable {
   private FsDelegationToken fsDelegationToken;
   private UserProvider userProvider;
   private Configuration conf;
-  private AsyncClusterConnection connection;
-  private Path hbaseStagingDir;
+  private Connection connection;
+  private String hbaseStagingDir;
   private ThreadPoolExecutor exec;
   private int maxCopyThreads;
   private int copiesPerThread;
@@ -98,7 +90,7 @@ public class HFileReplicator implements Closeable {
   public HFileReplicator(Configuration sourceClusterConf,
       String sourceBaseNamespaceDirPath, String sourceHFileArchiveDirPath,
       Map<String, List<Pair<byte[], List<String>>>> tableQueueMap, Configuration conf,
-      AsyncClusterConnection connection, List<String> sourceClusterIds) throws IOException {
+      Connection connection, List<String> sourceClusterIds) throws IOException {
     this.sourceClusterConf = sourceClusterConf;
     this.sourceBaseNamespaceDirPath = sourceBaseNamespaceDirPath;
     this.sourceHFileArchiveDirPath = sourceHFileArchiveDirPath;
@@ -109,27 +101,21 @@ public class HFileReplicator implements Closeable {
 
     userProvider = UserProvider.instantiate(conf);
     fsDelegationToken = new FsDelegationToken(userProvider, "renewer");
-    this.hbaseStagingDir =
-      new Path(CommonFSUtils.getRootDir(conf), HConstants.BULKLOAD_STAGING_DIR_NAME);
+    this.hbaseStagingDir = conf.get("hbase.bulkload.staging.dir");
     this.maxCopyThreads =
         this.conf.getInt(REPLICATION_BULKLOAD_COPY_MAXTHREADS_KEY,
           REPLICATION_BULKLOAD_COPY_MAXTHREADS_DEFAULT);
-    this.exec = Threads.getBoundedCachedThreadPool(maxCopyThreads, 60, TimeUnit.SECONDS,
-        new ThreadFactoryBuilder().setDaemon(true)
-            .setNameFormat("HFileReplicationCopier-%1$d-" + this.sourceBaseNamespaceDirPath).
-          build());
+    ThreadFactoryBuilder builder = new ThreadFactoryBuilder();
+    builder.setNameFormat("HFileReplicationCallable-%1$d");
+    this.exec =
+        new ThreadPoolExecutor(1, maxCopyThreads, 60, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<Runnable>(), builder.build());
+    this.exec.allowCoreThreadTimeOut(true);
     this.copiesPerThread =
         conf.getInt(REPLICATION_BULKLOAD_COPY_HFILES_PERTHREAD_KEY,
           REPLICATION_BULKLOAD_COPY_HFILES_PERTHREAD_DEFAULT);
 
     sinkFs = FileSystem.get(conf);
-  }
-
-  @Override
-  public void close() throws IOException {
-    if (this.exec != null) {
-      this.exec.shutdown();
-    }
   }
 
   public Void replicate() throws IOException {
@@ -141,64 +127,102 @@ public class HFileReplicator implements Closeable {
     for (Entry<String, Path> tableStagingDir : tableStagingDirsMap.entrySet()) {
       String tableNameString = tableStagingDir.getKey();
       Path stagingDir = tableStagingDir.getValue();
+
+      LoadIncrementalHFiles loadHFiles = null;
+      try {
+        loadHFiles = new LoadIncrementalHFiles(conf);
+        loadHFiles.setClusterIds(sourceClusterIds);
+      } catch (Exception e) {
+        LOG.error("Failed to initialize LoadIncrementalHFiles for replicating bulk loaded"
+            + " data.", e);
+        throw new IOException(e);
+      }
+      Configuration newConf = HBaseConfiguration.create(conf);
+      newConf.set(LoadIncrementalHFiles.CREATE_TABLE_CONF_KEY, "no");
+      loadHFiles.setConf(newConf);
+
       TableName tableName = TableName.valueOf(tableNameString);
+      Table table = this.connection.getTable(tableName);
 
       // Prepare collection of queue of hfiles to be loaded(replicated)
-      Deque<LoadQueueItem> queue = new LinkedList<>();
-      BulkLoadHFilesTool.prepareHFileQueue(conf, connection, tableName, stagingDir, queue, false,
-        false);
+      Deque<LoadQueueItem> queue = new LinkedList<LoadQueueItem>();
+      loadHFiles.prepareHFileQueue(stagingDir, table, queue, false);
 
       if (queue.isEmpty()) {
-        LOG.warn("Did not find any files to replicate in directory {}", stagingDir.toUri());
+        LOG.warn("Replication process did not find any files to replicate in directory "
+            + stagingDir.toUri());
         return null;
       }
-      fsDelegationToken.acquireDelegationToken(sinkFs);
-      try {
-        doBulkLoad(conf, tableName, stagingDir, queue, maxRetries);
+
+      try (RegionLocator locator = connection.getRegionLocator(tableName)) {
+
+        fsDelegationToken.acquireDelegationToken(sinkFs);
+
+        // Set the staging directory which will be used by LoadIncrementalHFiles for loading the
+        // data
+        loadHFiles.setBulkToken(stagingDir.toString());
+
+        doBulkLoad(loadHFiles, table, queue, locator, maxRetries);
       } finally {
-        cleanup(stagingDir);
+        cleanup(stagingDir.toString(), table);
       }
     }
     return null;
   }
 
-  private void doBulkLoad(Configuration conf, TableName tableName, Path stagingDir,
-      Deque<LoadQueueItem> queue, int maxRetries) throws IOException {
-    BulkLoadHFilesTool loader = new BulkLoadHFilesTool(conf);
-    // Set the staging directory which will be used by BulkLoadHFilesTool for loading the data
-    loader.setBulkToken(stagingDir.toString());
-    //updating list of cluster ids where this bulkload event has already been processed
-    loader.setClusterIds(sourceClusterIds);
-    for (int count = 0; !queue.isEmpty(); count++) {
+  private void doBulkLoad(LoadIncrementalHFiles loadHFiles, Table table,
+      Deque<LoadQueueItem> queue, RegionLocator locator, int maxRetries) throws IOException {
+    int count = 0;
+    Pair<byte[][], byte[][]> startEndKeys;
+    while (!queue.isEmpty()) {
+      // need to reload split keys each iteration.
+      startEndKeys = locator.getStartEndKeys();
       if (count != 0) {
-        LOG.warn("Error replicating HFiles; retry={} with {} remaining.", count, queue.size());
+        LOG.warn("Error occurred while replicating HFiles, retry attempt " + count + " with "
+            + queue.size() + " files still remaining to replicate.");
       }
 
       if (maxRetries != 0 && count >= maxRetries) {
-        throw new IOException("Retry attempted " + count + " times without completing, bailing.");
+        throw new IOException("Retry attempted " + count
+            + " times without completing, bailing out.");
       }
+      count++;
 
       // Try bulk load
-      loader.loadHFileQueue(connection, tableName, queue, false);
+      loadHFiles.loadHFileQueue(table, connection, queue, startEndKeys);
     }
   }
 
-  private void cleanup(Path stagingDir) {
+  private void cleanup(String stagingDir, Table table) {
     // Release the file system delegation token
     fsDelegationToken.releaseDelegationToken();
     // Delete the staging directory
     if (stagingDir != null) {
       try {
-        sinkFs.delete(stagingDir, true);
+        sinkFs.delete(new Path(stagingDir), true);
       } catch (IOException e) {
         LOG.warn("Failed to delete the staging directory " + stagingDir, e);
       }
     }
     // Do not close the file system
+
+    /*
+     * if (sinkFs != null) { try { sinkFs.close(); } catch (IOException e) { LOG.warn(
+     * "Failed to close the file system"); } }
+     */
+
+    // Close the table
+    if (table != null) {
+      try {
+        table.close();
+      } catch (IOException e) {
+        LOG.warn("Failed to close the table.", e);
+      }
+    }
   }
 
   private Map<String, Path> copyHFilesToStagingDir() throws IOException {
-    Map<String, Path> mapOfCopiedHFiles = new HashMap<>();
+    Map<String, Path> mapOfCopiedHFiles = new HashMap<String, Path>();
     Pair<byte[], List<String>> familyHFilePathsPair;
     List<String> hfilePaths;
     byte[] family;
@@ -231,7 +255,7 @@ public class HFileReplicator implements Closeable {
 
         // Create staging directory for each table
         Path stagingDir =
-            createStagingDir(hbaseStagingDir, user, TableName.valueOf(tableName));
+            createStagingDir(new Path(hbaseStagingDir), user, TableName.valueOf(tableName));
 
         familyHFilePathsPairsList = tableEntry.getValue();
         familyHFilePathsPairsListSize = familyHFilePathsPairsList.size();
@@ -247,7 +271,7 @@ public class HFileReplicator implements Closeable {
           totalNoOfHFiles = hfilePaths.size();
 
           // For each list of hfile paths for the family
-          List<Future<Void>> futures = new ArrayList<>();
+          List<Future<Void>> futures = new ArrayList<Future<Void>>();
           Callable<Void> c;
           Future<Void> future;
           int currentCopied = 0;

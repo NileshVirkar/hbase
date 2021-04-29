@@ -21,18 +21,16 @@ package org.apache.hadoop.hbase.replication;
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-
 import org.apache.hadoop.hbase.Abortable;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.wal.WAL.Entry;
 import org.apache.hadoop.hbase.replication.regionserver.MetricsSource;
+
+import org.apache.hbase.thirdparty.com.google.common.util.concurrent.Service;
 
 /**
  * ReplicationEndpoint is a plugin which implements replication
@@ -48,13 +46,10 @@ import org.apache.hadoop.hbase.replication.regionserver.MetricsSource;
  * and persisting of the WAL entries in the other cluster.
  */
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.REPLICATION)
-public interface ReplicationEndpoint extends ReplicationPeerConfigListener {
-  // TODO: This class needs doc. Has a Context and a ReplicationContext. Then has #start, #stop.
-  // How they relate? Do we #start before #init(Context)? We fail fast if you don't?
+public interface ReplicationEndpoint extends Service, ReplicationPeerConfigListener {
 
   @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.REPLICATION)
   class Context {
-    private final Server server;
     private final Configuration localConf;
     private final Configuration conf;
     private final FileSystem fs;
@@ -66,11 +61,16 @@ public interface ReplicationEndpoint extends ReplicationPeerConfigListener {
     private final Abortable abortable;
 
     @InterfaceAudience.Private
-    public Context(final Server server, final Configuration localConf, final Configuration conf,
-        final FileSystem fs, final String peerId, final UUID clusterId,
-        final ReplicationPeer replicationPeer, final MetricsSource metrics,
-        final TableDescriptors tableDescriptors, final Abortable abortable) {
-      this.server = server;
+    public Context(
+        final Configuration localConf,
+        final Configuration conf,
+        final FileSystem fs,
+        final String peerId,
+        final UUID clusterId,
+        final ReplicationPeer replicationPeer,
+        final MetricsSource metrics,
+        final TableDescriptors tableDescriptors,
+        final Abortable abortable) {
       this.localConf = localConf;
       this.conf = conf;
       this.fs = fs;
@@ -81,56 +81,40 @@ public interface ReplicationEndpoint extends ReplicationPeerConfigListener {
       this.tableDescriptors = tableDescriptors;
       this.abortable = abortable;
     }
-
-    public Server getServer() {
-      return server;
-    }
-
     public Configuration getConfiguration() {
       return conf;
     }
-
     public Configuration getLocalConfiguration() {
       return localConf;
     }
-
     public FileSystem getFilesystem() {
       return fs;
     }
-
     public UUID getClusterId() {
       return clusterId;
     }
-
     public String getPeerId() {
       return peerId;
     }
-
     public ReplicationPeerConfig getPeerConfig() {
       return replicationPeer.getPeerConfig();
     }
-
     public ReplicationPeer getReplicationPeer() {
       return replicationPeer;
     }
-
     public MetricsSource getMetrics() {
       return metrics;
     }
-
     public TableDescriptors getTableDescriptors() {
       return tableDescriptors;
     }
-
-    public Abortable getAbortable() {
-      return abortable;
-    }
+    public Abortable getAbortable() { return abortable; }
   }
 
   /**
    * Initialize the replication endpoint with the given context.
    * @param context replication context
-   * @throws IOException error occur when initialize the endpoint.
+   * @throws IOException
    */
   void init(Context context) throws IOException;
 
@@ -161,7 +145,6 @@ public interface ReplicationEndpoint extends ReplicationPeerConfigListener {
     List<Entry> entries;
     int size;
     String walGroupId;
-    int timeout;
     @InterfaceAudience.Private
     public ReplicateContext() {
     }
@@ -187,12 +170,6 @@ public interface ReplicationEndpoint extends ReplicationPeerConfigListener {
     public String getWalGroupId(){
       return walGroupId;
     }
-    public void setTimeout(int timeout) {
-      this.timeout = timeout;
-    }
-    public int getTimeout() {
-      return this.timeout;
-    }
   }
 
   /**
@@ -205,81 +182,4 @@ public interface ReplicationEndpoint extends ReplicationPeerConfigListener {
    */
   boolean replicate(ReplicateContext replicateContext);
 
-
-  // The below methods are inspired by Guava Service. See
-  // https://github.com/google/guava/wiki/ServiceExplained for overview of Guava Service.
-  // Below we implement a subset only with different names on some methods so we can implement
-  // the below internally using Guava (without exposing our implementation to
-  // ReplicationEndpoint implementors.
-
-  /**
-   * Returns {@code true} if this service is RUNNING.
-   */
-  boolean isRunning();
-
-  /**
-   * @return Return {@code true} is this service is STARTING (but not yet RUNNING).
-   */
-  boolean isStarting();
-
-  /**
-   * Initiates service startup and returns immediately. A stopped service may not be restarted.
-   * Equivalent of startAsync call in Guava Service.
-   * @throws IllegalStateException if the service is not new, if it has been run already.
-   */
-  void start();
-
-  /**
-   * Waits for the {@link ReplicationEndpoint} to be up and running.
-   *
-   * @throws IllegalStateException if the service reaches a state from which it is not possible to
-   *     enter the (internal) running state. e.g. if the state is terminated when this method is
-   *     called then this will throw an IllegalStateException.
-   */
-  void awaitRunning();
-
-  /**
-   * Waits for the {@link ReplicationEndpoint} to to be up and running for no more
-   * than the given time.
-   *
-   * @param timeout the maximum time to wait
-   * @param unit the time unit of the timeout argument
-   * @throws TimeoutException if the service has not reached the given state within the deadline
-   * @throws IllegalStateException if the service reaches a state from which it is not possible to
-   *     enter the (internal) running state. e.g. if the state is terminated when this method is
-   *     called then this will throw an IllegalStateException.
-   */
-  void awaitRunning(long timeout, TimeUnit unit) throws TimeoutException;
-
-  /**
-   * If the service is starting or running, this initiates service shutdown and returns immediately.
-   * If the service has already been stopped, this method returns immediately without taking action.
-   * Equivalent of stopAsync call in Guava Service.
-   */
-  void stop();
-
-  /**
-   * Waits for the {@link ReplicationEndpoint} to reach the terminated (internal) state.
-   *
-   * @throws IllegalStateException if the service FAILED.
-   */
-  void awaitTerminated();
-
-  /**
-   * Waits for the {@link ReplicationEndpoint} to reach a terminal state for no
-   * more than the given time.
-   *
-   * @param timeout the maximum time to wait
-   * @param unit the time unit of the timeout argument
-   * @throws TimeoutException if the service has not reached the given state within the deadline
-   * @throws IllegalStateException if the service FAILED.
-   */
-  void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException;
-
-  /**
-   * Returns the {@link Throwable} that caused this service to fail.
-   *
-   * @throws IllegalStateException if this service's state isn't FAILED.
-   */
-  Throwable failureCause();
 }

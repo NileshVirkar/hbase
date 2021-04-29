@@ -20,8 +20,8 @@ package org.apache.hadoop.hbase.client.metrics;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
-
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 
@@ -29,11 +29,12 @@ import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
  * Provides server side metrics related to scan operations.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class ServerSideScanMetrics {
   /**
    * Hash to hold the String -&gt; Atomic Long mappings for each metric
    */
-  private final Map<String, AtomicLong> counters = new HashMap<>();
+  private final Map<String, AtomicLong> counters = new HashMap<String, AtomicLong>();
 
   /**
    * Create a new counter with the specified name
@@ -48,6 +49,11 @@ public class ServerSideScanMetrics {
 
   public static final String COUNT_OF_ROWS_SCANNED_KEY_METRIC_NAME = "ROWS_SCANNED";
   public static final String COUNT_OF_ROWS_FILTERED_KEY_METRIC_NAME = "ROWS_FILTERED";
+
+  /** @deprecated Use {@link #COUNT_OF_ROWS_SCANNED_KEY_METRIC_NAME} instead */
+  public static final String COUNT_OF_ROWS_SCANNED_KEY = COUNT_OF_ROWS_SCANNED_KEY_METRIC_NAME;
+  /** @deprecated Use {@link #COUNT_OF_ROWS_FILTERED_KEY_METRIC_NAME} instead */
+  public static final String COUNT_OF_ROWS_FILTERED_KEY = COUNT_OF_ROWS_FILTERED_KEY_METRIC_NAME;
 
   /**
    * number of rows filtered during scan RPC

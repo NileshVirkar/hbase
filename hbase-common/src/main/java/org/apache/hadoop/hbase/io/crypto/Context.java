@@ -17,12 +17,12 @@
 package org.apache.hadoop.hbase.io.crypto;
 
 import java.security.Key;
-
-import org.apache.commons.codec.binary.Hex;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.util.MD5Hash;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
@@ -30,6 +30,7 @@ import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
  * Crypto context. Encapsulates an encryption algorithm and its key material.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class Context implements Configurable {
   private Configuration conf;
   private Cipher cipher;
@@ -94,7 +95,7 @@ public class Context implements Configurable {
         ", want=" + cipher.getKeyLength());
     }
     this.key = key;
-    this.keyHash = new String(Hex.encodeHex(Encryption.computeCryptoKeyHash(conf, encoded)));
+    this.keyHash = MD5Hash.getMD5AsHex(encoded);
     return this;
   }
 }

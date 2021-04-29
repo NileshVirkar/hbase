@@ -1,4 +1,5 @@
 /**
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,36 +18,29 @@
  */
 package org.apache.hadoop.hbase.master;
 
+import static org.junit.Assert.*;
+
 import java.io.IOException;
 import java.io.StringWriter;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
-import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.hadoop.hbase.ServerName;
-import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.RegionInfoBuilder;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
-import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
-import org.apache.hadoop.hbase.master.assignment.RegionStates;
-import org.apache.hadoop.hbase.regionserver.MetricsRegionServer;
-import org.apache.hadoop.hbase.regionserver.MetricsRegionServerWrapperStub;
-import org.apache.hadoop.hbase.testclassification.MasterTests;
+import org.apache.hadoop.hbase.*;
+import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.tmpl.master.MasterStatusTmpl;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.zookeeper.MasterAddressTracker;
-import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
-import org.apache.hadoop.hbase.zookeeper.ZNodePaths;
+import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
+import org.apache.hadoop.hbase.regionserver.MetricsRegionServer;
+import org.apache.hadoop.hbase.regionserver.MetricsRegionServerWrapperStub;
+import org.apache.hadoop.hbase.tmpl.master.AssignmentManagerStatusTmpl;
+import org.apache.hadoop.hbase.tmpl.master.MasterStatusTmpl;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.mockito.Mockito;
@@ -56,24 +50,20 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 /**
  * Tests for the master status page and its template.
  */
-@Category({MasterTests.class,MediumTests.class})
+@Category(MediumTests.class)
 public class TestMasterStatusServlet {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestMasterStatusServlet.class);
 
   private HMaster master;
   private Configuration conf;
-  private Admin admin;
+  private HBaseAdmin admin;
 
   static final ServerName FAKE_HOST =
       ServerName.valueOf("fakehost", 12345, 1234567890);
-  static final TableDescriptor FAKE_TABLE =
-    TableDescriptorBuilder.newBuilder(TableName.valueOf("mytable")).build();
-
-  static final RegionInfo FAKE_HRI = RegionInfoBuilder.newBuilder(FAKE_TABLE.getTableName())
-    .setStartKey(Bytes.toBytes("a")).setEndKey(Bytes.toBytes("b")).build();
+  static final HTableDescriptor FAKE_TABLE =
+    new HTableDescriptor(TableName.valueOf("mytable"));
+  static final HRegionInfo FAKE_HRI =
+      new HRegionInfo(FAKE_TABLE.getTableName(),
+          Bytes.toBytes("a"), Bytes.toBytes("b"));
 
   @Before
   public void setupBasicMocks() {
@@ -94,7 +84,7 @@ public class TestMasterStatusServlet {
     // Fake AssignmentManager and RIT
     AssignmentManager am = Mockito.mock(AssignmentManager.class);
     RegionStates rs = Mockito.mock(RegionStates.class);
-    List<RegionState> regionsInTransition = new ArrayList<>();
+    Set<RegionState> regionsInTransition = new HashSet<RegionState>();
     regionsInTransition.add(new RegionState(FAKE_HRI, RegionState.State.CLOSING, 12345L, FAKE_HOST));
     Mockito.doReturn(rs).when(am).getRegionStates();
     Mockito.doReturn(regionsInTransition).when(rs).getRegionsInTransition();
@@ -102,8 +92,7 @@ public class TestMasterStatusServlet {
     Mockito.doReturn(serverManager).when(master).getServerManager();
 
     // Fake ZKW
-    ZKWatcher zkw = Mockito.mock(ZKWatcher.class);
-    Mockito.doReturn(new ZNodePaths(conf)).when(zkw).getZNodePaths();
+    ZooKeeperWatcher zkw = Mockito.mock(ZooKeeperWatcher.class);
     Mockito.doReturn("fakequorum").when(zkw).getQuorum();
     Mockito.doReturn(zkw).when(master).getZooKeeper();
 
@@ -114,17 +103,18 @@ public class TestMasterStatusServlet {
 
     MetricsRegionServer rms = Mockito.mock(MetricsRegionServer.class);
     Mockito.doReturn(new MetricsRegionServerWrapperStub()).when(rms).getRegionServerWrapper();
-    Mockito.doReturn(rms).when(master).getMetrics();
+    Mockito.doReturn(rms).when(master).getRegionServerMetrics();
 
     // Mock admin
-    admin = Mockito.mock(Admin.class);
+    admin = Mockito.mock(HBaseAdmin.class);
   }
 
   private void setupMockTables() throws IOException {
-    List<TableDescriptor> tables =
-      Arrays.asList(TableDescriptorBuilder.newBuilder(TableName.valueOf("foo")).build(),
-        TableDescriptorBuilder.newBuilder(TableName.valueOf("bar")).build());
-    Mockito.doReturn(tables).when(admin).listTableDescriptors();
+    HTableDescriptor tables[] = new HTableDescriptor[] {
+        new HTableDescriptor(TableName.valueOf("foo")),
+        new HTableDescriptor(TableName.valueOf("bar"))
+    };
+    Mockito.doReturn(tables).when(admin).listTables();
   }
 
   @Test
@@ -148,7 +138,7 @@ public class TestMasterStatusServlet {
     List<ServerName> servers = Lists.newArrayList(
         ServerName.valueOf("rootserver,123,12345"),
         ServerName.valueOf("metaserver,123,12345"));
-    Set<ServerName> deadServers = new HashSet<>(
+    Set<ServerName> deadServers = new HashSet<ServerName>(
         Lists.newArrayList(
             ServerName.valueOf("badserver,123,12345"),
             ServerName.valueOf("uglyserver,123,12345"))
@@ -160,4 +150,46 @@ public class TestMasterStatusServlet {
       .setDeadServers(deadServers)
       .render(new StringWriter(), master);
   }
+
+  @Test
+  public void testAssignmentManagerTruncatedList() throws IOException {
+    AssignmentManager am = Mockito.mock(AssignmentManager.class);
+    RegionStates rs = Mockito.mock(RegionStates.class);
+
+    // Add 100 regions as in-transition
+    SortedSet<RegionState> regionsInTransition = new TreeSet<>(RegionStates.REGION_STATE_COMPARATOR);
+    for (byte i = 0; i < 100; i++) {
+      HRegionInfo hri = new HRegionInfo(FAKE_TABLE.getTableName(),
+          new byte[]{i}, new byte[]{(byte) (i+1)});
+      regionsInTransition.add(
+        new RegionState(hri, RegionState.State.CLOSING, 12345L, FAKE_HOST));
+    }
+    // Add hbase:meta in transition as well
+    regionsInTransition.add(
+        new RegionState(HRegionInfo.FIRST_META_REGIONINFO,
+                        RegionState.State.CLOSING, 123L, FAKE_HOST));
+    Mockito.doReturn(rs).when(am).getRegionStates();
+    Mockito.doReturn(regionsInTransition).when(rs).getRegionsInTransition();
+    Mockito.doReturn(regionsInTransition).when(rs).getRegionsInTransitionOrderedByTimestamp();
+
+    // Render to a string
+    StringWriter sw = new StringWriter();
+    new AssignmentManagerStatusTmpl()
+      .setLimit(50)
+      .render(sw, am);
+    String result = sw.toString();
+
+    // Should always include META
+    assertTrue(result.contains(HRegionInfo.FIRST_META_REGIONINFO.getEncodedName()));
+
+    // Make sure we only see 50 of them
+    Matcher matcher = Pattern.compile("CLOSING").matcher(result);
+    int count = 0;
+    while (matcher.find()) {
+      count++;
+    }
+    assertEquals(50, count);
+  }
+
 }
+

@@ -20,17 +20,17 @@
 package org.apache.hadoop.hbase.namequeues;
 
 import com.lmax.disruptor.BlockingWaitStrategy;
+import com.lmax.disruptor.EventFactory;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
-
+import java.util.concurrent.Executors;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.namequeues.request.NamedQueueGetRequest;
 import org.apache.hadoop.hbase.namequeues.response.NamedQueueGetResponse;
 import org.apache.hadoop.hbase.util.Threads;
-import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.apache.yetus.audience.InterfaceStability;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
@@ -42,7 +42,7 @@ import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
-public class NamedQueueRecorder {
+public final class NamedQueueRecorder {
 
   private final Disruptor<RingBufferEnvelope> disruptor;
   private final LogEventHandler logEventHandler;
@@ -63,16 +63,25 @@ public class NamedQueueRecorder {
     int eventCount = conf.getInt("hbase.namedqueue.ringbuffer.size", 1024);
 
     // disruptor initialization with BlockingWaitStrategy
-    this.disruptor = new Disruptor<>(RingBufferEnvelope::new, getEventCount(eventCount),
-      new ThreadFactoryBuilder().setNameFormat(hostingThreadName + ".slowlog.append-pool-%d")
-        .setDaemon(true).setUncaughtExceptionHandler(Threads.LOGGING_EXCEPTION_HANDLER).build(),
+    this.disruptor = new Disruptor<>(getEventFactory(), getEventCount(eventCount), Executors.
+      newSingleThreadExecutor(Threads.getNamedThreadFactory(hostingThreadName
+        + ".slowlog.append-pool")),
       ProducerType.MULTI, new BlockingWaitStrategy());
-    this.disruptor.setDefaultExceptionHandler(new DisruptorExceptionHandler());
+    this.disruptor.handleExceptionsWith(new DisruptorExceptionHandler());
 
     // initialize ringbuffer event handler
     this.logEventHandler = new LogEventHandler(conf);
     this.disruptor.handleEventsWith(new LogEventHandler[]{this.logEventHandler});
     this.disruptor.start();
+  }
+
+  private EventFactory<RingBufferEnvelope> getEventFactory() {
+    return new EventFactory<RingBufferEnvelope>() {
+      @Override
+      public RingBufferEnvelope newInstance() {
+        return new RingBufferEnvelope();
+      }
+    };
   }
 
   public static NamedQueueRecorder getInstance(Configuration conf) {

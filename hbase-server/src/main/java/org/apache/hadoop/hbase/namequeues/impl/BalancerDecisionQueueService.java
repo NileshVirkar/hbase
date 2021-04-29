@@ -19,26 +19,24 @@
 
 package org.apache.hadoop.hbase.namequeues.impl;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.BalancerDecision;
 import org.apache.hadoop.hbase.master.balancer.BaseLoadBalancer;
 import org.apache.hadoop.hbase.namequeues.BalancerDecisionDetails;
 import org.apache.hadoop.hbase.namequeues.NamedQueuePayload;
 import org.apache.hadoop.hbase.namequeues.NamedQueueService;
+import org.apache.hadoop.hbase.namequeues.queue.EvictingQueue;
 import org.apache.hadoop.hbase.namequeues.request.NamedQueueGetRequest;
 import org.apache.hadoop.hbase.namequeues.response.NamedQueueGetResponse;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.RecentLogs;
-import org.apache.hbase.thirdparty.com.google.common.collect.EvictingQueue;
-import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-import org.apache.hbase.thirdparty.com.google.common.collect.Queues;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.protobuf.generated.RecentLogs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Queue;
-import java.util.stream.Collectors;
+
+import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
  * In-memory Queue service provider for Balancer Decision events
@@ -56,7 +54,7 @@ public class BalancerDecisionQueueService implements NamedQueueService {
 
   private static final int REGION_PLANS_THRESHOLD_PER_BALANCER = 15;
 
-  private final Queue<RecentLogs.BalancerDecision> balancerDecisionQueue;
+  private final EvictingQueue<RecentLogs.BalancerDecision> balancerDecisionQueue;
 
   public BalancerDecisionQueueService(Configuration conf) {
     isBalancerDecisionRecording = conf.getBoolean(BaseLoadBalancer.BALANCER_DECISION_BUFFER_ENABLED,
@@ -67,9 +65,7 @@ public class BalancerDecisionQueueService implements NamedQueueService {
     }
     final int queueSize =
       conf.getInt(BALANCER_DECISION_QUEUE_SIZE, DEFAULT_BALANCER_DECISION_QUEUE_SIZE);
-    final EvictingQueue<RecentLogs.BalancerDecision> evictingQueue =
-      EvictingQueue.create(queueSize);
-    balancerDecisionQueue = Queues.synchronizedQueue(evictingQueue);
+    balancerDecisionQueue = EvictingQueue.create(queueSize);
   }
 
   @Override
@@ -126,8 +122,7 @@ public class BalancerDecisionQueueService implements NamedQueueService {
       return null;
     }
     List<RecentLogs.BalancerDecision> balancerDecisions =
-      Arrays.stream(balancerDecisionQueue.toArray(new RecentLogs.BalancerDecision[0]))
-        .collect(Collectors.toList());
+      Arrays.asList(balancerDecisionQueue.toArray(new RecentLogs.BalancerDecision[0]));
     // latest records should be displayed first, hence reverse order sorting
     Collections.reverse(balancerDecisions);
     int limit = balancerDecisions.size();

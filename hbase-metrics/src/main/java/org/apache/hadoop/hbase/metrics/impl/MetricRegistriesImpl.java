@@ -16,18 +16,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+
 package org.apache.hadoop.hbase.metrics.impl;
 
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Optional;
 import java.util.Set;
-
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.metrics.MetricRegistries;
 import org.apache.hadoop.hbase.metrics.MetricRegistry;
 import org.apache.hadoop.hbase.metrics.MetricRegistryFactory;
 import org.apache.hadoop.hbase.metrics.MetricRegistryInfo;
-import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
+import org.apache.hbase.thirdparty.com.google.common.base.Supplier;
 
 /**
  * Implementation of MetricRegistries that does ref-counting.
@@ -47,8 +50,13 @@ public class MetricRegistriesImpl extends MetricRegistries {
   }
 
   @Override
-  public MetricRegistry create(MetricRegistryInfo info) {
-    return registries.put(info, () -> factory.create(info));
+  public MetricRegistry create(final MetricRegistryInfo info) {
+    return registries.put(info, new Supplier<MetricRegistry>() {
+      @Override
+      public MetricRegistry get() {
+        return factory.create(info);
+      }
+    });
   }
 
   @Override
@@ -58,7 +66,7 @@ public class MetricRegistriesImpl extends MetricRegistries {
 
   @Override
   public Optional<MetricRegistry> get(MetricRegistryInfo info) {
-    return Optional.ofNullable(registries.get(info));
+    return Optional.fromNullable(registries.get(info));
   }
 
   @Override

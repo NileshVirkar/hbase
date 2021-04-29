@@ -1,4 +1,5 @@
-/**
+/*
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,25 +20,27 @@ package org.apache.hadoop.hbase.replication.master;
 
 import java.io.IOException;
 import java.util.Collections;
-import java.util.Map;
+import java.util.List;
 import java.util.Set;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.hadoop.hbase.master.HMaster;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.master.cleaner.BaseLogCleanerDelegate;
 import org.apache.hadoop.hbase.replication.ReplicationException;
-import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
-import org.apache.hadoop.hbase.replication.ReplicationStorageFactory;
-import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
-import org.apache.hbase.thirdparty.org.apache.commons.collections4.MapUtils;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.replication.ReplicationFactory;
+import org.apache.hadoop.hbase.replication.ReplicationQueuesClient;
+import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
+import org.apache.zookeeper.KeeperException;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Predicate;
+import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableSet;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
+import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
 /**
  * Implementation of a log cleaner that checks if a log is still scheduled for
@@ -45,100 +48,130 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
  */
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.CONFIG)
 public class ReplicationLogCleaner extends BaseLogCleanerDelegate {
-  private static final Logger LOG = LoggerFactory.getLogger(ReplicationLogCleaner.class);
-  private ZKWatcher zkw = null;
-  private boolean shareZK = false;
-  private ReplicationQueueStorage queueStorage;
+  private static final Log LOG = LogFactory.getLog(ReplicationLogCleaner.class);
+  private ZooKeeperWatcher zkw;
+  private ReplicationQueuesClient replicationQueues;
   private boolean stopped = false;
-  private Set<String> wals;
-  private long readZKTimestamp = 0;
 
-  @Override
-  public void preClean() {
-    readZKTimestamp = EnvironmentEdgeManager.currentTime();
-    try {
-      // The concurrently created new WALs may not be included in the return list,
-      // but they won't be deleted because they're not in the checking set.
-      wals = queueStorage.getAllWALs();
-    } catch (ReplicationException e) {
-      LOG.warn("Failed to read zookeeper, skipping checking deletable files");
-      wals = null;
-    }
-  }
 
   @Override
   public Iterable<FileStatus> getDeletableFiles(Iterable<FileStatus> files) {
-    // all members of this class are null if replication is disabled,
-    // so we cannot filter the files
+   // all members of this class are null if replication is disabled,
+   // so we cannot filter the files
     if (this.getConf() == null) {
       return files;
     }
 
-    if (wals == null) {
+    final Set<String> wals;
+    try {
+      // The concurrently created new WALs may not be included in the return list,
+      // but they won't be deleted because they're not in the checking set.
+      wals = loadWALsFromQueues();
+    } catch (KeeperException e) {
+      LOG.warn("Failed to read zookeeper, skipping checking deletable files");
       return Collections.emptyList();
     }
     return Iterables.filter(files, new Predicate<FileStatus>() {
       @Override
       public boolean apply(FileStatus file) {
-        // just for overriding the findbugs NP warnings, as the parameter is marked as Nullable in
-        // the guava Predicate.
-        if (file == null) {
-          return false;
-        }
         String wal = file.getPath().getName();
         boolean logInReplicationQueue = wals.contains(wal);
-        if (logInReplicationQueue) {
-          LOG.debug("Found up in ZooKeeper, NOT deleting={}", wal);
+        if (LOG.isDebugEnabled()) {
+          if (logInReplicationQueue) {
+            LOG.debug("Found log in ZK, keeping: " + wal);
+          } else {
+            LOG.debug("Didn't find this log in ZK, deleting: " + wal);
+          }
         }
-        return !logInReplicationQueue && (file.getModificationTime() < readZKTimestamp);
+       return !logInReplicationQueue;
+      }
+      public boolean test(FileStatus file) {
+        return apply(file);
       }
     });
   }
 
-  @Override
-  public void init(Map<String, Object> params) {
-    super.init(params);
-    try {
-      if (MapUtils.isNotEmpty(params)) {
-        Object master = params.get(HMaster.MASTER);
-        if (master != null && master instanceof HMaster) {
-          zkw = ((HMaster) master).getZooKeeper();
-          shareZK = true;
+  /**
+   * Load all wals in all replication queues from ZK. This method guarantees to return a
+   * snapshot which contains all WALs in the zookeeper at the start of this call even there
+   * is concurrent queue failover. However, some newly created WALs during the call may
+   * not be included.
+   */
+  private Set<String> loadWALsFromQueues() throws KeeperException {
+    for (int retry = 0; ; retry++) {
+      int v0 = replicationQueues.getQueuesZNodeCversion();
+      List<String> rss = replicationQueues.getListOfReplicators();
+      if (rss == null || rss.isEmpty()) {
+        LOG.debug("Didn't find any region server that replicates, won't prevent any deletions.");
+        return ImmutableSet.of();
+      }
+      Set<String> wals = Sets.newHashSet();
+      for (String rs : rss) {
+        List<String> listOfPeers = replicationQueues.getAllQueues(rs);
+        // if rs just died, this will be null
+        if (listOfPeers == null) {
+          continue;
+        }
+        for (String id : listOfPeers) {
+          List<String> peersWals = replicationQueues.getLogsInQueue(rs, id);
+          if (peersWals != null) {
+            wals.addAll(peersWals);
+          }
         }
       }
-      if (zkw == null) {
-        zkw = new ZKWatcher(getConf(), "replicationLogCleaner", null);
+      int v1 = replicationQueues.getQueuesZNodeCversion();
+      if (v0 == v1) {
+        return wals;
       }
-      this.queueStorage = ReplicationStorageFactory.getReplicationQueueStorage(zkw, getConf());
+      LOG.info(String.format("Replication queue node cversion changed from %d to %d, retry = %d",
+          v0, v1, retry));
+    }
+  }
+
+  @Override
+  public void setConf(Configuration config) {
+    // If replication is disabled, keep all members null
+    if (!config.getBoolean(HConstants.REPLICATION_ENABLE_KEY,
+        HConstants.REPLICATION_ENABLE_DEFAULT)) {
+      LOG.warn("Not configured - allowing all wals to be deleted");
+      return;
+    }
+    // Make my own Configuration.  Then I'll have my own connection to zk that
+    // I can close myself when comes time.
+    Configuration conf = new Configuration(config);
+    try {
+      setConf(conf, new ZooKeeperWatcher(conf, "replicationLogCleaner", null));
     } catch (IOException e) {
       LOG.error("Error while configuring " + this.getClass().getName(), e);
     }
   }
 
   @InterfaceAudience.Private
-  public void setConf(Configuration conf, ZKWatcher zk) {
+  public void setConf(Configuration conf, ZooKeeperWatcher zk) {
     super.setConf(conf);
     try {
       this.zkw = zk;
-      this.queueStorage = ReplicationStorageFactory.getReplicationQueueStorage(zk, conf);
-    } catch (Exception e) {
+      this.replicationQueues = ReplicationFactory.getReplicationQueuesClient(zkw, conf,
+          new WarnOnlyAbortable());
+      this.replicationQueues.init();
+    } catch (ReplicationException e) {
       LOG.error("Error while configuring " + this.getClass().getName(), e);
     }
   }
 
   @InterfaceAudience.Private
-  public void setConf(Configuration conf, ZKWatcher zk,
-      ReplicationQueueStorage replicationQueueStorage) {
+  public void setConf(Configuration conf, ZooKeeperWatcher zk, 
+      ReplicationQueuesClient replicationQueuesClient) {
     super.setConf(conf);
     this.zkw = zk;
-    this.queueStorage = replicationQueueStorage;
+    this.replicationQueues = replicationQueuesClient;
   }
 
   @Override
   public void stop(String why) {
     if (this.stopped) return;
     this.stopped = true;
-    if (!shareZK && this.zkw != null) {
+    if (this.zkw != null) {
       LOG.info("Stopping " + this.zkw);
       this.zkw.close();
     }
@@ -147,5 +180,21 @@ public class ReplicationLogCleaner extends BaseLogCleanerDelegate {
   @Override
   public boolean isStopped() {
     return this.stopped;
+  }
+
+  public static class WarnOnlyAbortable implements Abortable {
+
+    @Override
+    public void abort(String why, Throwable e) {
+      LOG.warn("ReplicationLogCleaner received abort, ignoring.  Reason: " + why);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug(e);
+      }
+    }
+
+    @Override
+    public boolean isAborted() {
+      return false;
+    }
   }
 }

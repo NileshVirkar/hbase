@@ -28,9 +28,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FSDataOutputStreamBuilder;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
@@ -40,22 +42,17 @@ import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.ipc.RemoteException;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Utility methods for interacting with the underlying file system.
- * <p/>
- * Note that {@link #setStoragePolicy(FileSystem, Path, String)} is tested in TestFSUtils and
- * pre-commit will run the hbase-server tests if there's code change in this class. See
- * <a href="https://issues.apache.org/jira/browse/HBASE-20838">HBASE-20838</a> for more details.
  */
 @InterfaceAudience.Private
-public final class CommonFSUtils {
-  private static final Logger LOG = LoggerFactory.getLogger(CommonFSUtils.class);
+public abstract class CommonFSUtils {
+  private static final Log LOG = LogFactory.getLog(CommonFSUtils.class);
 
   /** Parameter name for HBase WAL directory */
   public static final String HBASE_WAL_DIR = "hbase.wal.dir";
@@ -67,7 +64,8 @@ public final class CommonFSUtils {
   /** Full access permissions (starting point for a umask) */
   public static final String FULL_RWX_PERMISSIONS = "777";
 
-  private CommonFSUtils() {
+  protected CommonFSUtils() {
+    super();
   }
 
   /**
@@ -197,7 +195,7 @@ public final class CommonFSUtils {
   public static FSDataOutputStream create(FileSystem fs, Path path,
       FsPermission perm, boolean overwrite) throws IOException {
     if (LOG.isTraceEnabled()) {
-      LOG.trace("Creating file={} with permission={}, overwrite={}", path, perm, overwrite);
+      LOG.trace("Creating file=" + path + " with permission=" + perm + ", overwrite=" + overwrite);
     }
     return fs.create(path, perm, overwrite, getDefaultBufferSize(fs),
         getDefaultReplication(fs, path), getDefaultBlockSize(fs, path), null);
@@ -285,7 +283,7 @@ public final class CommonFSUtils {
   }
 
   /**
-   * Return the 'path' component of a Path.  In Hadoop, Path is a URI.  This
+   * Return the 'path' component of a Path.  In Hadoop, Path is an URI.  This
    * method returns the 'path' component of a Path's URI: e.g. If a Path is
    * <code>hdfs://example.org:9000/hbase_trunk/TestTable/compaction.dir</code>,
    * this method returns <code>/hbase_trunk/TestTable/compaction.dir</code>.
@@ -307,7 +305,7 @@ public final class CommonFSUtils {
   public static Path getRootDir(final Configuration c) throws IOException {
     Path p = new Path(c.get(HConstants.HBASE_DIR));
     FileSystem fs = p.getFileSystem(c);
-    return p.makeQualified(fs.getUri(), fs.getWorkingDirectory());
+    return p.makeQualified(fs);
   }
 
   public static void setRootDir(final Configuration c, final Path root) {
@@ -316,10 +314,6 @@ public final class CommonFSUtils {
 
   public static void setFsDefault(final Configuration c, final Path root) {
     c.set("fs.defaultFS", root.toString());    // for hadoop 0.21+
-  }
-
-  public static void setFsDefault(final Configuration c, final String uri) {
-    c.set("fs.defaultFS", uri); // for hadoop 0.21+
   }
 
   public static FileSystem getRootDirFileSystem(final Configuration c) throws IOException {
@@ -339,21 +333,7 @@ public final class CommonFSUtils {
       return getRootDir(c);
     }
     FileSystem fs = p.getFileSystem(c);
-    return p.makeQualified(fs.getUri(), fs.getWorkingDirectory());
-  }
-
-  /**
-   * Returns the URI in the string format
-   * @param c configuration
-   * @param p path
-   * @return - the URI's to string format
-   * @throws IOException
-   */
-  public static String getDirUri(final Configuration c, Path p) throws IOException {
-    if (p.toUri().getScheme() != null) {
-      return p.toUri().toString();
-    }
-    return null;
+    return p.makeQualified(fs);
   }
 
   public static void setWALRootDir(final Configuration c, final Path root) {
@@ -373,56 +353,13 @@ public final class CommonFSUtils {
 
   private static boolean isValidWALRootDir(Path walDir, final Configuration c) throws IOException {
     Path rootDir = getRootDir(c);
-    FileSystem fs = walDir.getFileSystem(c);
-    Path qualifiedWalDir = walDir.makeQualified(fs.getUri(), fs.getWorkingDirectory());
-    if (!qualifiedWalDir.equals(rootDir)) {
-      if (qualifiedWalDir.toString().startsWith(rootDir.toString() + "/")) {
+    if (walDir != rootDir) {
+      if (walDir.toString().startsWith(rootDir.toString() + "/")) {
         throw new IllegalStateException("Illegal WAL directory specified. " +
-          "WAL directories are not permitted to be under root directory: rootDir=" +
-          rootDir.toString() + ", qualifiedWALDir=" + qualifiedWalDir);
+            "WAL directories are not permitted to be under the root directory if set.");
       }
     }
     return true;
-  }
-
-  /**
-   * Returns the WAL region directory based on the given table name and region name
-   * @param conf configuration to determine WALRootDir
-   * @param tableName Table that the region is under
-   * @param encodedRegionName Region name used for creating the final region directory
-   * @return the region directory used to store WALs under the WALRootDir
-   * @throws IOException if there is an exception determining the WALRootDir
-   */
-  public static Path getWALRegionDir(final Configuration conf, final TableName tableName,
-      final String encodedRegionName) throws IOException {
-    return new Path(getWALTableDir(conf, tableName), encodedRegionName);
-  }
-
-  /**
-   * Returns the Table directory under the WALRootDir for the specified table name
-   * @param conf configuration used to get the WALRootDir
-   * @param tableName Table to get the directory for
-   * @return a path to the WAL table directory for the specified table
-   * @throws IOException if there is an exception determining the WALRootDir
-   */
-  public static Path getWALTableDir(final Configuration conf, final TableName tableName)
-      throws IOException {
-    Path baseDir = new Path(getWALRootDir(conf), HConstants.BASE_NAMESPACE_DIR);
-    return new Path(new Path(baseDir, tableName.getNamespaceAsString()),
-      tableName.getQualifierAsString());
-  }
-
-  /**
-   * For backward compatibility with HBASE-20734, where we store recovered edits in a wrong
-   * directory without BASE_NAMESPACE_DIR. See HBASE-22617 for more details.
-   * @deprecated For compatibility, will be removed in 4.0.0.
-   */
-  @Deprecated
-  public static Path getWrongWALRegionDir(final Configuration conf, final TableName tableName,
-      final String encodedRegionName) throws IOException {
-    Path wrongTableDir = new Path(new Path(getWALRootDir(conf), tableName.getNamespaceAsString()),
-      tableName.getQualifierAsString());
-    return new Path(wrongTableDir, encodedRegionName);
   }
 
   /**
@@ -439,16 +376,21 @@ public final class CommonFSUtils {
   }
 
   /**
-   * Returns the {@link org.apache.hadoop.fs.Path} object representing the region directory under
-   * path rootdir
+   * Returns the {@link org.apache.hadoop.fs.Path} object representing the region
+   * directory under path rootdir
    *
-   * @param rootdir qualified path of HBase root directory
-   * @param tableName name of table
+   * @param rootdir    qualified path of HBase root directory
+   * @param tableName  name of table
    * @param regionName The encoded region name
    * @return {@link org.apache.hadoop.fs.Path} for region
    */
   public static Path getRegionDir(Path rootdir, TableName tableName, String regionName) {
     return new Path(getTableDir(rootdir, tableName), regionName);
+  }
+
+  public static Path getWALTableDir(Configuration c, TableName tableName) throws IOException {
+    return new Path(getNamespaceDir(getWALRootDir(c), tableName.getNamespaceAsString()),
+        tableName.getQualifierAsString());
   }
 
   /**
@@ -476,26 +418,52 @@ public final class CommonFSUtils {
         new Path(namespace)));
   }
 
-  // this mapping means that under a federated FileSystem implementation, we'll
-  // only log the first failure from any of the underlying FileSystems at WARN and all others
-  // will be at DEBUG.
-  private static final Map<FileSystem, Boolean> warningMap = new ConcurrentHashMap<>();
-
   /**
-   * Sets storage policy for given path.
+   * Sets storage policy for given path according to config setting.
    * If the passed path is a directory, we'll set the storage policy for all files
    * created in the future in said directory. Note that this change in storage
    * policy takes place at the FileSystem level; it will persist beyond this RS's lifecycle.
-   * If we're running on a version of FileSystem that doesn't support the given storage policy
+   * If we're running on a FileSystem implementation that doesn't support the given storage policy
    * (or storage policies at all), then we'll issue a log message and continue.
    *
    * See http://hadoop.apache.org/docs/r2.6.0/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html
    *
    * @param fs We only do anything it implements a setStoragePolicy method
+   * @param conf used to look up storage policy with given key; not modified.
    * @param path the Path whose storage policy is to be set
-   * @param storagePolicy Policy to set on <code>path</code>; see hadoop 2.6+
-   *   org.apache.hadoop.hdfs.protocol.HdfsConstants for possible list e.g
-   *   'COLD', 'WARM', 'HOT', 'ONE_SSD', 'ALL_SSD', 'LAZY_PERSIST'.
+   * @param policyKey Key to use pulling a policy from Configuration:
+   *   e.g. HConstants.WAL_STORAGE_POLICY (hbase.wal.storage.policy).
+   * @param defaultPolicy if the configured policy is equal to this policy name, we will skip
+   *   telling the FileSystem to set a storage policy.
+   */
+  public static void setStoragePolicy(final FileSystem fs, final Configuration conf,
+      final Path path, final String policyKey, final String defaultPolicy) {
+    String storagePolicy = conf.get(policyKey, defaultPolicy).toUpperCase(Locale.ROOT);
+    if (storagePolicy.equals(defaultPolicy)) {
+      if (LOG.isTraceEnabled()) {
+        LOG.trace("default policy of " + defaultPolicy + " requested, exiting early.");
+      }
+      return;
+    }
+    setStoragePolicy(fs, path, storagePolicy);
+  }
+
+  private static final Map<FileSystem, Boolean> warningMap = new ConcurrentHashMap<>();
+
+  /**
+   * Sets storage policy for given path.
+   * <p>
+   * If the passed path is a directory, we'll set the storage policy for all files
+   * created in the future in said directory. Note that this change in storage
+   * policy takes place at the HDFS level; it will persist beyond this RS's lifecycle.
+   * If we're running on a version of HDFS that doesn't support the given storage policy
+   * (or storage policies at all), then we'll issue a log message and continue.
+   * See http://hadoop.apache.org/docs/r2.6.0/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html
+   * for possible list e.g 'COLD', 'WARM', 'HOT', 'ONE_SSD', 'ALL_SSD', 'LAZY_PERSIST'.
+   *
+   * @param fs We only do anything if an instance of DistributedFileSystem
+   * @param path the Path whose storage policy is to be set
+   * @param storagePolicy Policy to set on <code>path</code>
    */
   public static void setStoragePolicy(final FileSystem fs, final Path path,
       final String storagePolicy) {
@@ -517,19 +485,33 @@ public final class CommonFSUtils {
     }
     String trimmedStoragePolicy = storagePolicy.trim();
     if (trimmedStoragePolicy.isEmpty()) {
-      LOG.trace("We were passed an empty storagePolicy, exiting early.");
+      if (LOG.isTraceEnabled()) {
+        LOG.trace("We were passed an empty storagePolicy, exiting early.");
+      }
       return;
     } else {
       trimmedStoragePolicy = trimmedStoragePolicy.toUpperCase(Locale.ROOT);
     }
     if (trimmedStoragePolicy.equals(HConstants.DEFER_TO_HDFS_STORAGE_POLICY)) {
-      LOG.trace("We were passed the defer-to-hdfs policy {}, exiting early.", trimmedStoragePolicy);
+      if (LOG.isTraceEnabled()) {
+        LOG.trace(
+          "We were passed the defer-to-hdfs policy " + trimmedStoragePolicy + ", exiting early.");
+      }
       return;
     }
     try {
       invokeSetStoragePolicy(fs, path, trimmedStoragePolicy);
     } catch (IOException e) {
-      LOG.trace("Failed to invoke set storage policy API on FS", e);
+      if (!warningMap.containsKey(fs)) {
+        warningMap.put(fs, true);
+        LOG.warn("Failed to invoke set storage policy API on FS; presuming it doesn't "
+            + "support setStoragePolicy. Unable to set storagePolicy=" + trimmedStoragePolicy
+            + " on path=" + path);
+      } else if (LOG.isDebugEnabled()) {
+        LOG.debug("Failed to invoke set storage policy API on FS; presuming it doesn't "
+            + "support setStoragePolicy. Unable to set storagePolicy=" + trimmedStoragePolicy
+            + " on path=" + path);
+      }
       if (throwException) {
         throw e;
       }
@@ -545,31 +527,30 @@ public final class CommonFSUtils {
 
     try {
       fs.setStoragePolicy(path, storagePolicy);
-      LOG.debug("Set storagePolicy={} for path={}", storagePolicy, path);
+
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Set storagePolicy=" + storagePolicy + " for path=" + path);
+      }
     } catch (Exception e) {
       toThrow = e;
       // This swallows FNFE, should we be throwing it? seems more likely to indicate dev
       // misuse than a runtime problem with HDFS.
       if (!warningMap.containsKey(fs)) {
         warningMap.put(fs, true);
-        LOG.warn("Unable to set storagePolicy=" + storagePolicy + " for path=" + path + ". " +
-            "DEBUG log level might have more details.", e);
+        LOG.warn("Unable to set storagePolicy=" + storagePolicy + " for path=" + path, e);
       } else if (LOG.isDebugEnabled()) {
         LOG.debug("Unable to set storagePolicy=" + storagePolicy + " for path=" + path, e);
       }
 
-      // Hadoop 2.8+, 3.0-a1+ added FileSystem.setStoragePolicy with a default implementation
-      // that throws UnsupportedOperationException
-      if (e instanceof UnsupportedOperationException) {
+      // check for lack of HDFS-7228
+      if (e instanceof RemoteException &&
+          HadoopIllegalArgumentException.class.getName().equals(
+            ((RemoteException)e).getClassName())) {
         if (LOG.isDebugEnabled()) {
-          LOG.debug("The underlying FileSystem implementation doesn't support " +
-              "setStoragePolicy. This is probably intentional on their part, since HDFS-9345 " +
-              "appears to be present in your version of Hadoop. For more information check " +
-              "the Hadoop documentation on 'ArchivalStorage', the Hadoop FileSystem " +
-              "specification docs from HADOOP-11981, and/or related documentation from the " +
-              "provider of the underlying FileSystem (its name should appear in the " +
-              "stacktrace that accompanies this message). Note in particular that Hadoop's " +
-              "local filesystem implementation doesn't support storage policies.", e);
+          LOG.debug("Given storage policy, '" +storagePolicy +"', was rejected and probably " +
+            "isn't a valid policy for the version of Hadoop you're running. I.e. if you're " +
+            "trying to use SSD related policies then you're likely missing HDFS-7228. For " +
+            "more information see the 'ArchivalStorage' docs for your Hadoop release.");
         }
       }
     }
@@ -630,7 +611,7 @@ public final class CommonFSUtils {
     } catch (FileNotFoundException fnfe) {
       // if directory doesn't exist, return null
       if (LOG.isTraceEnabled()) {
-        LOG.trace("{} doesn't exist", dir);
+        LOG.trace(dir + " doesn't exist");
       }
     }
     if (status == null || status.length < 1) {
@@ -673,7 +654,7 @@ public final class CommonFSUtils {
     } catch (FileNotFoundException fnfe) {
       // if directory doesn't exist, return null
       if (LOG.isTraceEnabled()) {
-        LOG.trace("{} doesn't exist", dir);
+        LOG.trace(dir + " doesn't exist");
       }
     }
     return status;
@@ -712,18 +693,18 @@ public final class CommonFSUtils {
    * @param log log to output information
    * @throws IOException if an unexpected exception occurs
    */
-  public static void logFileSystemState(final FileSystem fs, final Path root, Logger log)
+  public static void logFileSystemState(final FileSystem fs, final Path root, Log log)
       throws IOException {
-    log.debug("File system contents for path {}", root);
+    log.debug("Current file system:");
     logFSTree(log, fs, root, "|-");
   }
 
   /**
    * Recursive helper to log the state of the FS
    *
-   * @see #logFileSystemState(FileSystem, Path, Logger)
+   * @see #logFileSystemState(FileSystem, Path, Log)
    */
-  private static void logFSTree(Logger log, final FileSystem fs, final Path root, String prefix)
+  private static void logFSTree(Log log, final FileSystem fs, final Path root, String prefix)
       throws IOException {
     FileStatus[] files = listStatus(fs, root, null);
     if (files == null) {
@@ -766,82 +747,82 @@ public final class CommonFSUtils {
     conf.setIfUnset(dfsKey, Integer.toString(hbaseSize));
   }
 
-  private static final class DfsBuilderUtility {
-    private static final Class<?> BUILDER;
-    private static final Method REPLICATE;
-
+  // Holder singleton idiom. JVM spec ensures this will be run at most once per Classloader, and
+  // not until we attempt to reference it.
+  private static class StreamCapabilities {
+    public static final boolean PRESENT;
+    public static final Class<?> CLASS;
+    public static final Method METHOD;
     static {
-      String builderName = "org.apache.hadoop.hdfs.DistributedFileSystem$HdfsDataOutputStreamBuilder";
-      Class<?> builderClass = null;
+      boolean tmp = false;
+      Class<?> clazz = null;
+      Method method = null;
       try {
-        builderClass = Class.forName(builderName);
-      } catch (ClassNotFoundException e) {
-        LOG.debug("{} not available, will not set replicate when creating output stream", builderName);
-      }
-      Method replicateMethod = null;
-      if (builderClass != null) {
-        try {
-          replicateMethod = builderClass.getMethod("replicate");
-          LOG.debug("Using builder API via reflection for DFS file creation.");
-        } catch (NoSuchMethodException e) {
-          LOG.debug("Could not find replicate method on builder; will not set replicate when" +
-            " creating output stream", e);
-        }
-      }
-      BUILDER = builderClass;
-      REPLICATE = replicateMethod;
-    }
-
-    /**
-     * Attempt to use builder API via reflection to call the replicate method on the given builder.
-     */
-    static void replicate(FSDataOutputStreamBuilder<?, ?> builder) {
-      if (BUILDER != null && REPLICATE != null && BUILDER.isAssignableFrom(builder.getClass())) {
-        try {
-          REPLICATE.invoke(builder);
-        } catch (IllegalAccessException | InvocationTargetException e) {
-          // Should have caught this failure during initialization, so log full trace here
-          LOG.warn("Couldn't use reflection with builder API", e);
-        }
+        clazz = Class.forName("org.apache.hadoop.fs.StreamCapabilities");
+        method = clazz.getMethod("hasCapability", String.class);
+        tmp = true;
+      } catch(ClassNotFoundException|NoSuchMethodException|SecurityException exception) {
+        LOG.warn("Your Hadoop installation does not include the StreamCapabilities class from " +
+                 "HDFS-11644, so we will skip checking if any FSDataOutputStreams actually " +
+                 "support hflush/hsync. If you are running on top of HDFS this probably just " +
+                 "means you have an older version and this can be ignored. If you are running on " +
+                 "top of an alternate FileSystem implementation you should manually verify that " +
+                 "hflush and hsync are implemented; otherwise you risk data loss and hard to " +
+                 "diagnose errors when our assumptions are violated.");
+        LOG.debug("The first request to check for StreamCapabilities came from this stacktrace.",
+            exception);
+      } finally {
+        PRESENT = tmp;
+        CLASS = clazz;
+        METHOD = method;
       }
     }
   }
 
   /**
-   * Attempt to use builder API via reflection to create a file with the given parameters and
-   * replication enabled.
-   * <p/>
-   * Will not attempt to enable replication when passed an HFileSystem.
+   * If our FileSystem version includes the StreamCapabilities class, check if
+   * the given stream has a particular capability.
+   * @param stream capabilities are per-stream instance, so check this one specifically. must not be
+   *        null
+   * @param capability what to look for, per Hadoop Common's FileSystem docs
+   * @return true if there are no StreamCapabilities. false if there are, but this stream doesn't
+   *         implement it. return result of asking the stream otherwise.
    */
-  public static FSDataOutputStream createForWal(FileSystem fs, Path path, boolean overwrite)
-    throws IOException {
-    FSDataOutputStreamBuilder<?, ?> builder = fs.createFile(path).overwrite(overwrite);
-    DfsBuilderUtility.replicate(builder);
-    return builder.build();
-  }
-
-  /**
-   * Attempt to use builder API via reflection to create a file with the given parameters and
-   * replication enabled.
-   * <p/>
-   * Will not attempt to enable replication when passed an HFileSystem.
-   */
-  public static FSDataOutputStream createForWal(FileSystem fs, Path path, boolean overwrite,
-    int bufferSize, short replication, long blockSize, boolean isRecursive) throws IOException {
-    FSDataOutputStreamBuilder<?, ?> builder = fs.createFile(path).overwrite(overwrite)
-      .bufferSize(bufferSize).replication(replication).blockSize(blockSize);
-    if (isRecursive) {
-      builder.recursive();
+  public static boolean hasCapability(FSDataOutputStream stream, String capability) {
+    // be consistent whether or not StreamCapabilities is present
+    if (stream == null) {
+      throw new NullPointerException("stream parameter must not be null.");
     }
-    DfsBuilderUtility.replicate(builder);
-    return builder.build();
+    // If o.a.h.fs.StreamCapabilities doesn't exist, assume everyone does everything
+    // otherwise old versions of Hadoop will break.
+    boolean result = true;
+    if (StreamCapabilities.PRESENT) {
+      // if StreamCapabilities is present, but the stream doesn't implement it
+      // or we run into a problem invoking the method,
+      // we treat that as equivalent to not declaring anything
+      result = false;
+      if (StreamCapabilities.CLASS.isAssignableFrom(stream.getClass())) {
+        try {
+          result = ((Boolean)StreamCapabilities.METHOD.invoke(stream, capability)).booleanValue();
+        } catch (IllegalAccessException|IllegalArgumentException|InvocationTargetException
+            exception) {
+          LOG.warn("Your Hadoop installation's StreamCapabilities implementation doesn't match " +
+              "our understanding of how it's supposed to work. Please file a JIRA and include " +
+              "the following stack trace. In the mean time we're interpreting this behavior " +
+              "difference as a lack of capability support, which will probably cause a failure.",
+              exception);
+        }
+      }
+    }
+    return result;
   }
 
   /**
    * Helper exception for those cases where the place where we need to check a stream capability
    * is not where we have the needed context to explain the impact and mitigation for a lack.
    */
-  public static class StreamLacksCapabilityException extends Exception {
+  public static class StreamLacksCapabilityException extends IOException {
+    private static final long serialVersionUID = 1L;
     public StreamLacksCapabilityException(String message, Throwable cause) {
       super(message, cause);
     }

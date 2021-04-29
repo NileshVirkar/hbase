@@ -18,17 +18,16 @@
  */
 package org.apache.hadoop.hbase.filter;
 
-import java.io.IOException;
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.ArrayList;
 import java.util.Objects;
-
 import org.apache.hadoop.hbase.Cell;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
 
 /**
  * A filter that will only return the first KV from each row.
@@ -36,6 +35,7 @@ import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferExce
  * This filter can be used to more efficiently perform row count operations.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class FirstKeyOnlyFilter extends FilterBase {
   private boolean foundKV = false;
 
@@ -48,20 +48,21 @@ public class FirstKeyOnlyFilter extends FilterBase {
   }
 
   @Override
-  public boolean filterRowKey(Cell cell) throws IOException {
-    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
-    return false;
-  }
-
-  @Override
-  public ReturnCode filterCell(final Cell c) {
+  public ReturnCode filterKeyValue(Cell v) {
     if(foundKV) return ReturnCode.NEXT_ROW;
     foundKV = true;
     return ReturnCode.INCLUDE;
   }
 
+  // Override here explicitly as the method in super class FilterBase might do a KeyValue recreate.
+  // See HBASE-12068
+  @Override
+  public Cell transformCell(Cell v) {
+    return v;
+  }
+
   public static Filter createFilterFromArguments(ArrayList<byte []> filterArguments) {
-    Preconditions.checkArgument(filterArguments.isEmpty(),
+    Preconditions.checkArgument(filterArguments.size() == 0,
                                 "Expected 0 but got: %s", filterArguments.size());
     return new FirstKeyOnlyFilter();
   }
@@ -110,7 +111,7 @@ public class FirstKeyOnlyFilter extends FilterBase {
   }
 
   /**
-   * @param o the other filter to compare with
+   * @param other
    * @return true if and only if the fields of the filter that are serialized
    * are equal to the corresponding fields in other.  Used for testing.
    */

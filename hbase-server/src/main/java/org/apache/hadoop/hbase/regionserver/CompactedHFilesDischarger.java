@@ -18,23 +18,22 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import java.util.List;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.Stoppable;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.executor.EventType;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * A chore service that periodically cleans up the compacted files when there are no active readers
- * using those compacted files and also helps in clearing the block cache of these compacted
- * file entries.
+ * using those compacted files and also helps in clearing the block cache with these compacted
+ * file entries
  */
 @InterfaceAudience.Private
 public class CompactedHFilesDischarger extends ScheduledChore {
-  private static final Logger LOG = LoggerFactory.getLogger(CompactedHFilesDischarger.class);
+  private static final Log LOG = LogFactory.getLog(CompactedHFilesDischarger.class);
   private RegionServerServices regionServerServices;
   // Default is to use executor
   private boolean useExecutor = true;
@@ -64,53 +63,42 @@ public class CompactedHFilesDischarger extends ScheduledChore {
     this.useExecutor = useExecutor;
   }
 
-  /**
-   * CompactedHFilesDischarger runs asynchronously by default using the hosting
-   * RegionServer's Executor. In tests it can be useful to force a synchronous
-   * cleanup. Use this method to set no-executor before you call run.
-   * @return The old setting for <code>useExecutor</code>
-   */
-  boolean setUseExecutor(final boolean useExecutor) {
-    boolean oldSetting = this.useExecutor;
-    this.useExecutor = useExecutor;
-    return oldSetting;
-  }
-
   @Override
   public void chore() {
-    // Noop if rss is null. This will never happen in a normal condition except for cases
-    // when the test case is not spinning up a cluster
     if (regionServerServices == null) return;
-    List<HRegion> onlineRegions = (List<HRegion>) regionServerServices.getRegions();
-    if (onlineRegions == null) return;
-    for (HRegion region : onlineRegions) {
-      if (LOG.isTraceEnabled()) {
-        LOG.trace("Started compacted hfiles cleaner on " + region.getRegionInfo());
-      }
-      for (HStore store : region.getStores()) {
-        try {
-          if (useExecutor && regionServerServices != null) {
-            CompactedHFilesDischargeHandler handler = new CompactedHFilesDischargeHandler(
-                (Server) regionServerServices, EventType.RS_COMPACTED_FILES_DISCHARGER, store);
-            regionServerServices.getExecutorService().submit(handler);
-          } else {
-            // call synchronously if the RegionServerServices are not
-            // available
-            store.closeAndArchiveCompactedFiles();
-          }
-          if (LOG.isTraceEnabled()) {
-            LOG.trace("Completed archiving the compacted files for the region "
-                + region.getRegionInfo() + " under the store " + store.getColumnFamilyName());
-          }
-        } catch (Exception e) {
-          LOG.error("Exception while trying to close and archive the compacted store "
-              + "files of the store  " + store.getColumnFamilyName() + " in the" + " region "
-              + region.getRegionInfo(), e);
+    List<Region> onlineRegions = regionServerServices.getOnlineRegions();
+    if (onlineRegions != null) {
+      for (Region region : onlineRegions) {
+        if (LOG.isTraceEnabled()) {
+          LOG.trace(
+              "Started the compacted hfiles cleaner for the region " + region.getRegionInfo());
         }
-      }
-      if (LOG.isTraceEnabled()) {
-        LOG.trace(
-            "Completed the compacted hfiles cleaner for the region " + region.getRegionInfo());
+        for (Store store : region.getStores()) {
+          try {
+            if (useExecutor && regionServerServices != null) {
+              CompactedHFilesDischargeHandler handler = new CompactedHFilesDischargeHandler(
+                  (Server) regionServerServices, EventType.RS_COMPACTED_FILES_DISCHARGER,
+                  (HStore) store);
+              regionServerServices.getExecutorService().submit(handler);
+            } else {
+              // call synchronously if the RegionServerServices are not
+              // available
+              store.closeAndArchiveCompactedFiles();
+            }
+            if (LOG.isTraceEnabled()) {
+              LOG.trace("Completed archiving the compacted files for the region "
+                  + region.getRegionInfo() + " under the store " + store.getColumnFamilyName());
+            }
+          } catch (Exception e) {
+            LOG.error("Exception while trying to close and archive the compacted store "
+                + "files of the store  " + store.getColumnFamilyName() + " in the" + " region "
+                + region.getRegionInfo(), e);
+          }
+        }
+        if (LOG.isTraceEnabled()) {
+          LOG.trace(
+              "Completed the compacted hfiles cleaner for the region " + region.getRegionInfo());
+        }
       }
     }
   }

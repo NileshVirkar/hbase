@@ -22,10 +22,9 @@ import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.Key;
 import javax.crypto.spec.IvParameterSpec;
-
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.io.crypto.Decryptor;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.apache.yetus.audience.InterfaceStability;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
@@ -83,8 +82,10 @@ public class AESDecryptor implements Decryptor {
   }
 
   protected void init() {
-    Preconditions.checkState(iv != null, "IV is null");
     try {
+      if (iv == null) {
+        throw new NullPointerException("IV is null");
+      }
       cipher.init(javax.crypto.Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));
     } catch (InvalidKeyException e) {
       throw new RuntimeException(e);

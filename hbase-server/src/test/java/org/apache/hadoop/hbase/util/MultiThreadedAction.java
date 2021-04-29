@@ -23,40 +23,42 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
+import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.RegionLocations;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.RegionLocator;
+import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.HConnection;
+import org.apache.hadoop.hbase.client.HConnectionManager;
 import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.io.compress.Compression.Algorithm;
+import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
+import org.apache.hadoop.hbase.protobuf.generated.ClientProtos.MutationProto.MutationType;
 import org.apache.hadoop.hbase.util.test.LoadTestDataGenerator;
 import org.apache.hadoop.util.StringUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
-import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.MutationProto.MutationType;
-
 /**
  * Common base class for reader and writer parts of multi-thread HBase load
- * test (See LoadTestTool).
+ * test ({@link LoadTestTool}).
  */
 public abstract class MultiThreadedAction {
-  private static final Logger LOG = LoggerFactory.getLogger(MultiThreadedAction.class);
+  private static final Log LOG = LogFactory.getLog(MultiThreadedAction.class);
 
   protected final TableName tableName;
   protected final Configuration conf;
-  protected final Connection connection; // all reader / writer threads will share this connection
+  protected final HConnection connection; // all reader / writer threads will share this connection
 
   protected int numThreads = 1;
 
@@ -78,8 +80,8 @@ public abstract class MultiThreadedAction {
    * Default implementation of LoadTestDataGenerator that uses LoadTestKVGenerator, fixed
    * set of column families, and random number of columns in range. The table for it can
    * be created manually or, for example, via
-   * {@link org.apache.hadoop.hbase.HBaseTestingUtility#createPreSplitLoadTestTable(Configuration, TableName, byte[],
-   * org.apache.hadoop.hbase.io.compress.Compression.Algorithm, org.apache.hadoop.hbase.io.encoding.DataBlockEncoding)}
+   * {@link HBaseTestingUtility#createPreSplitLoadTestTable(
+   * org.apache.hadoop.hbase.Configuration, byte[], byte[], Algorithm, DataBlockEncoding)}
    */
   public static class DefaultDataGenerator extends LoadTestDataGenerator {
     private byte[][] columnFamilies = null;
@@ -102,7 +104,7 @@ public abstract class MultiThreadedAction {
 
     @Override
     public byte[] getDeterministicUniqueKey(long keyBase) {
-      return Bytes.toBytes(LoadTestKVGenerator.md5PrefixedKey(keyBase));
+      return LoadTestKVGenerator.md5PrefixedKey(keyBase).getBytes();
     }
 
     @Override
@@ -115,7 +117,7 @@ public abstract class MultiThreadedAction {
       int numColumns = minColumnsPerKey + random.nextInt(maxColumnsPerKey - minColumnsPerKey + 1);
       byte[][] columns = new byte[numColumns][];
       for (int i = 0; i < numColumns; ++i) {
-        columns[i] = Bytes.toBytes(Integer.toString(i));
+        columns[i] = Integer.toString(i).getBytes();
       }
       return columns;
     }
@@ -144,13 +146,14 @@ public abstract class MultiThreadedAction {
 
   public static final int REPORTING_INTERVAL_MS = 5000;
 
-  public MultiThreadedAction(LoadTestDataGenerator dataGen, Configuration conf, TableName tableName,
-      String actionLetter) throws IOException {
+  public MultiThreadedAction(LoadTestDataGenerator dataGen, Configuration conf,
+                             TableName tableName,
+                             String actionLetter) throws IOException {
     this.conf = conf;
     this.dataGenerator = dataGen;
     this.tableName = tableName;
     this.actionLetter = actionLetter;
-    this.connection = ConnectionFactory.createConnection(conf);
+    this.connection = HConnectionManager.createConnection(conf);
   }
 
   public void start(long startKey, long endKey, int numThreads) throws IOException {
@@ -492,6 +495,7 @@ public abstract class MultiThreadedAction {
   }
 
   private void printLocations(Result r) {
+    RegionLocations rl = null;
     if (r == null) {
       LOG.info("FAILED FOR null Result");
       return;
@@ -500,13 +504,18 @@ public abstract class MultiThreadedAction {
     if (r.getRow() == null) {
       return;
     }
-    try (RegionLocator locator = connection.getRegionLocator(tableName)) {
-      List<HRegionLocation> locs = locator.getRegionLocations(r.getRow());
-      for (HRegionLocation h : locs) {
-        LOG.info("LOCATION " + h);
-      }
+    try {
+      rl = ((ClusterConnection)connection).locateRegion(tableName, r.getRow(), true, true);
     } catch (IOException e) {
       LOG.warn("Couldn't get locations for row " + Bytes.toString(r.getRow()));
+    }
+    if (rl != null) {
+      HRegionLocation locations[] = rl.getRegionLocations();
+      if (locations != null) {
+        for (HRegionLocation h : locations) {
+          LOG.info("LOCATION " + h);
+        }
+      }
     }
   }
 
@@ -533,7 +542,7 @@ public abstract class MultiThreadedAction {
 
   // Parse mutate info into a map of <column name> => <update action>
   private Map<String, MutationType> parseMutateInfo(byte[] mutateInfo) {
-    Map<String, MutationType> mi = new HashMap<>();
+    Map<String, MutationType> mi = new HashMap<String, MutationType>();
     if (mutateInfo != null) {
       String mutateInfoStr = Bytes.toString(mutateInfo);
       String[] mutations = mutateInfoStr.split("#");

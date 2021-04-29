@@ -26,17 +26,16 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-
+import org.apache.commons.collections.buffer.CircularFifoBuffer;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.Threads;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-import org.apache.hbase.thirdparty.org.apache.commons.collections4.queue.CircularFifoQueue;
 
 /**
  * Singleton which keeps track of tasks going on in this VM.
@@ -45,7 +44,7 @@ import org.apache.hbase.thirdparty.org.apache.commons.collections4.queue.Circula
  */
 @InterfaceAudience.Private
 public class TaskMonitor {
-  private static final Logger LOG = LoggerFactory.getLogger(TaskMonitor.class);
+  private static final Log LOG = LogFactory.getLog(TaskMonitor.class);
 
   public static final String MAX_TASKS_KEY = "hbase.taskmonitor.max.tasks";
   public static final int DEFAULT_MAX_TASKS = 1000;
@@ -61,7 +60,7 @@ public class TaskMonitor {
   private final int maxTasks;
   private final long rpcWarnTime;
   private final long expirationTime;
-  private final CircularFifoQueue tasks;
+  private final CircularFifoBuffer tasks;
   private final List<TaskAndWeakRefPair> rpcTasks;
   private final long monitorInterval;
   private Thread monitorThread;
@@ -70,7 +69,7 @@ public class TaskMonitor {
     maxTasks = conf.getInt(MAX_TASKS_KEY, DEFAULT_MAX_TASKS);
     expirationTime = conf.getLong(EXPIRATION_TIME_KEY, DEFAULT_EXPIRATION_TIME);
     rpcWarnTime = conf.getLong(RPC_WARN_TIME_KEY, DEFAULT_RPC_WARN_TIME);
-    tasks = new CircularFifoQueue(maxTasks);
+    tasks = new CircularFifoBuffer(maxTasks);
     rpcTasks = Lists.newArrayList();
     monitorInterval = conf.getLong(MONITOR_INTERVAL_KEY, DEFAULT_MONITOR_INTERVAL);
     monitorThread = new Thread(new MonitorRunnable());
@@ -87,25 +86,19 @@ public class TaskMonitor {
     }
     return instance;
   }
-
+  
   public synchronized MonitoredTask createStatus(String description) {
-    return createStatus(description, false);
-  }
-
-  public synchronized MonitoredTask createStatus(String description, boolean ignore) {
     MonitoredTask stat = new MonitoredTaskImpl();
     stat.setDescription(description);
     MonitoredTask proxy = (MonitoredTask) Proxy.newProxyInstance(
         stat.getClass().getClassLoader(),
         new Class<?>[] { MonitoredTask.class },
-        new PassthroughInvocationHandler<>(stat));
+        new PassthroughInvocationHandler<MonitoredTask>(stat));
     TaskAndWeakRefPair pair = new TaskAndWeakRefPair(stat, proxy);
     if (tasks.isFull()) {
       purgeExpiredTasks();
     }
-    if (!ignore) {
-      tasks.add(pair);
-    }
+    tasks.add(pair);
     return proxy;
   }
 
@@ -115,7 +108,7 @@ public class TaskMonitor {
     MonitoredRPCHandler proxy = (MonitoredRPCHandler) Proxy.newProxyInstance(
         stat.getClass().getClassLoader(),
         new Class<?>[] { MonitoredRPCHandler.class },
-        new PassthroughInvocationHandler<>(stat));
+        new PassthroughInvocationHandler<MonitoredRPCHandler>(stat));
     TaskAndWeakRefPair pair = new TaskAndWeakRefPair(stat, proxy);
     rpcTasks.add(pair);
     return proxy;
@@ -163,52 +156,23 @@ public class TaskMonitor {
    * MonitoredTasks handled by this TaskMonitor.
    * @return A complete list of MonitoredTasks.
    */
-  public List<MonitoredTask> getTasks() {
-    return getTasks(null);
-  }
-
-  /**
-   * Produces a list containing copies of the current state of all non-expired 
-   * MonitoredTasks handled by this TaskMonitor.
-   * @param filter type of wanted tasks
-   * @return A filtered list of MonitoredTasks.
-   */
-  public synchronized List<MonitoredTask> getTasks(String filter) {
+  public synchronized List<MonitoredTask> getTasks() {
     purgeExpiredTasks();
-    TaskFilter taskFilter = createTaskFilter(filter);
-    ArrayList<MonitoredTask> results =
-        Lists.newArrayListWithCapacity(tasks.size() + rpcTasks.size());
-    processTasks(tasks, taskFilter, results);
-    processTasks(rpcTasks, taskFilter, results);
-    return results;
-  }
-
-  /**
-   * Create a task filter according to a given filter type.
-   * @param filter type of monitored task
-   * @return a task filter
-   */
-  private static TaskFilter createTaskFilter(String filter) {
-    switch (TaskFilter.TaskType.getTaskType(filter)) {
-      case GENERAL: return task -> task instanceof MonitoredRPCHandler;
-      case HANDLER: return task -> !(task instanceof MonitoredRPCHandler);
-      case RPC: return task -> !(task instanceof MonitoredRPCHandler) ||
-                               !((MonitoredRPCHandler) task).isRPCRunning();
-      case OPERATION: return task -> !(task instanceof MonitoredRPCHandler) ||
-                                     !((MonitoredRPCHandler) task).isOperationRunning();
-      default: return task -> false;
+    ArrayList<MonitoredTask> ret = Lists.newArrayListWithCapacity(tasks.size() + rpcTasks
+        .size());
+    for (Iterator<TaskAndWeakRefPair> it = tasks.iterator();
+         it.hasNext();) {
+      TaskAndWeakRefPair pair = it.next();
+      MonitoredTask t = pair.get();
+      ret.add(t.clone());
     }
-  }
-
-  private static void processTasks(Iterable<TaskAndWeakRefPair> tasks,
-                                   TaskFilter filter,
-                                   List<MonitoredTask> results) {
-    for (TaskAndWeakRefPair task : tasks) {
-      MonitoredTask t = task.get();
-      if (!filter.filter(t)) {
-        results.add(t.clone());
-      }
+    for (Iterator<TaskAndWeakRefPair> it = rpcTasks.iterator();
+         it.hasNext();) {
+      TaskAndWeakRefPair pair = it.next();
+      MonitoredTask t = pair.get();
+      ret.add(t.clone());
     }
+    return ret;
   }
 
   private boolean canPurge(MonitoredTask stat) {
@@ -246,7 +210,7 @@ public class TaskMonitor {
   /**
    * This class encapsulates an object as well as a weak reference to a proxy
    * that passes through calls to that object. In art form:
-   * <pre>
+   * <code>
    *     Proxy  <------------------
    *       |                       \
    *       v                        \
@@ -255,7 +219,7 @@ public class TaskMonitor {
    * MonitoredTaskImpl            / 
    *       |                     /
    * StatAndWeakRefProxy  ------/
-   * </pre>
+   *
    * Since we only return the Proxy to the creator of the MonitorableStatus,
    * this means that they can leak that object, and we'll detect it
    * since our weak reference will go null. But, we still have the actual
@@ -268,7 +232,7 @@ public class TaskMonitor {
     public TaskAndWeakRefPair(MonitoredTask stat,
         MonitoredTask proxy) {
       this.impl = stat;
-      this.weakProxy = new WeakReference<>(proxy);
+      this.weakProxy = new WeakReference<MonitoredTask>(proxy);
     }
     
     public MonitoredTask get() {
@@ -315,46 +279,5 @@ public class TaskMonitor {
         }
       }
     }
-  }
-
-  private interface TaskFilter {
-    enum TaskType {
-      GENERAL("general"),
-      HANDLER("handler"),
-      RPC("rpc"),
-      OPERATION("operation"),
-      ALL("all");
-
-      private final String type;
-
-      private TaskType(String type) {
-        this.type = type.toLowerCase();
-      }
-
-      static TaskType getTaskType(String type) {
-        if (type == null || type.isEmpty()) {
-          return ALL;
-        }
-        type = type.toLowerCase();
-        for (TaskType taskType : values()) {
-          if (taskType.toString().equals(type)) {
-            return taskType;
-          }
-        }
-        return ALL;
-      }
-
-      @Override
-      public String toString() {
-        return type;
-      }
-    }
-
-    /**
-     * Filter out unwanted task.
-     * @param task monitored task
-     * @return false if a task is accepted, true if it is filtered
-     */
-    boolean filter(MonitoredTask task);
   }
 }

@@ -22,9 +22,9 @@ import java.net.SocketAddress;
 import javax.net.SocketFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.MetricsConnection;
 import org.apache.hadoop.net.NetUtils;
-import org.apache.yetus.audience.InterfaceAudience;
 
 /**
  * Does RPC against a cluster. Manages connections per regionserver in the cluster.

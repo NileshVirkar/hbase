@@ -1,4 +1,5 @@
-/*
+/**
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,6 +22,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+
+import com.google.protobuf.ByteString;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -33,12 +36,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -48,27 +51,27 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.RegionInfoBuilder;
-import org.apache.hadoop.hbase.coordination.SplitLogWorkerCoordination;
-import org.apache.hadoop.hbase.regionserver.HRegion;
-import org.apache.hadoop.hbase.regionserver.wal.FaultyProtobufLogReader;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.generated.WALProtos;
+import org.apache.hadoop.hbase.protobuf.generated.ZooKeeperProtos.SplitLogTask.RecoveryMode;
+import org.apache.hadoop.hbase.regionserver.wal.FaultySequenceFileLogReader;
 import org.apache.hadoop.hbase.regionserver.wal.InstrumentedLogWriter;
 import org.apache.hadoop.hbase.regionserver.wal.ProtobufLogReader;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CancelableProgressable;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.hbase.wal.WAL.Entry;
 import org.apache.hadoop.hbase.wal.WAL.Reader;
@@ -81,7 +84,6 @@ import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -89,24 +91,24 @@ import org.junit.rules.TestName;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
-import org.apache.hbase.thirdparty.com.google.protobuf.ByteString;
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos;
 
 /**
  * Testing {@link WAL} splitting code.
  */
 @Category({RegionServerTests.class, LargeTests.class})
 public class TestWALSplit {
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestWALSplit.class);
-  private final static Logger LOG = LoggerFactory.getLogger(TestWALSplit.class);
+  {
+    // Uncomment the following lines if more verbosity is needed for
+    // debugging (see HBASE-12285 for details).
+    //((Log4JLogger)DataNode.LOG).getLogger().setLevel(Level.ALL);
+    //((Log4JLogger)LeaseManager.LOG).getLogger().setLevel(Level.ALL);
+    //((Log4JLogger)FSNamesystem.LOG).getLogger().setLevel(Level.ALL);
+  }
+  private final static Log LOG = LogFactory.getLog(TestWALSplit.class);
 
   private static Configuration conf;
   private FileSystem fs;
@@ -127,14 +129,16 @@ public class TestWALSplit {
   private static final String FILENAME_BEING_SPLIT = "testfile";
   private static final TableName TABLE_NAME =
       TableName.valueOf("t1");
-  private static final byte[] FAMILY = Bytes.toBytes("f1");
-  private static final byte[] QUALIFIER = Bytes.toBytes("q1");
-  private static final byte[] VALUE = Bytes.toBytes("v1");
+  private static final byte[] FAMILY = "f1".getBytes();
+  private static final byte[] QUALIFIER = "q1".getBytes();
+  private static final byte[] VALUE = "v1".getBytes();
   private static final String WAL_FILE_PREFIX = "wal.dat.";
-  private static List<String> REGIONS = new ArrayList<>();
+  private static List<String> REGIONS = new ArrayList<String>();
+  private static final String HBASE_SKIP_ERRORS = "hbase.hlog.split.skip.errors";
   private static String ROBBER;
   private static String ZOMBIE;
   private static String [] GROUP = new String [] {"supergroup"};
+  private RecoveryMode mode;
 
   static enum Corruptions {
     INSERT_GARBAGE_ON_FIRST_LINE,
@@ -152,7 +156,7 @@ public class TestWALSplit {
     // This is how you turn off shortcircuit read currently.  TODO: Fix.  Should read config.
     System.setProperty("hbase.tests.use.shortcircuit.reads", "false");
     // Create fake maping user to group and set it to the conf.
-    Map<String, String []> u2g_map = new HashMap<>(2);
+    Map<String, String []> u2g_map = new HashMap<String, String []>(2);
     ROBBER = User.getCurrent().getName() + "-robber";
     ZOMBIE = User.getCurrent().getName() + "-zombie";
     u2g_map.put(ROBBER, GROUP);
@@ -179,16 +183,16 @@ public class TestWALSplit {
     HBASELOGDIR = TEST_UTIL.createWALRootDir();
     OLDLOGDIR = new Path(HBASELOGDIR, HConstants.HREGION_OLDLOGDIR_NAME);
     CORRUPTDIR = new Path(HBASELOGDIR, HConstants.CORRUPT_DIR_NAME);
-    TABLEDIR = CommonFSUtils.getTableDir(HBASEDIR, TABLE_NAME);
+    TABLEDIR = FSUtils.getTableDir(HBASEDIR, TABLE_NAME);
     TMPDIRNAME = conf.get(HConstants.TEMPORARY_FS_DIRECTORY_KEY,
       HConstants.DEFAULT_TEMPORARY_HDFS_DIRECTORY);
     REGIONS.clear();
     Collections.addAll(REGIONS, "bbb", "ccc");
     InstrumentedLogWriter.activateFailure = false;
-    wals = new WALFactory(conf, name.getMethodName());
-    WALDIR = new Path(HBASELOGDIR,
-        AbstractFSWALProvider.getWALDirectoryName(ServerName.valueOf(name.getMethodName(),
-            16010, System.currentTimeMillis()).toString()));
+    this.mode = (conf.getBoolean(HConstants.DISTRIBUTED_LOG_REPLAY_KEY, false) ?
+        RecoveryMode.LOG_REPLAY : RecoveryMode.LOG_SPLITTING);
+    wals = new WALFactory(conf, null, name.getMethodName());
+    WALDIR = new Path(HBASELOGDIR, DefaultWALProvider.getWALDirectoryName(name.getMethodName()));
     //fs.mkdirs(WALDIR);
   }
 
@@ -211,8 +215,10 @@ public class TestWALSplit {
   /**
    * Simulates splitting a WAL out from under a regionserver that is still trying to write it.
    * Ensures we do not lose edits.
+   * @throws IOException
+   * @throws InterruptedException
    */
-  @Test
+  @Test (timeout=300000)
   public void testLogCannotBeWrittenOnceParsed() throws IOException, InterruptedException {
     final AtomicLong counter = new AtomicLong(0);
     AtomicBoolean stop = new AtomicBoolean(false);
@@ -227,7 +233,7 @@ public class TestWALSplit {
       while (startCount == counter.get()) Threads.sleep(1);
       // Give it a second to write a few appends.
       Threads.sleep(1000);
-      final Configuration conf2 = HBaseConfiguration.create(conf);
+      final Configuration conf2 = HBaseConfiguration.create(this.conf);
       final User robber = User.createUserForTesting(conf2, ROBBER, GROUP);
       int count = robber.runAs(new PrivilegedExceptionAction<Integer>() {
         @Override
@@ -237,7 +243,7 @@ public class TestWALSplit {
           for (FileStatus status : fs.listStatus(WALDIR)) {
             ls.append("\t").append(status.toString()).append("\n");
           }
-          LOG.debug(Objects.toString(ls));
+          LOG.debug(ls);
           LOG.info("Splitting WALs out from under zombie. Expecting " + numWriters + " files.");
           WALSplitter.split(HBASELOGDIR, WALDIR, OLDLOGDIR, fs, conf2, wals);
           LOG.info("Finished splitting out from under zombie.");
@@ -336,7 +342,7 @@ public class TestWALSplit {
       while (!stop.get()) {
         try {
           long seq = appendEntry(writer, TABLE_NAME, regionBytes,
-              Bytes.toBytes("r" + editsCount.get()), regionBytes, QUALIFIER, VALUE, 0);
+              ("r" + editsCount.get()).getBytes(), regionBytes, QUALIFIER, VALUE, 0);
           long count = editsCount.incrementAndGet();
           LOG.info(getName() + " sync count=" + count + ", seq=" + seq);
           try {
@@ -365,53 +371,52 @@ public class TestWALSplit {
   }
 
   /**
-   * @see "https://issues.apache.org/jira/browse/HBASE-3020"
+   * @throws IOException
+   * @see https://issues.apache.org/jira/browse/HBASE-3020
    */
-  @Test
+  @Test (timeout=300000)
   public void testRecoveredEditsPathForMeta() throws IOException {
-    Path p = createRecoveredEditsPathForRegion();
+    byte [] encoded = HRegionInfo.FIRST_META_REGIONINFO.getEncodedNameAsBytes();
+    Path tdir = FSUtils.getTableDir(HBASEDIR, TableName.META_TABLE_NAME);
+    Path regiondir = new Path(tdir,
+        HRegionInfo.FIRST_META_REGIONINFO.getEncodedName());
+    fs.mkdirs(regiondir);
+    long now = System.currentTimeMillis();
+    Entry entry =
+        new Entry(new WALKey(encoded,
+            TableName.META_TABLE_NAME, 1, now, HConstants.DEFAULT_CLUSTER_ID),
+            new WALEdit());
+    Path p = WALSplitter.getRegionSplitEditsPath(entry,
+        FILENAME_BEING_SPLIT, TMPDIRNAME, conf);
     String parentOfParent = p.getParent().getParent().getName();
-    assertEquals(parentOfParent, RegionInfoBuilder.FIRST_META_REGIONINFO.getEncodedName());
+    assertEquals(parentOfParent, HRegionInfo.FIRST_META_REGIONINFO.getEncodedName());
   }
 
   /**
    * Test old recovered edits file doesn't break WALSplitter.
    * This is useful in upgrading old instances.
    */
-  @Test
+  @Test (timeout=300000)
   public void testOldRecoveredEditsFileSidelined() throws IOException {
-    Path p = createRecoveredEditsPathForRegion();
-    Path tdir = CommonFSUtils.getTableDir(HBASEDIR, TableName.META_TABLE_NAME);
+    byte [] encoded = HRegionInfo.FIRST_META_REGIONINFO.getEncodedNameAsBytes();
+    Path tdir = FSUtils.getTableDir(HBASEDIR, TableName.META_TABLE_NAME);
     Path regiondir = new Path(tdir,
-      RegionInfoBuilder.FIRST_META_REGIONINFO.getEncodedName());
+        HRegionInfo.FIRST_META_REGIONINFO.getEncodedName());
     fs.mkdirs(regiondir);
-    Path parent = WALSplitUtil.getRegionDirRecoveredEditsDir(regiondir);
-    assertEquals(HConstants.RECOVERED_EDITS_DIR, parent.getName());
-    fs.createNewFile(parent); // create a recovered.edits file
-    String parentOfParent = p.getParent().getParent().getName();
-    assertEquals(parentOfParent, RegionInfoBuilder.FIRST_META_REGIONINFO.getEncodedName());
-    WALFactory.createRecoveredEditsWriter(fs, p, conf).close();
-  }
-
-  private Path createRecoveredEditsPathForRegion() throws IOException {
-    byte[] encoded = RegionInfoBuilder.FIRST_META_REGIONINFO.getEncodedNameAsBytes();
     long now = System.currentTimeMillis();
-    Entry entry = new Entry(
-        new WALKeyImpl(encoded, TableName.META_TABLE_NAME, 1, now, HConstants.DEFAULT_CLUSTER_ID),
-        new WALEdit());
-    Path p = WALSplitUtil
-        .getRegionSplitEditsPath(TableName.META_TABLE_NAME, encoded, 1, FILENAME_BEING_SPLIT,
-            TMPDIRNAME, conf);
-    return p;
-  }
+    Entry entry =
+        new Entry(new WALKey(encoded,
+            TableName.META_TABLE_NAME, 1, now, HConstants.DEFAULT_CLUSTER_ID),
+            new WALEdit());
+    Path parent = WALSplitter.getRegionDirRecoveredEditsDir(regiondir);
+    assertEquals(parent.getName(), HConstants.RECOVERED_EDITS_DIR);
+    fs.createNewFile(parent); // create a recovered.edits file
 
-  @Test
-  public void testHasRecoveredEdits() throws IOException {
-    Path p = createRecoveredEditsPathForRegion();
-    assertFalse(WALSplitUtil.hasRecoveredEdits(conf, RegionInfoBuilder.FIRST_META_REGIONINFO));
-    String renamedEdit = p.getName().split("-")[0];
-    fs.createNewFile(new Path(p.getParent(), renamedEdit));
-    assertTrue(WALSplitUtil.hasRecoveredEdits(conf, RegionInfoBuilder.FIRST_META_REGIONINFO));
+    Path p = WALSplitter.getRegionSplitEditsPath(entry,
+        FILENAME_BEING_SPLIT, TMPDIRNAME, conf);
+    String parentOfParent = p.getParent().getParent().getName();
+    assertEquals(parentOfParent, HRegionInfo.FIRST_META_REGIONINFO.getEncodedName());
+    WALFactory.createRecoveredEditsWriter(fs, p, conf).close();
   }
 
   private void useDifferentDFSClient() throws IOException {
@@ -420,7 +425,7 @@ public class TestWALSplit {
     fs.initialize(fs.getUri(), conf);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testSplitPreservesEdits() throws IOException{
     final String REGION = "region__1";
     REGIONS.clear();
@@ -436,7 +441,7 @@ public class TestWALSplit {
     assertTrue("edits differ after split", logsAreEqual(originalLog, splitLog[0]));
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testSplitRemovesRegionEventsEdits() throws IOException{
     final String REGION = "region__1";
     REGIONS.clear();
@@ -455,13 +460,12 @@ public class TestWALSplit {
   }
 
 
-  @Test
+  @Test (timeout=300000)
   public void testSplitLeavesCompactionEventsEdits() throws IOException{
-    RegionInfo hri = RegionInfoBuilder.newBuilder(TABLE_NAME).build();
+    HRegionInfo hri = new HRegionInfo(TABLE_NAME);
     REGIONS.clear();
     REGIONS.add(hri.getEncodedName());
-    Path regionDir =
-      new Path(CommonFSUtils.getTableDir(HBASEDIR, TABLE_NAME), hri.getEncodedName());
+    Path regionDir = new Path(FSUtils.getTableDir(HBASEDIR, TABLE_NAME), hri.getEncodedName());
     LOG.info("Creating region directory: " + regionDir);
     assertTrue(fs.mkdirs(regionDir));
 
@@ -510,12 +514,12 @@ public class TestWALSplit {
     return result;
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testEmptyLogFiles() throws IOException {
     testEmptyLogFiles(true);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testEmptyOpenLogFiles() throws IOException {
     testEmptyLogFiles(false);
   }
@@ -530,34 +534,34 @@ public class TestWALSplit {
     splitAndCount(NUM_WRITERS, NUM_WRITERS * ENTRIES); // skip 2 empty
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testOpenZeroLengthReportedFileButWithDataGetsSplit() throws IOException {
     // generate logs but leave wal.dat.5 open.
     generateWALs(5);
     splitAndCount(NUM_WRITERS, NUM_WRITERS * ENTRIES);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testTralingGarbageCorruptionFileSkipErrorsPasses() throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, true);
+    conf.setBoolean(HBASE_SKIP_ERRORS, true);
     generateWALs(Integer.MAX_VALUE);
     corruptWAL(new Path(WALDIR, WAL_FILE_PREFIX + "5"),
         Corruptions.APPEND_GARBAGE, true);
     splitAndCount(NUM_WRITERS, NUM_WRITERS * ENTRIES);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testFirstLineCorruptionLogFileSkipErrorsPasses() throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, true);
+    conf.setBoolean(HBASE_SKIP_ERRORS, true);
     generateWALs(Integer.MAX_VALUE);
     corruptWAL(new Path(WALDIR, WAL_FILE_PREFIX + "5"),
         Corruptions.INSERT_GARBAGE_ON_FIRST_LINE, true);
     splitAndCount(NUM_WRITERS - 1, (NUM_WRITERS - 1) * ENTRIES); //1 corrupt
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testMiddleGarbageCorruptionSkipErrorsReadsHalfOfFile() throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, true);
+    conf.setBoolean(HBASE_SKIP_ERRORS, true);
     generateWALs(Integer.MAX_VALUE);
     corruptWAL(new Path(WALDIR, WAL_FILE_PREFIX + "5"),
         Corruptions.INSERT_GARBAGE_IN_THE_MIDDLE, false);
@@ -571,23 +575,21 @@ public class TestWALSplit {
         REGIONS.size() * (goodEntries + firstHalfEntries) <= allRegionsCount);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testCorruptedFileGetsArchivedIfSkipErrors() throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, true);
-    List<FaultyProtobufLogReader.FailureType> failureTypes = Arrays
-        .asList(FaultyProtobufLogReader.FailureType.values()).stream()
-        .filter(x -> x != FaultyProtobufLogReader.FailureType.NONE).collect(Collectors.toList());
-    for (FaultyProtobufLogReader.FailureType failureType : failureTypes) {
+    conf.setBoolean(HBASE_SKIP_ERRORS, true);
+    for (FaultySequenceFileLogReader.FailureType  failureType :
+        FaultySequenceFileLogReader.FailureType.values()) {
       final Set<String> walDirContents = splitCorruptWALs(failureType);
-      final Set<String> archivedLogs = new HashSet<>();
+      final Set<String> archivedLogs = new HashSet<String>();
       final StringBuilder archived = new StringBuilder("Archived logs in CORRUPTDIR:");
       for (FileStatus log : fs.listStatus(CORRUPTDIR)) {
         archived.append("\n\t").append(log.toString());
         archivedLogs.add(log.getPath().getName());
       }
       LOG.debug(archived.toString());
-      assertEquals(failureType.name() + ": expected to find all of our wals corrupt.", archivedLogs,
-          walDirContents);
+      assertEquals(failureType.name() + ": expected to find all of our wals corrupt.",
+          walDirContents, archivedLogs);
     }
   }
 
@@ -595,16 +597,16 @@ public class TestWALSplit {
    * @return set of wal names present prior to split attempt.
    * @throws IOException if the split process fails
    */
-  private Set<String> splitCorruptWALs(final FaultyProtobufLogReader.FailureType failureType)
+  private Set<String> splitCorruptWALs(final FaultySequenceFileLogReader.FailureType failureType)
       throws IOException {
     Class<?> backupClass = conf.getClass("hbase.regionserver.hlog.reader.impl",
         Reader.class);
     InstrumentedLogWriter.activateFailure = false;
 
     try {
-      conf.setClass("hbase.regionserver.hlog.reader.impl", FaultyProtobufLogReader.class,
-        Reader.class);
-      conf.set("faultyprotobuflogreader.failuretype", failureType.name());
+      conf.setClass("hbase.regionserver.hlog.reader.impl",
+          FaultySequenceFileLogReader.class, Reader.class);
+      conf.set("faultysequencefilelogreader.failuretype", failureType.name());
       // Clean up from previous tests or previous loop
       try {
         wals.shutdown();
@@ -621,10 +623,10 @@ public class TestWALSplit {
         LOG.debug("no previous CORRUPTDIR to clean.");
       }
       // change to the faulty reader
-      wals = new WALFactory(conf, name.getMethodName());
+      wals = new WALFactory(conf, null, name.getMethodName());
       generateWALs(-1);
       // Our reader will render all of these files corrupt.
-      final Set<String> walDirContents = new HashSet<>();
+      final Set<String> walDirContents = new HashSet<String>();
       for (FileStatus status : fs.listStatus(WALDIR)) {
         walDirContents.add(status.getPath().getName());
       }
@@ -637,19 +639,19 @@ public class TestWALSplit {
     }
   }
 
-  @Test (expected = IOException.class)
+  @Test (timeout=300000, expected = IOException.class)
   public void testTrailingGarbageCorruptionLogFileSkipErrorsFalseThrows()
       throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, false);
-    splitCorruptWALs(FaultyProtobufLogReader.FailureType.BEGINNING);
+    conf.setBoolean(HBASE_SKIP_ERRORS, false);
+    splitCorruptWALs(FaultySequenceFileLogReader.FailureType.BEGINNING);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testCorruptedLogFilesSkipErrorsFalseDoesNotTouchLogs()
       throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, false);
+    conf.setBoolean(HBASE_SKIP_ERRORS, false);
     try {
-      splitCorruptWALs(FaultyProtobufLogReader.FailureType.BEGINNING);
+      splitCorruptWALs(FaultySequenceFileLogReader.FailureType.BEGINNING);
     } catch (IOException e) {
       LOG.debug("split with 'skip errors' set to 'false' correctly threw");
     }
@@ -659,7 +661,7 @@ public class TestWALSplit {
 
   private void ignoreCorruption(final Corruptions corruption, final int entryCount,
       final int expectedCount) throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, false);
+    conf.setBoolean(HBASE_SKIP_ERRORS, false);
 
     final String REGION = "region__1";
     REGIONS.clear();
@@ -684,26 +686,26 @@ public class TestWALSplit {
     in.close();
 
     // should not have stored the EOF files as corrupt
-    FileStatus[] archivedLogs = fs.exists(CORRUPTDIR)? fs.listStatus(CORRUPTDIR): new FileStatus[0];
-    assertEquals(0, archivedLogs.length);
+    FileStatus[] archivedLogs = fs.listStatus(CORRUPTDIR);
+    assertEquals(archivedLogs.length, 0);
 
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testEOFisIgnored() throws IOException {
     int entryCount = 10;
     ignoreCorruption(Corruptions.TRUNCATE, entryCount, entryCount-1);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testCorruptWALTrailer() throws IOException {
     int entryCount = 10;
     ignoreCorruption(Corruptions.TRUNCATE_TRAILER, entryCount, entryCount);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testLogsGetArchivedAfterSplit() throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, false);
+    conf.setBoolean(HBASE_SKIP_ERRORS, false);
     generateWALs(-1);
     useDifferentDFSClient();
     WALSplitter.split(HBASELOGDIR, WALDIR, OLDLOGDIR, fs, conf, wals);
@@ -711,13 +713,13 @@ public class TestWALSplit {
     assertEquals("wrong number of files in the archive log", NUM_WRITERS, archivedLogs.length);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testSplit() throws IOException {
     generateWALs(-1);
     splitAndCount(NUM_WRITERS, NUM_WRITERS * ENTRIES);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testLogDirectoryShouldBeDeletedAfterSuccessfulSplit()
       throws IOException {
     generateWALs(-1);
@@ -735,7 +737,7 @@ public class TestWALSplit {
     }
   }
 
-  @Test(expected = IOException.class)
+  @Test(timeout=300000, expected = IOException.class)
   public void testSplitWillFailIfWritingToRegionFails() throws Exception {
     //leave 5th log open so we could append the "trap"
     Writer writer = generateWALs(4);
@@ -747,7 +749,7 @@ public class TestWALSplit {
 
     InstrumentedLogWriter.activateFailure = false;
     appendEntry(writer, TABLE_NAME, Bytes.toBytes(region),
-        Bytes.toBytes("r" + 999), FAMILY, QUALIFIER, VALUE, 0);
+        ("r" + 999).getBytes(), FAMILY, QUALIFIER, VALUE, 0);
     writer.close();
 
     try {
@@ -762,7 +764,7 @@ public class TestWALSplit {
     }
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testSplitDeletedRegion() throws IOException {
     REGIONS.clear();
     String region = "region_that_splits";
@@ -777,9 +779,9 @@ public class TestWALSplit {
     assertFalse(fs.exists(regiondir));
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testIOEOnOutputThread() throws Exception {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, false);
+    conf.setBoolean(HBASE_SKIP_ERRORS, false);
 
     generateWALs(-1);
     useDifferentDFSClient();
@@ -799,16 +801,16 @@ public class TestWALSplit {
     }
     assertTrue("There should be some log greater than size 0.", 0 < largestSize);
     // Set up a splitter that will throw an IOE on the output side
-    WALSplitter logSplitter =
-      new WALSplitter(wals, conf, HBASEDIR, fs, HBASEDIR, fs, null, null, null) {
-        @Override
-        protected Writer createWriter(Path logfile) throws IOException {
-          Writer mockWriter = Mockito.mock(Writer.class);
-          Mockito.doThrow(new IOException("Injected")).when(mockWriter)
-              .append(Mockito.<Entry> any());
-          return mockWriter;
-        }
-      };
+    WALSplitter logSplitter = new WALSplitter(wals,
+        conf, HBASEDIR, fs, HBASEDIR, fs, null, null, this.mode) {
+      @Override
+      protected Writer createWriter(Path logfile) throws IOException {
+        Writer mockWriter = Mockito.mock(Writer.class);
+        Mockito.doThrow(new IOException("Injected")).when(
+            mockWriter).append(Mockito.<Entry>any());
+        return mockWriter;
+      }
+    };
     // Set up a background thread dumper.  Needs a thread to depend on and then we need to run
     // the thread dumping in a background thread so it does not hold up the test.
     final AtomicBoolean stop = new AtomicBoolean(false);
@@ -821,7 +823,6 @@ public class TestWALSplit {
     someOldThread.setDaemon(true);
     someOldThread.start();
     final Thread t = new Thread("Background-thread-dumper") {
-      @Override
       public void run() {
         try {
           Threads.threadDumpingIsAlive(someOldThread);
@@ -833,7 +834,7 @@ public class TestWALSplit {
     t.setDaemon(true);
     t.start();
     try {
-      logSplitter.splitWAL(logfiles[largestLogFile], null);
+      logSplitter.splitLogFile(logfiles[largestLogFile], null);
       fail("Didn't throw!");
     } catch (IOException ioe) {
       assertTrue(ioe.toString().contains("Injected"));
@@ -860,7 +861,7 @@ public class TestWALSplit {
   }
 
   // Test for HBASE-3412
-  @Test
+  @Test (timeout=300000)
   public void testMovedWALDuringRecovery() throws Exception {
     // This partial mock will throw LEE for every file simulating
     // files that were moved
@@ -872,7 +873,7 @@ public class TestWALSplit {
     retryOverHdfsProblem(spiedFs);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testRetryOpenDuringRecovery() throws Exception {
     FileSystem spiedFs = Mockito.spy(fs);
     // The "Cannot obtain block length", "Could not obtain the last block",
@@ -890,7 +891,6 @@ public class TestWALSplit {
           "Blocklist for " + OLDLOGDIR + " has changed"};
       private int count = 0;
 
-      @Override
       public FSDataInputStream answer(InvocationOnMock invocation) throws Throwable {
         if (count < 3) {
           throw new IOException(errors[count++]);
@@ -901,7 +901,7 @@ public class TestWALSplit {
     retryOverHdfsProblem(spiedFs);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testTerminationAskedByReporter() throws IOException, CorruptedLogFileException {
     generateWALs(1, 10, -1);
     FileStatus logfile = fs.listStatus(WALDIR)[0];
@@ -920,7 +920,6 @@ public class TestWALSplit {
 
     FileSystem spiedFs = Mockito.spy(fs);
     Mockito.doAnswer(new Answer<FSDataInputStream>() {
-      @Override
       public FSDataInputStream answer(InvocationOnMock invocation) throws Throwable {
         Thread.sleep(1500); // Sleep a while and wait report status invoked
         return (FSDataInputStream)invocation.callRealMethod();
@@ -929,8 +928,8 @@ public class TestWALSplit {
 
     try {
       conf.setInt("hbase.splitlog.report.period", 1000);
-      boolean ret = WALSplitter.splitLogFile(HBASEDIR, logfile, spiedFs, conf, localReporter, null,
-        Mockito.mock(SplitLogWorkerCoordination.class), wals, null);
+      boolean ret = WALSplitter.splitLogFile(
+          HBASEDIR, logfile, spiedFs, conf, localReporter, null, null, this.mode, wals);
       assertFalse("Log splitting should failed", ret);
       assertTrue(count.get() > 0);
     } catch (IOException e) {
@@ -945,7 +944,7 @@ public class TestWALSplit {
    * Test log split process with fake data and lots of edits to trigger threading
    * issues.
    */
-  @Test
+  @Test (timeout=300000)
   public void testThreading() throws Exception {
     doTestThreading(20000, 128*1024*1024, 0);
   }
@@ -954,7 +953,7 @@ public class TestWALSplit {
    * Test blocking behavior of the log split process if writers are writing slower
    * than the reader is reading.
    */
-  @Test
+  @Test (timeout=300000)
   public void testThreadingSlowWriterSmallBuffer() throws Exception {
     doTestThreading(200, 1024, 50);
   }
@@ -988,7 +987,9 @@ public class TestWALSplit {
     makeRegionDirs(regions);
 
     // Create a splitter that reads and writes the data without touching disk
-    WALSplitter logSplitter = new WALSplitter(wals, localConf, HBASEDIR, fs, HBASEDIR, fs) {
+    WALSplitter logSplitter = new WALSplitter(wals,
+        localConf, HBASEDIR, fs, HBASEDIR, fs, null, null, this.mode) {
+
       /* Produce a mock writer that doesn't write anywhere */
       @Override
       protected Writer createWriter(Path logfile) throws IOException {
@@ -1005,7 +1006,7 @@ public class TestWALSplit {
                 Thread.currentThread().interrupt();
               }
             }
-            Entry entry = (Entry) invocation.getArgument(0);
+            Entry entry = (Entry) invocation.getArguments()[0];
             WALEdit edit = entry.getEdit();
             List<Cell> cells = edit.getCells();
             assertEquals(1, cells.size());
@@ -1023,8 +1024,8 @@ public class TestWALSplit {
 
       /* Produce a mock reader that generates fake entries */
       @Override
-      protected Reader getReader(FileStatus file, boolean skipErrors,
-        CancelableProgressable reporter) throws IOException, CorruptedLogFileException {
+      protected Reader getReader(Path curLogFile, CancelableProgressable reporter)
+          throws IOException {
         Reader mockReader = Mockito.mock(Reader.class);
         Mockito.doAnswer(new Answer<Entry>() {
           int index = 0;
@@ -1038,7 +1039,7 @@ public class TestWALSplit {
             byte region[] = new byte[] {(byte)'r', (byte) (0x30 + regionIdx)};
 
             Entry ret = createTestEntry(TABLE_NAME, region,
-                Bytes.toBytes(index / regions.size()),
+                Bytes.toBytes((int)(index / regions.size())),
                 FAMILY, QUALIFIER, VALUE, index);
             index++;
             return ret;
@@ -1048,19 +1049,20 @@ public class TestWALSplit {
       }
     };
 
-    logSplitter.splitWAL(fs.getFileStatus(logPath), null);
+    logSplitter.splitLogFile(fs.getFileStatus(logPath), null);
 
     // Verify number of written edits per region
-    Map<String, Long> outputCounts = logSplitter.outputSink.getOutputCounts();
-    for (Map.Entry<String, Long> entry : outputCounts.entrySet()) {
-      LOG.info("Got " + entry.getValue() + " output edits for region " + entry.getKey());
-      assertEquals((long) entry.getValue(), numFakeEdits / regions.size());
+    Map<byte[], Long> outputCounts = logSplitter.outputSink.getOutputCounts();
+    for (Map.Entry<byte[], Long> entry : outputCounts.entrySet()) {
+      LOG.info("Got " + entry.getValue() + " output edits for region " +
+          Bytes.toString(entry.getKey()));
+      assertEquals((long)entry.getValue(), numFakeEdits / regions.size());
     }
     assertEquals("Should have as many outputs as regions", regions.size(), outputCounts.size());
   }
 
   // Does leaving the writer open in testSplitDeletedRegion matter enough for two tests?
-  @Test
+  @Test (timeout=300000)
   public void testSplitLogFileDeletedRegionDir() throws IOException {
     LOG.info("testSplitLogFileDeletedRegionDir");
     final String REGION = "region__1";
@@ -1077,7 +1079,7 @@ public class TestWALSplit {
     assertFalse(fs.exists(regiondir));
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testSplitLogFileEmpty() throws IOException {
     LOG.info("testSplitLogFileEmpty");
     // we won't create the hlog dir until getWAL got called, so
@@ -1087,23 +1089,23 @@ public class TestWALSplit {
     useDifferentDFSClient();
 
     WALSplitter.split(HBASELOGDIR, WALDIR, OLDLOGDIR, fs, conf, wals);
-    Path tdir = CommonFSUtils.getTableDir(HBASEDIR, TABLE_NAME);
+    Path tdir = FSUtils.getTableDir(HBASEDIR, TABLE_NAME);
     assertFalse(fs.exists(tdir));
 
     assertEquals(0, countWAL(fs.listStatus(OLDLOGDIR)[0].getPath()));
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testSplitLogFileMultipleRegions() throws IOException {
     LOG.info("testSplitLogFileMultipleRegions");
     generateWALs(1, 10, -1);
     splitAndCount(1, 10);
   }
 
-  @Test
+  @Test (timeout=300000)
   public void testSplitLogFileFirstLineCorruptionLog()
       throws IOException {
-    conf.setBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY, true);
+    conf.setBoolean(HBASE_SKIP_ERRORS, true);
     generateWALs(1, 10, -1);
     FileStatus logfile = fs.listStatus(WALDIR)[0];
 
@@ -1113,15 +1115,15 @@ public class TestWALSplit {
     useDifferentDFSClient();
     WALSplitter.split(HBASELOGDIR, WALDIR, OLDLOGDIR, fs, conf, wals);
 
-    final Path corruptDir =
-      new Path(CommonFSUtils.getWALRootDir(conf), HConstants.CORRUPT_DIR_NAME);
+    final Path corruptDir = new Path(FSUtils.getWALRootDir(conf), HConstants.CORRUPT_DIR_NAME);
     assertEquals(1, fs.listStatus(corruptDir).length);
   }
 
   /**
-   * @see "https://issues.apache.org/jira/browse/HBASE-4862"
+   * @throws IOException
+   * @see https://issues.apache.org/jira/browse/HBASE-4862
    */
-  @Test
+  @Test (timeout=300000)
   public void testConcurrentSplitLogAndReplayRecoverEdit() throws IOException {
     LOG.info("testConcurrentSplitLogAndReplayRecoverEdit");
     // Generate wals for our destination region
@@ -1131,13 +1133,13 @@ public class TestWALSplit {
     REGIONS.add(regionName);
     generateWALs(-1);
 
-    wals.getWAL(null);
+    wals.getWAL(Bytes.toBytes(regionName), null);
     FileStatus[] logfiles = fs.listStatus(WALDIR);
     assertTrue("There should be some log file",
         logfiles != null && logfiles.length > 0);
 
-    WALSplitter logSplitter =
-        new WALSplitter(wals, conf, HBASEDIR, fs, HBASEDIR, fs, null, null, null) {
+    WALSplitter logSplitter = new WALSplitter(wals,
+        conf, HBASEDIR, fs, HBASEDIR, fs, null, null, this.mode) {
       @Override
       protected Writer createWriter(Path logfile)
           throws IOException {
@@ -1145,7 +1147,7 @@ public class TestWALSplit {
         // After creating writer, simulate region's
         // replayRecoveredEditsIfAny() which gets SplitEditFiles of this
         // region and delete them, excluding files with '.temp' suffix.
-        NavigableSet<Path> files = WALSplitUtil.getSplitEditFilesSorted(fs, regiondir);
+        NavigableSet<Path> files = WALSplitter.getSplitEditFilesSorted(fs, regiondir);
         if (files != null && !files.isEmpty()) {
           for (Path file : files) {
             if (!this.walFS.delete(file, false)) {
@@ -1159,9 +1161,9 @@ public class TestWALSplit {
       }
     };
     try{
-      logSplitter.splitWAL(logfiles[0], null);
+      logSplitter.splitLogFile(logfiles[0], null);
     } catch (IOException e) {
-      LOG.info(e.toString(), e);
+      LOG.info(e);
       fail("Throws IOException when spliting "
           + "log, it is most likely because writing file does not "
           + "exist which is caused by concurrent replayRecoveredEditsIfAny()");
@@ -1205,8 +1207,8 @@ public class TestWALSplit {
         int prefix = 0;
         for (String region : REGIONS) {
           String row_key = region + prefix++ + i + j;
-          appendEntry(ws[i], TABLE_NAME, Bytes.toBytes(region), Bytes.toBytes(row_key), FAMILY,
-              QUALIFIER, VALUE, seq++);
+          appendEntry(ws[i], TABLE_NAME, region.getBytes(), row_key.getBytes(), FAMILY, QUALIFIER,
+              VALUE, seq++);
 
           if (numRegionEventsAdded < regionEvents) {
             numRegionEventsAdded ++;
@@ -1229,14 +1231,14 @@ public class TestWALSplit {
 
   private Path[] getLogForRegion(TableName table, String region)
       throws IOException {
-    Path tdir = CommonFSUtils.getWALTableDir(conf, table);
+    Path tdir = FSUtils.getWALTableDir(conf, table);
     @SuppressWarnings("deprecation")
-    Path editsdir = WALSplitUtil.getRegionDirRecoveredEditsDir(HRegion.getRegionDir(tdir,
-        Bytes.toString(Bytes.toBytes(region))));
+    Path editsdir = WALSplitter.getRegionDirRecoveredEditsDir(new Path(tdir,
+        Bytes.toString(region.getBytes())));
     FileStatus[] files = fs.listStatus(editsdir, new PathFilter() {
       @Override
       public boolean accept(Path p) {
-        if (WALSplitUtil.isSequenceIdFile(p)) {
+        if (WALSplitter.isSequenceIdFile(p)) {
           return false;
         }
         return true;
@@ -1259,46 +1261,46 @@ public class TestWALSplit {
     in.close();
 
     switch (corruption) {
-      case APPEND_GARBAGE:
-        fs.delete(path, false);
-        out = fs.create(path);
-        out.write(corrupted_bytes);
-        out.write(Bytes.toBytes("-----"));
-        closeOrFlush(close, out);
-        break;
+    case APPEND_GARBAGE:
+      fs.delete(path, false);
+      out = fs.create(path);
+      out.write(corrupted_bytes);
+      out.write("-----".getBytes());
+      closeOrFlush(close, out);
+      break;
 
-      case INSERT_GARBAGE_ON_FIRST_LINE:
-        fs.delete(path, false);
-        out = fs.create(path);
-        out.write(0);
-        out.write(corrupted_bytes);
-        closeOrFlush(close, out);
-        break;
+    case INSERT_GARBAGE_ON_FIRST_LINE:
+      fs.delete(path, false);
+      out = fs.create(path);
+      out.write(0);
+      out.write(corrupted_bytes);
+      closeOrFlush(close, out);
+      break;
 
-      case INSERT_GARBAGE_IN_THE_MIDDLE:
-        fs.delete(path, false);
-        out = fs.create(path);
-        int middle = (int) Math.floor(corrupted_bytes.length / 2);
-        out.write(corrupted_bytes, 0, middle);
-        out.write(0);
-        out.write(corrupted_bytes, middle, corrupted_bytes.length - middle);
-        closeOrFlush(close, out);
-        break;
+    case INSERT_GARBAGE_IN_THE_MIDDLE:
+      fs.delete(path, false);
+      out = fs.create(path);
+      int middle = (int) Math.floor(corrupted_bytes.length / 2);
+      out.write(corrupted_bytes, 0, middle);
+      out.write(0);
+      out.write(corrupted_bytes, middle, corrupted_bytes.length - middle);
+      closeOrFlush(close, out);
+      break;
 
-      case TRUNCATE:
-        fs.delete(path, false);
-        out = fs.create(path);
-        out.write(corrupted_bytes, 0, fileSize
-            - (32 + ProtobufLogReader.PB_WAL_COMPLETE_MAGIC.length + Bytes.SIZEOF_INT));
-        closeOrFlush(close, out);
-        break;
+    case TRUNCATE:
+      fs.delete(path, false);
+      out = fs.create(path);
+      out.write(corrupted_bytes, 0, fileSize
+          - (32 + ProtobufLogReader.PB_WAL_COMPLETE_MAGIC.length + Bytes.SIZEOF_INT));
+      closeOrFlush(close, out);
+      break;
 
-      case TRUNCATE_TRAILER:
-        fs.delete(path, false);
-        out = fs.create(path);
-        out.write(corrupted_bytes, 0, fileSize - Bytes.SIZEOF_INT);// trailer is truncated.
-        closeOrFlush(close, out);
-        break;
+    case TRUNCATE_TRAILER:
+      fs.delete(path, false);
+      out = fs.create(path);
+      out.write(corrupted_bytes, 0, fileSize - Bytes.SIZEOF_INT);// trailer is truncated.
+      closeOrFlush(close, out);
+      break;
     }
   }
 
@@ -1337,7 +1339,7 @@ public class TestWALSplit {
     return count;
   }
 
-  private static void appendCompactionEvent(Writer w, RegionInfo hri, String[] inputs,
+  private static void appendCompactionEvent(Writer w, HRegionInfo hri, String[] inputs,
       String output) throws IOException {
     WALProtos.CompactionDescriptor.Builder desc = WALProtos.CompactionDescriptor.newBuilder();
     desc.setTableName(ByteString.copyFrom(hri.getTable().toBytes()))
@@ -1349,7 +1351,7 @@ public class TestWALSplit {
         .addCompactionOutput(output);
 
     WALEdit edit = WALEdit.createCompaction(hri, desc.build());
-    WALKeyImpl key = new WALKeyImpl(hri.getEncodedNameAsBytes(), TABLE_NAME, 1,
+    WALKey key = new WALKey(hri.getEncodedNameAsBytes(), TABLE_NAME, 1,
         EnvironmentEdgeManager.currentTime(), HConstants.DEFAULT_CLUSTER_ID);
     w.append(new Entry(key, edit));
     w.sync(false);
@@ -1359,15 +1361,17 @@ public class TestWALSplit {
     WALProtos.RegionEventDescriptor regionOpenDesc = ProtobufUtil.toRegionEventDescriptor(
         WALProtos.RegionEventDescriptor.EventType.REGION_OPEN,
         TABLE_NAME.toBytes(),
-        Bytes.toBytes(region),
-        Bytes.toBytes(String.valueOf(region.hashCode())),
+        region.getBytes(),
+        String.valueOf(region.hashCode()).getBytes(),
         1,
         ServerName.parseServerName("ServerName:9099"), ImmutableMap.<byte[], List<Path>>of());
     final long time = EnvironmentEdgeManager.currentTime();
-    final WALKeyImpl walKey = new WALKeyImpl(Bytes.toBytes(region), TABLE_NAME, 1, time,
+    KeyValue kv = new KeyValue(region.getBytes(), WALEdit.METAFAMILY, WALEdit.REGION_EVENT,
+        time, regionOpenDesc.toByteArray());
+    final WALKey walKey = new WALKey(region.getBytes(), TABLE_NAME, 1, time,
         HConstants.DEFAULT_CLUSTER_ID);
-    WALEdit we = WALEdit.createRegionEventWALEdit(Bytes.toBytes(region), regionOpenDesc);
-    w.append(new Entry(walKey, we));
+    w.append(
+        new Entry(walKey, new WALEdit().add(kv)));
     w.sync(false);
   }
 
@@ -1392,16 +1396,15 @@ public class TestWALSplit {
     final KeyValue cell = new KeyValue(row, family, qualifier, time, KeyValue.Type.Put, value);
     WALEdit edit = new WALEdit();
     edit.add(cell);
-    return new Entry(new WALKeyImpl(region, table, seq, time,
+    return new Entry(new WALKey(region, table, seq, time,
         HConstants.DEFAULT_CLUSTER_ID), edit);
   }
 
-  private void injectEmptyFile(String suffix, boolean closeFile) throws IOException {
-    Writer writer =
-        WALFactory.createWALWriter(fs, new Path(WALDIR, WAL_FILE_PREFIX + suffix), conf);
-    if (closeFile) {
-      writer.close();
-    }
+  private void injectEmptyFile(String suffix, boolean closeFile)
+      throws IOException {
+    Writer writer = wals.createWALWriter(fs, new Path(WALDIR, WAL_FILE_PREFIX + suffix),
+        conf);
+    if (closeFile) writer.close();
   }
 
   private boolean logsAreEqual(Path p1, Path p2) throws IOException {

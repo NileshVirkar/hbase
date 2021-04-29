@@ -19,18 +19,17 @@ package org.apache.hadoop.hbase.util.hbck;
 
 import static org.junit.Assert.assertEquals;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
-
-import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.util.HBaseFsck;
-import org.apache.hadoop.hbase.util.HbckErrorReporter.ERROR_CODE;
+import org.apache.hadoop.hbase.util.HBaseFsck.ErrorReporter.ERROR_CODE;
+
+import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 public class HbckTestingUtil {
   private static ExecutorService exec = new ScheduledThreadPoolExecutor(10);
@@ -44,44 +43,43 @@ public class HbckTestingUtil {
     return doFsck(conf, fix, fix, fix, fix, fix, fix, fix, fix, fix, fix, fix, fix, fix, table);
   }
 
-  public static HBaseFsck doFsck(Configuration conf, boolean fixAssignments, boolean fixMeta,
-      boolean fixHdfsHoles, boolean fixHdfsOverlaps, boolean fixHdfsOrphans,
-      boolean fixTableOrphans, boolean fixVersionFile, boolean fixReferenceFiles,
-      boolean fixHFileLinks, boolean fixEmptyMetaRegionInfo, boolean fixTableLocks,
-      boolean fixReplication, boolean cleanReplicationBarrier, TableName table) throws Exception {
+  public static HBaseFsck doFsck(Configuration conf, boolean fixAssignments,
+      boolean fixMeta, boolean fixHdfsHoles, boolean fixHdfsOverlaps,
+      boolean fixHdfsOrphans, boolean fixTableOrphans, boolean fixVersionFile,
+      boolean fixReferenceFiles, boolean fixHFileLinks, boolean fixEmptyMetaRegionInfo,
+      boolean fixTableLocks, boolean fixTableZnodes, Boolean fixReplication,
+      TableName table) throws Exception {
     HBaseFsck fsck = new HBaseFsck(conf, exec);
-    try {
-      HBaseFsck.setDisplayFullReport(); // i.e. -details
-      fsck.setTimeLag(0);
-      fsck.setFixAssignments(fixAssignments);
-      fsck.setFixMeta(fixMeta);
-      fsck.setFixHdfsHoles(fixHdfsHoles);
-      fsck.setFixHdfsOverlaps(fixHdfsOverlaps);
-      fsck.setFixHdfsOrphans(fixHdfsOrphans);
-      fsck.setFixTableOrphans(fixTableOrphans);
-      fsck.setFixVersionFile(fixVersionFile);
-      fsck.setFixReferenceFiles(fixReferenceFiles);
-      fsck.setFixHFileLinks(fixHFileLinks);
-      fsck.setFixEmptyMetaCells(fixEmptyMetaRegionInfo);
-      fsck.setFixReplication(fixReplication);
-      fsck.setCleanReplicationBarrier(cleanReplicationBarrier);
-      if (table != null) {
-        fsck.includeTable(table);
-      }
-
-      // Parse command line flags before connecting, to grab the lock.
-      fsck.connect();
-      fsck.onlineHbck();
-    } finally {
-      fsck.close();
+    fsck.setDisplayFullReport(); // i.e. -details
+    fsck.setTimeLag(0);
+    fsck.setFixAssignments(fixAssignments);
+    fsck.setFixMeta(fixMeta);
+    fsck.setFixHdfsHoles(fixHdfsHoles);
+    fsck.setFixHdfsOverlaps(fixHdfsOverlaps);
+    fsck.setFixHdfsOrphans(fixHdfsOrphans);
+    fsck.setFixTableOrphans(fixTableOrphans);
+    fsck.setFixVersionFile(fixVersionFile);
+    fsck.setFixReferenceFiles(fixReferenceFiles);
+    fsck.setFixHFileLinks(fixHFileLinks);
+    fsck.setFixEmptyMetaCells(fixEmptyMetaRegionInfo);
+    fsck.setFixTableLocks(fixTableLocks);
+    fsck.setFixReplication(fixReplication);
+    fsck.setFixTableZNodes(fixTableZnodes);
+    fsck.connect();
+    if (table != null) {
+      fsck.includeTable(table);
     }
+    fsck.onlineHbck();
+    fsck.close();
     return fsck;
   }
 
   /**
    * Runs hbck with the -sidelineCorruptHFiles option
+   * @param conf
    * @param table table constraint
-   * @return hbckInstance
+   * @return <returncode, hbckInstance>
+   * @throws Exception
    */
   public static HBaseFsck doHFileQuarantine(Configuration conf, TableName table) throws Exception {
     String[] args = {"-sidelineCorruptHFiles", "-ignorePreCheckPermission", table.getNameAsString()};
@@ -90,14 +88,12 @@ public class HbckTestingUtil {
     return hbck;
   }
 
-  public static boolean cleanReplicationBarrier(Configuration conf, TableName table)
-      throws IOException, ClassNotFoundException {
-    HBaseFsck hbck = new HBaseFsck(conf, null);
-    hbck.setCleanReplicationBarrierTable(table.getNameAsString());
-    hbck.setCleanReplicationBarrier(true);
+  public static HBaseFsck checkRegionBoundaries(Configuration conf) throws Exception {
+    HBaseFsck hbck = new HBaseFsck(conf, exec);
     hbck.connect();
-    hbck.cleanReplicationBarrier();
-    return hbck.shouldRerun();
+    hbck.checkRegionBoundaries();
+    hbck.close();
+    return hbck;
   }
 
   public static boolean inconsistencyFound(HBaseFsck fsck) throws Exception {

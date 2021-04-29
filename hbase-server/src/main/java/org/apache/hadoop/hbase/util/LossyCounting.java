@@ -28,7 +28,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,10 +65,10 @@ public class LossyCounting<T> {
   }
 
   public LossyCounting(String name, double errorRate, LossyCountingListener<T> listener) {
-    this.name = name;
     if (errorRate < 0.0 || errorRate > 1.0) {
       throw new IllegalArgumentException(" Lossy Counting error rate should be within range [0,1]");
     }
+    this.name = name;
     this.bucketSize = (long) Math.ceil(1 / errorRate);
     this.currentTerm = 1;
     this.totalDataCount = 0;
@@ -90,8 +90,11 @@ public class LossyCounting<T> {
   private void addByOne(T key) {
     //If entry exists, we update the entry by incrementing its frequency by one. Otherwise,
     //we create a new entry starting with currentTerm so that it will not be pruned immediately
-    data.put(key, data.getOrDefault(key, currentTerm != 0 ? currentTerm - 1 : 0) + 1);
-
+    Integer i = data.get(key);
+    if (i == null) {
+      i = currentTerm != 0 ? currentTerm - 1 : 0;
+    }
+    data.put(key, i + 1);
     //update totalDataCount and term
     totalDataCount++;
     calculateCurrentTerm();
@@ -110,7 +113,6 @@ public class LossyCounting<T> {
       fut.set(future);
     }
   }
-
 
   /**
    * sweep low frequency data
@@ -162,7 +164,7 @@ public class LossyCounting<T> {
       try {
         sweep();
       } catch (Exception exception) {
-        LOG.debug("Error while sweeping of lossyCounting-{}", name, exception);
+        LOG.debug("Error while sweeping lossyCounting-" + name, exception);
       }
     }
   }

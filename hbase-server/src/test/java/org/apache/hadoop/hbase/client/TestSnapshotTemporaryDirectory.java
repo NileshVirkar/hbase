@@ -29,16 +29,19 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Pattern;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
+import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
+import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription.Type;
 import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
 import org.apache.hadoop.hbase.snapshot.SnapshotDescriptionUtils;
 import org.apache.hadoop.hbase.snapshot.SnapshotDoesNotExistException;
@@ -47,22 +50,17 @@ import org.apache.hadoop.hbase.snapshot.SnapshotManifestV2;
 import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 
 /**
  * This class tests that the use of a temporary snapshot directory supports snapshot functionality
@@ -74,9 +72,6 @@ import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 @RunWith(Parameterized.class)
 public class TestSnapshotTemporaryDirectory {
 
-  @ClassRule public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestSnapshotTemporaryDirectory.class);
-
   @Parameterized.Parameters public static Iterable<Integer> data() {
     return Arrays
         .asList(SnapshotManifestV1.DESCRIPTOR_VERSION, SnapshotManifestV2.DESCRIPTOR_VERSION);
@@ -84,7 +79,7 @@ public class TestSnapshotTemporaryDirectory {
 
   @Parameterized.Parameter public int manifestVersion;
 
-  private static final Logger LOG = LoggerFactory.getLogger(TestSnapshotTemporaryDirectory.class);
+  private static final Log LOG = LogFactory.getLog(TestSnapshotTemporaryDirectory.class);
   protected static final int NUM_RS = 2;
   protected static String TEMP_DIR =
       Paths.get("").toAbsolutePath().toString() + Path.SEPARATOR + UUID.randomUUID().toString();
@@ -100,11 +95,10 @@ public class TestSnapshotTemporaryDirectory {
    *
    * @throws Exception on failure
    */
-  @BeforeClass
-  public static void setupCluster() throws Exception {
+  @BeforeClass public static void setupCluster() throws Exception {
     setupConf(UTIL.getConfiguration());
     UTIL.startMiniCluster(NUM_RS);
-    admin = UTIL.getAdmin();
+    admin = UTIL.getHBaseAdmin();
   }
 
   private static void setupConf(Configuration conf) {
@@ -125,10 +119,9 @@ public class TestSnapshotTemporaryDirectory {
     conf.set(SnapshotDescriptionUtils.SNAPSHOT_WORKING_DIR, "file://" + new Path(TEMP_DIR, ".tmpDir").toUri());
   }
 
-  @Before
-  public void setup() throws Exception {
-    TableDescriptor htd =
-      TableDescriptorBuilder.newBuilder(TABLE_NAME).setRegionReplication(getNumReplicas()).build();
+  @Before public void setup() throws Exception {
+    HTableDescriptor htd = new HTableDescriptor(TABLE_NAME);
+    htd.setRegionReplication(getNumReplicas());
     UTIL.createTable(htd, new byte[][] { TEST_FAM }, UTIL.getConfiguration());
   }
 
@@ -136,15 +129,13 @@ public class TestSnapshotTemporaryDirectory {
     return 1;
   }
 
-  @After
-  public void tearDown() throws Exception {
+  @After public void tearDown() throws Exception {
     UTIL.deleteTable(TABLE_NAME);
-    SnapshotTestingUtils.deleteAllSnapshots(UTIL.getAdmin());
+    SnapshotTestingUtils.deleteAllSnapshots(UTIL.getHBaseAdmin());
     SnapshotTestingUtils.deleteArchiveDirectory(UTIL);
   }
 
-  @AfterClass
-  public static void cleanupTest() {
+  @AfterClass public static void cleanupTest() {
     try {
       UTIL.shutdownMiniCluster();
       FileUtils.deleteDirectory(new File(TEMP_DIR));
@@ -153,14 +144,13 @@ public class TestSnapshotTemporaryDirectory {
     }
   }
 
-  @Test
-  public void testRestoreDisabledSnapshot()
+  @Test(timeout = 180000) public void testRestoreDisabledSnapshot()
       throws IOException, InterruptedException {
     long tid = System.currentTimeMillis();
     TableName tableName = TableName.valueOf("testtb-" + tid);
-    String emptySnapshot = "emptySnaptb-" + tid;
-    String snapshotName0 = "snaptb0-" + tid;
-    String snapshotName1 = "snaptb1-" + tid;
+    byte[] emptySnapshot = Bytes.toBytes("emptySnaptb-" + tid);
+    byte[] snapshotName0 = Bytes.toBytes("snaptb0-" + tid);
+    byte[] snapshotName1 = Bytes.toBytes("snaptb1-" + tid);
     int snapshot0Rows;
     int snapshot1Rows;
 
@@ -169,7 +159,7 @@ public class TestSnapshotTemporaryDirectory {
     admin.disableTable(tableName);
 
     // take an empty snapshot
-    takeSnapshot(tableName, emptySnapshot, true);
+    takeSnapshot(tableName, Bytes.toString(emptySnapshot), true);
 
     // enable table and insert data
     admin.enableTable(tableName);
@@ -180,7 +170,7 @@ public class TestSnapshotTemporaryDirectory {
     admin.disableTable(tableName);
 
     // take a snapshot
-    takeSnapshot(tableName, snapshotName0, true);
+    takeSnapshot(tableName, Bytes.toString(snapshotName0), true);
 
     // enable table and insert more data
     admin.enableTable(tableName);
@@ -191,7 +181,7 @@ public class TestSnapshotTemporaryDirectory {
 
     SnapshotTestingUtils.verifyRowCount(UTIL, tableName, snapshot1Rows);
     admin.disableTable(tableName);
-    takeSnapshot(tableName, snapshotName1, true);
+    takeSnapshot(tableName, Bytes.toString(snapshotName1), true);
 
     // Restore from snapshot-0
     admin.restoreSnapshot(snapshotName0);
@@ -220,14 +210,13 @@ public class TestSnapshotTemporaryDirectory {
     SnapshotTestingUtils.verifyReplicasCameOnline(tableName, admin, getNumReplicas());
   }
 
-  @Test
-  public void testRestoreEnabledSnapshot()
+  @Test(timeout = 180000) public void testRestoreEnabledSnapshot()
       throws IOException, InterruptedException {
     long tid = System.currentTimeMillis();
     TableName tableName = TableName.valueOf("testtb-" + tid);
-    String emptySnapshot = "emptySnaptb-" + tid;
-    String snapshotName0 = "snaptb0-" + tid;
-    String snapshotName1 = "snaptb1-" + tid;
+    byte[] emptySnapshot = Bytes.toBytes("emptySnaptb-" + tid);
+    byte[] snapshotName0 = Bytes.toBytes("snaptb0-" + tid);
+    byte[] snapshotName1 = Bytes.toBytes("snaptb1-" + tid);
     int snapshot0Rows;
     int snapshot1Rows;
 
@@ -235,7 +224,7 @@ public class TestSnapshotTemporaryDirectory {
     SnapshotTestingUtils.createTable(UTIL, tableName, getNumReplicas(), TEST_FAM);
 
     // take an empty snapshot
-    takeSnapshot(tableName, emptySnapshot, false);
+    takeSnapshot(tableName, Bytes.toString(emptySnapshot), false);
 
     // Insert data
     SnapshotTestingUtils.loadData(UTIL, tableName, 500, TEST_FAM);
@@ -244,7 +233,7 @@ public class TestSnapshotTemporaryDirectory {
     }
 
     // take a snapshot
-    takeSnapshot(tableName, snapshotName0, false);
+    takeSnapshot(tableName, Bytes.toString(snapshotName0), false);
 
     // Insert more data
     SnapshotTestingUtils.loadData(UTIL, tableName, 500, TEST_FAM);
@@ -253,7 +242,7 @@ public class TestSnapshotTemporaryDirectory {
     }
 
     SnapshotTestingUtils.verifyRowCount(UTIL, tableName, snapshot1Rows);
-    takeSnapshot(tableName, snapshotName1, false);
+    takeSnapshot(tableName, Bytes.toString(snapshotName1), false);
 
     // Restore from snapshot-0
     admin.disableTable(tableName);
@@ -288,9 +277,8 @@ public class TestSnapshotTemporaryDirectory {
    *
    * @throws Exception if snapshot does not complete successfully
    */
-  @Test
-  public void testOfflineTableSnapshot() throws Exception {
-    Admin admin = UTIL.getAdmin();
+  @Test(timeout = 300000) public void testOfflineTableSnapshot() throws Exception {
+    Admin admin = UTIL.getHBaseAdmin();
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
 
@@ -299,19 +287,21 @@ public class TestSnapshotTemporaryDirectory {
     UTIL.loadTable(table, TEST_FAM, false);
 
     LOG.debug("FS state before disable:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils
+        .logFileSystemState(UTIL.getTestFileSystem(), FSUtils.getRootDir(UTIL.getConfiguration()),
+            LOG);
     // XXX if this is flakey, might want to consider using the async version and looping as
     // disableTable can succeed and still timeout.
     admin.disableTable(TABLE_NAME);
 
     LOG.debug("FS state before snapshot:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils
+        .logFileSystemState(UTIL.getTestFileSystem(), FSUtils.getRootDir(UTIL.getConfiguration()),
+            LOG);
 
     // take a snapshot of the disabled table
     final String SNAPSHOT_NAME = "offlineTableSnapshot";
-    String snapshot = SNAPSHOT_NAME;
+    byte[] snapshot = Bytes.toBytes(SNAPSHOT_NAME);
     takeSnapshot(TABLE_NAME, SNAPSHOT_NAME, true);
     LOG.debug("Snapshot completed.");
 
@@ -323,12 +313,12 @@ public class TestSnapshotTemporaryDirectory {
     FileSystem fs = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getFileSystem();
     Path rootDir = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getRootDir();
     LOG.debug("FS state after snapshot:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils
+        .logFileSystemState(UTIL.getTestFileSystem(), FSUtils.getRootDir(UTIL.getConfiguration()),
+            LOG);
 
     SnapshotTestingUtils
-        .confirmSnapshotValid(ProtobufUtil.createHBaseProtosSnapshotDesc(snapshots.get(0)),
-            TABLE_NAME, TEST_FAM, rootDir, admin, fs);
+        .confirmSnapshotValid(snapshots.get(0), TABLE_NAME, TEST_FAM, rootDir, admin, fs);
 
     admin.deleteSnapshot(snapshot);
     SnapshotTestingUtils.assertNoSnapshots(admin);
@@ -340,8 +330,7 @@ public class TestSnapshotTemporaryDirectory {
    *
    * @throws Exception if snapshot does not complete successfully
    */
-  @Test
-  public void testSnapshotCloneContents() throws Exception {
+  @Test(timeout = 180000) public void testSnapshotCloneContents() throws Exception {
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
 
@@ -377,55 +366,58 @@ public class TestSnapshotTemporaryDirectory {
     admin.close();
   }
 
-  @Test
-  public void testOfflineTableSnapshotWithEmptyRegion() throws Exception {
+  @Test(timeout = 180000) public void testOfflineTableSnapshotWithEmptyRegion() throws Exception {
     // test with an empty table with one region
 
     // make sure we don't fail on listing snapshots
     SnapshotTestingUtils.assertNoSnapshots(admin);
 
     LOG.debug("FS state before disable:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils
+        .logFileSystemState(UTIL.getTestFileSystem(), FSUtils.getRootDir(UTIL.getConfiguration()),
+            LOG);
     admin.disableTable(TABLE_NAME);
 
     LOG.debug("FS state before snapshot:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils
+        .logFileSystemState(UTIL.getTestFileSystem(), FSUtils.getRootDir(UTIL.getConfiguration()),
+            LOG);
 
     // take a snapshot of the disabled table
-    String snapshot = "testOfflineTableSnapshotWithEmptyRegion";
-    takeSnapshot(TABLE_NAME, snapshot, true);
+    byte[] snapshot = Bytes.toBytes("testOfflineTableSnapshotWithEmptyRegion");
+    takeSnapshot(TABLE_NAME, Bytes.toString(snapshot), true);
     LOG.debug("Snapshot completed.");
 
     // make sure we have the snapshot
     List<SnapshotDescription> snapshots =
-      SnapshotTestingUtils.assertOneSnapshotThatMatches(admin, snapshot, TABLE_NAME);
+        SnapshotTestingUtils.assertOneSnapshotThatMatches(admin, snapshot, TABLE_NAME);
 
     // make sure its a valid snapshot
     FileSystem fs = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getFileSystem();
     Path rootDir = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getRootDir();
     LOG.debug("FS state after snapshot:");
-    CommonFSUtils.logFileSystemState(UTIL.getTestFileSystem(),
-      CommonFSUtils.getRootDir(UTIL.getConfiguration()), LOG);
+    FSUtils
+        .logFileSystemState(UTIL.getTestFileSystem(), FSUtils.getRootDir(UTIL.getConfiguration()),
+            LOG);
 
     List<byte[]> emptyCfs = Lists.newArrayList(TEST_FAM); // no file in the region
     List<byte[]> nonEmptyCfs = Lists.newArrayList();
     SnapshotTestingUtils
-        .confirmSnapshotValid(ProtobufUtil.createHBaseProtosSnapshotDesc(snapshots.get(0)),
-            TABLE_NAME, nonEmptyCfs, emptyCfs, rootDir, admin, fs);
+        .confirmSnapshotValid(snapshots.get(0), TABLE_NAME, nonEmptyCfs, emptyCfs, rootDir,
+            admin, fs);
 
     admin.deleteSnapshot(snapshot);
     SnapshotTestingUtils.assertNoSnapshots(admin);
   }
 
   // Ensures that the snapshot is transferred to the proper completed snapshot directory
-  @Test
-  public void testEnsureTemporaryDirectoryTransfer() throws Exception {
-    Admin admin = UTIL.getAdmin();
+  @Test(timeout = 180000) public void testEnsureTemporaryDirectoryTransfer() throws Exception {
+    Admin admin = null;
     TableName tableName2 = TableName.valueOf("testListTableSnapshots");
     try {
-      TableDescriptor htd = TableDescriptorBuilder.newBuilder(tableName2).build();
+      admin = UTIL.getHBaseAdmin();
+
+      HTableDescriptor htd = new HTableDescriptor(tableName2);
       UTIL.createTable(htd, new byte[][] { TEST_FAM }, UTIL.getConfiguration());
 
       String table1Snapshot1 = "Table1Snapshot1";
@@ -440,8 +432,7 @@ public class TestSnapshotTemporaryDirectory {
       takeSnapshot(TABLE_NAME, table2Snapshot1, false);
       LOG.debug("Table2Snapshot1 completed.");
 
-      List<SnapshotDescription> listTableSnapshots =
-        admin.listTableSnapshots(Pattern.compile("test.*"), Pattern.compile(".*"));
+      List<SnapshotDescription> listTableSnapshots = admin.listTableSnapshots("test.*", ".*");
       List<String> listTableSnapshotNames = new ArrayList<String>();
       assertEquals(3, listTableSnapshots.size());
       for (SnapshotDescription s : listTableSnapshots) {
@@ -451,22 +442,28 @@ public class TestSnapshotTemporaryDirectory {
       assertTrue(listTableSnapshotNames.contains(table1Snapshot2));
       assertTrue(listTableSnapshotNames.contains(table2Snapshot1));
     } finally {
-      try {
-        admin.deleteSnapshots(Pattern.compile("Table.*"));
-      } catch (SnapshotDoesNotExistException ignore) {
+      if (admin != null) {
+        try {
+          admin.deleteSnapshots("Table.*");
+        } catch (SnapshotDoesNotExistException ignore) {
+        }
+        if (admin.tableExists(tableName2)) {
+          UTIL.deleteTable(tableName2);
+        }
+        admin.close();
       }
-      if (admin.tableExists(tableName2)) {
-        UTIL.deleteTable(tableName2);
-      }
-      admin.close();
     }
   }
 
   private void takeSnapshot(TableName tableName, String snapshotName, boolean disabled)
       throws IOException {
-    SnapshotType type = disabled ? SnapshotType.DISABLED : SnapshotType.FLUSH;
-    SnapshotDescription desc = new SnapshotDescription(snapshotName, tableName, type, null, -1,
-        manifestVersion, null);
+    Type type = disabled ? Type.DISABLED : Type.FLUSH;
+    SnapshotDescription desc = SnapshotDescription.newBuilder()
+        .setTable(tableName.getNameAsString())
+        .setName(snapshotName)
+        .setVersion(manifestVersion)
+        .setType(type)
+        .build();
     admin.snapshot(desc);
   }
 }

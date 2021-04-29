@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
@@ -51,15 +50,17 @@ public class Monkeys implements Closeable {
   public Monkeys(Configuration conf) {
     this.conf = Preconditions.checkNotNull(conf, "Should specify a configuration");
     this.monkeyRunner = new ChaosMonkeyRunner();
-    this.runner = () -> {
-      try {
-        monkeyRunner.getAndStartMonkey();
-      } catch (Exception e) {
-        LOG.error("Exception occurred when running chaos monkeys: ", e);
+    this.runner = new Runnable() {
+      @Override public void run() {
+        try {
+          monkeyRunner.getAndStartMonkey();
+        } catch (Exception e) {
+          LOG.error("Exception occurred when running chaos monkeys: ", e);
+        }
       }
     };
     this.executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder()
-        .setDaemon(true).setNameFormat("ChaosMonkey").build());
+      .setDaemon(true).setNameFormat("ChaosMonkey").build());
     IntegrationTestingUtility.setUseDistributedCluster(this.conf);
   }
 

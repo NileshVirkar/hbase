@@ -1,4 +1,5 @@
 /*
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,8 +23,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -34,140 +33,128 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
-import java.util.NavigableSet;
-import java.util.Set;
+import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
-import java.util.stream.Collectors;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.ClusterId;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.Stoppable;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.RegionInfoBuilder;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
+import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.generated.WALProtos.BulkLoadDescriptor;
 import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl;
-import org.apache.hadoop.hbase.regionserver.RegionServerServices;
+import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
+import org.apache.hadoop.hbase.replication.ReplicationEndpoint;
 import org.apache.hadoop.hbase.replication.ReplicationFactory;
-import org.apache.hadoop.hbase.replication.ReplicationPeer;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeers;
-import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
+import org.apache.hadoop.hbase.replication.ReplicationQueueInfo;
+import org.apache.hadoop.hbase.replication.ReplicationQueues;
+import org.apache.hadoop.hbase.replication.ReplicationQueuesClient;
 import org.apache.hadoop.hbase.replication.ReplicationSourceDummy;
-import org.apache.hadoop.hbase.replication.ReplicationStorageFactory;
-import org.apache.hadoop.hbase.replication.ReplicationUtils;
-import org.apache.hadoop.hbase.replication.SyncReplicationState;
-import org.apache.hadoop.hbase.replication.ZKReplicationPeerStorage;
+import org.apache.hadoop.hbase.replication.ReplicationStateZKBase;
 import org.apache.hadoop.hbase.replication.regionserver.ReplicationSourceManager.NodeFailoverWorker;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.testclassification.ReplicationTests;
+import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
-import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-import org.apache.hadoop.hbase.util.JVMClusterUtil;
-import org.apache.hadoop.hbase.util.MockServer;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.WAL;
-import org.apache.hadoop.hbase.wal.WALEdit;
 import org.apache.hadoop.hbase.wal.WALFactory;
-import org.apache.hadoop.hbase.wal.WALKeyImpl;
+import org.apache.hadoop.hbase.wal.WALKey;
+import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
 import org.apache.hadoop.hbase.zookeeper.ZKClusterId;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
-import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
+import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.ClassRule;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
-import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
 
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos.BulkLoadDescriptor;
+@Category(MediumTests.class)
+public class TestReplicationSourceManager {
 
-/**
- * An abstract class that tests ReplicationSourceManager. Classes that extend this class should
- * set up the proper config for this class and initialize the proper cluster using
- * HBaseTestingUtility.
- */
-@Category({ReplicationTests.class, MediumTests.class})
-public abstract class TestReplicationSourceManager {
+  private static final Log LOG =
+      LogFactory.getLog(TestReplicationSourceManager.class);
 
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestReplicationSourceManager.class);
+  private static Configuration conf;
 
-  protected static final Logger LOG =
-      LoggerFactory.getLogger(TestReplicationSourceManager.class);
+  private static HBaseTestingUtility utility;
 
-  protected static Configuration conf;
+  private static Replication replication;
 
-  protected static HBaseTestingUtility utility;
+  private static ReplicationSourceManager manager;
 
-  protected static Replication replication;
+  private static ZooKeeperWatcher zkw;
 
-  protected static ReplicationSourceManager manager;
+  private static HTableDescriptor htd;
 
-  protected static ReplicationSourceManager managerOfCluster;
+  private static HRegionInfo hri;
 
-  protected static ZKWatcher zkw;
+  private static final byte[] r1 = Bytes.toBytes("r1");
 
-  protected static TableDescriptor htd;
+  private static final byte[] r2 = Bytes.toBytes("r2");
 
-  protected static RegionInfo hri;
+  private static final byte[] f1 = Bytes.toBytes("f1");
 
-  protected static final byte[] r1 = Bytes.toBytes("r1");
+  private static final byte[] f2 = Bytes.toBytes("f2");
 
-  protected static final byte[] r2 = Bytes.toBytes("r2");
-
-  protected static final byte[] f1 = Bytes.toBytes("f1");
-
-  protected static final byte[] f2 = Bytes.toBytes("f2");
-
-  protected static final TableName test =
+  private static final TableName test =
       TableName.valueOf("test");
 
-  protected static final String slaveId = "1";
+  private static final String slaveId = "1";
 
-  protected static FileSystem fs;
+  private static FileSystem fs;
 
-  protected static Path oldLogDir;
+  private static Path oldLogDir;
 
-  protected static Path logDir;
+  private static Path logDir;
 
-  protected static Path remoteLogDir;
+  private static CountDownLatch latch;
 
-  protected static CountDownLatch latch;
+  private static List<String> files = new ArrayList<String>();
 
-  protected static List<String> files = new ArrayList<>();
-  protected static NavigableMap<byte[], Integer> scopes;
+  @BeforeClass
+  public static void setUpBeforeClass() throws Exception {
 
-  protected static void setupZkAndReplication() throws Exception {
-    // The implementing class should set up the conf
-    assertNotNull(conf);
-    zkw = new ZKWatcher(conf, "test", null);
+    conf = HBaseConfiguration.create();
+    conf.set("replication.replicationsource.implementation",
+        ReplicationSourceDummy.class.getCanonicalName());
+    conf.setBoolean(HConstants.REPLICATION_ENABLE_KEY,
+        HConstants.REPLICATION_ENABLE_DEFAULT);
+    conf.setLong("replication.sleep.before.failover", 2000);
+    conf.setInt("replication.source.maxretriesmultiplier", 10);
+    utility = new HBaseTestingUtility(conf);
+    utility.startMiniZKCluster();
+
+    zkw = new ZooKeeperWatcher(conf, "test", null);
     ZKUtil.createWithParents(zkw, "/hbase/replication");
     ZKUtil.createWithParents(zkw, "/hbase/replication/peers/1");
     ZKUtil.setData(zkw, "/hbase/replication/peers/1",
@@ -175,70 +162,36 @@ public abstract class TestReplicationSourceManager {
             + conf.get(HConstants.ZOOKEEPER_CLIENT_PORT) + ":/1"));
     ZKUtil.createWithParents(zkw, "/hbase/replication/peers/1/peer-state");
     ZKUtil.setData(zkw, "/hbase/replication/peers/1/peer-state",
-      ZKReplicationPeerStorage.ENABLED_ZNODE_BYTES);
-    ZKUtil.createWithParents(zkw, "/hbase/replication/peers/1/sync-rep-state");
-    ZKUtil.setData(zkw, "/hbase/replication/peers/1/sync-rep-state",
-      ZKReplicationPeerStorage.NONE_STATE_ZNODE_BYTES);
-    ZKUtil.createWithParents(zkw, "/hbase/replication/peers/1/new-sync-rep-state");
-    ZKUtil.setData(zkw, "/hbase/replication/peers/1/new-sync-rep-state",
-      ZKReplicationPeerStorage.NONE_STATE_ZNODE_BYTES);
+      ReplicationStateZKBase.ENABLED_ZNODE_BYTES);
     ZKUtil.createWithParents(zkw, "/hbase/replication/state");
-    ZKUtil.setData(zkw, "/hbase/replication/state", ZKReplicationPeerStorage.ENABLED_ZNODE_BYTES);
+    ZKUtil.setData(zkw, "/hbase/replication/state", ReplicationStateZKBase.ENABLED_ZNODE_BYTES);
 
     ZKClusterId.setClusterId(zkw, new ClusterId());
-    CommonFSUtils.setRootDir(utility.getConfiguration(), utility.getDataTestDir());
+    FSUtils.setRootDir(utility.getConfiguration(), utility.getDataTestDir());
     fs = FileSystem.get(conf);
-    oldLogDir = utility.getDataTestDir(HConstants.HREGION_OLDLOGDIR_NAME);
-    logDir = utility.getDataTestDir(HConstants.HREGION_LOGDIR_NAME);
-    remoteLogDir = utility.getDataTestDir(ReplicationUtils.REMOTE_WAL_DIR_NAME);
-    replication = new Replication();
-    replication.initialize(new DummyServer(), fs, logDir, oldLogDir,
-      new WALFactory(conf, "test", null, false));
-    managerOfCluster = getManagerFromCluster();
-    if (managerOfCluster != null) {
-      // After replication procedure, we need to add peer by hand (other than by receiving
-      // notification from zk)
-      managerOfCluster.addPeer(slaveId);
-    }
-
+    oldLogDir = new Path(utility.getDataTestDir(),
+        HConstants.HREGION_OLDLOGDIR_NAME);
+    logDir = new Path(utility.getDataTestDir(),
+        HConstants.HREGION_LOGDIR_NAME);
+    replication = new Replication(new DummyServer(), fs, logDir, oldLogDir);
     manager = replication.getReplicationManager();
+
     manager.addSource(slaveId);
-    if (managerOfCluster != null) {
-      waitPeer(slaveId, managerOfCluster, true);
-    }
-    waitPeer(slaveId, manager, true);
 
-    htd = TableDescriptorBuilder.newBuilder(test)
-      .setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(f1)
-        .setScope(HConstants.REPLICATION_SCOPE_GLOBAL).build())
-      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(f2)).build();
+    htd = new HTableDescriptor(test);
+    HColumnDescriptor col = new HColumnDescriptor(f1);
+    col.setScope(HConstants.REPLICATION_SCOPE_GLOBAL);
+    htd.addFamily(col);
+    col = new HColumnDescriptor(f2);
+    col.setScope(HConstants.REPLICATION_SCOPE_LOCAL);
+    htd.addFamily(col);
 
-    scopes = new TreeMap<>(Bytes.BYTES_COMPARATOR);
-    for(byte[] fam : htd.getColumnFamilyNames()) {
-      scopes.put(fam, 0);
-    }
-    hri = RegionInfoBuilder.newBuilder(htd.getTableName()).setStartKey(r1).setEndKey(r2).build();
-  }
-
-  private static ReplicationSourceManager getManagerFromCluster() {
-    // TestReplicationSourceManagerZkImpl won't start the mini hbase cluster.
-    if (utility.getMiniHBaseCluster() == null) {
-      return null;
-    }
-    return utility.getMiniHBaseCluster().getRegionServerThreads()
-        .stream().map(JVMClusterUtil.RegionServerThread::getRegionServer)
-        .findAny()
-        .map(RegionServerServices::getReplicationSourceService)
-        .map(r -> (Replication)r)
-        .map(Replication::getReplicationManager)
-        .get();
+    hri = new HRegionInfo(htd.getTableName(), r1, r2);
   }
 
   @AfterClass
   public static void tearDownAfterClass() throws Exception {
-    if (manager != null) {
-      manager.join();
-    }
+    manager.join();
     utility.shutdownMiniCluster();
   }
 
@@ -248,7 +201,6 @@ public abstract class TestReplicationSourceManager {
   private void cleanLogDir() throws IOException {
     fs.delete(logDir, true);
     fs.delete(oldLogDir, true);
-    fs.delete(remoteLogDir, true);
   }
 
   @Before
@@ -261,14 +213,6 @@ public abstract class TestReplicationSourceManager {
   public void tearDown() throws Exception {
     LOG.info("End " + testName.getMethodName());
     cleanLogDir();
-    List<String> ids = manager.getSources().stream()
-        .map(ReplicationSourceInterface::getPeerId).collect(Collectors.toList());
-    for (String id : ids) {
-      if (slaveId.equals(id)) {
-        continue;
-      }
-      removePeerAndWait(id);
-    }
   }
 
   @Test
@@ -280,28 +224,25 @@ public abstract class TestReplicationSourceManager {
     WALEdit edit = new WALEdit();
     edit.add(kv);
 
-    WALFactory wals =
-      new WALFactory(utility.getConfiguration(), URLEncoder.encode("regionserver:60020", "UTF8"));
-    ReplicationSourceManager replicationManager = replication.getReplicationManager();
-    wals.getWALProvider()
-      .addWALActionsListener(new ReplicationSourceWALActionListener(conf, replicationManager));
-    final WAL wal = wals.getWAL(hri);
+    List<WALActionsListener> listeners = new ArrayList<WALActionsListener>();
+    listeners.add(replication);
+    final WALFactory wals = new WALFactory(utility.getConfiguration(), listeners,
+        URLEncoder.encode("regionserver:60020", "UTF8"));
+    final WAL wal = wals.getWAL(hri.getEncodedNameAsBytes(), hri.getTable().getNamespace());
     manager.init();
-    TableDescriptor htd = TableDescriptorBuilder.newBuilder(TableName.valueOf("tableame"))
-      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(f1)).build();
-    NavigableMap<byte[], Integer> scopes = new TreeMap<>(Bytes.BYTES_COMPARATOR);
-    for(byte[] fam : htd.getColumnFamilyNames()) {
-      scopes.put(fam, 0);
-    }
+    HTableDescriptor htd = new HTableDescriptor();
+    htd.addFamily(new HColumnDescriptor(f1));
     // Testing normal log rolling every 20
     for(long i = 1; i < 101; i++) {
       if(i > 1 && i % 20 == 0) {
         wal.rollWriter();
       }
-      LOG.info(Long.toString(i));
-      final long txid = wal.appendData(hri,
-        new WALKeyImpl(hri.getEncodedNameAsBytes(), test, System.currentTimeMillis(), mvcc, scopes),
-        edit);
+      LOG.info(i);
+      final long txid = wal.append(htd,
+          hri,
+          new WALKey(hri.getEncodedNameAsBytes(), test, System.currentTimeMillis(), mvcc),
+          edit,
+          true);
       wal.sync(txid);
     }
 
@@ -313,31 +254,28 @@ public abstract class TestReplicationSourceManager {
     LOG.info(baseline + " and " + time);
 
     for (int i = 0; i < 3; i++) {
-      wal.appendData(hri,
-        new WALKeyImpl(hri.getEncodedNameAsBytes(), test, System.currentTimeMillis(), mvcc, scopes),
-        edit);
+      wal.append(htd, hri,
+          new WALKey(hri.getEncodedNameAsBytes(), test, System.currentTimeMillis(), mvcc),
+          edit,
+          true);
     }
     wal.sync();
 
     int logNumber = 0;
-    for (Map.Entry<String, NavigableSet<String>> entry : manager.getWALs().get(slaveId)
-      .entrySet()) {
+    for (Map.Entry<String, SortedSet<String>> entry : manager.getWALs().get(slaveId).entrySet()) {
       logNumber += entry.getValue().size();
     }
     assertEquals(6, logNumber);
 
     wal.rollWriter();
 
-    ReplicationSourceInterface source = mock(ReplicationSourceInterface.class);
-    when(source.getQueueId()).thenReturn("1");
-    when(source.isRecovered()).thenReturn(false);
-    when(source.isSyncReplication()).thenReturn(false);
-    manager.logPositionAndCleanOldLogs(source,
-      new WALEntryBatch(0, manager.getSources().get(0).getCurrentPath()));
+    manager.logPositionAndCleanOldLogs(manager.getSources().get(0).getCurrentPath(),
+        "1", 0, false, false);
 
-    wal.appendData(hri,
-      new WALKeyImpl(hri.getEncodedNameAsBytes(), test, System.currentTimeMillis(), mvcc, scopes),
-      edit);
+    wal.append(htd, hri,
+        new WALKey(hri.getEncodedNameAsBytes(), test, System.currentTimeMillis(), mvcc),
+        edit,
+        true);
     wal.sync();
 
     assertEquals(1, manager.getWALs().size());
@@ -348,14 +286,17 @@ public abstract class TestReplicationSourceManager {
 
   @Test
   public void testClaimQueues() throws Exception {
-    Server server = new DummyServer("hostname0.example.org");
-    ReplicationQueueStorage rq = ReplicationStorageFactory
-        .getReplicationQueueStorage(server.getZooKeeper(), server.getConfiguration());
+    conf.setBoolean(HConstants.ZOOKEEPER_USEMULTI, true);
+    final Server server = new DummyServer("hostname0.example.org");
+    ReplicationQueues rq =
+        ReplicationFactory.getReplicationQueues(server.getZooKeeper(), server.getConfiguration(),
+          server);
+    rq.init(server.getServerName().toString());
     // populate some znodes in the peer znode
     files.add("log1");
     files.add("log2");
     for (String file : files) {
-      rq.addWAL(server.getServerName(), "1", file);
+      rq.addLog("1", file);
     }
     // create 3 DummyServers
     Server s1 = new DummyServer("dummyserver1.example.org");
@@ -363,9 +304,12 @@ public abstract class TestReplicationSourceManager {
     Server s3 = new DummyServer("dummyserver3.example.org");
 
     // create 3 DummyNodeFailoverWorkers
-    DummyNodeFailoverWorker w1 = new DummyNodeFailoverWorker(server.getServerName(), s1);
-    DummyNodeFailoverWorker w2 = new DummyNodeFailoverWorker(server.getServerName(), s2);
-    DummyNodeFailoverWorker w3 = new DummyNodeFailoverWorker(server.getServerName(), s3);
+    DummyNodeFailoverWorker w1 = new DummyNodeFailoverWorker(
+        server.getServerName().getServerName(), s1);
+    DummyNodeFailoverWorker w2 = new DummyNodeFailoverWorker(
+        server.getServerName().getServerName(), s2);
+    DummyNodeFailoverWorker w3 = new DummyNodeFailoverWorker(
+        server.getServerName().getServerName(), s3);
 
     latch = new CountDownLatch(3);
     // start the threads
@@ -384,50 +328,148 @@ public abstract class TestReplicationSourceManager {
 
   @Test
   public void testCleanupFailoverQueues() throws Exception {
-    Server server = new DummyServer("hostname1.example.org");
-    ReplicationQueueStorage rq = ReplicationStorageFactory
-        .getReplicationQueueStorage(server.getZooKeeper(), server.getConfiguration());
+    final Server server = new DummyServer("hostname1.example.org");
+    ReplicationQueues rq =
+        ReplicationFactory.getReplicationQueues(server.getZooKeeper(), server.getConfiguration(),
+          server);
+    rq.init(server.getServerName().toString());
     // populate some znodes in the peer znode
-    SortedSet<String> files = new TreeSet<>();
+    SortedSet<String> files = new TreeSet<String>();
     String group = "testgroup";
-    String file1 = group + "." + EnvironmentEdgeManager.currentTime() + ".log1";
-    String file2 = group + "." + EnvironmentEdgeManager.currentTime() + ".log2";
+    String file1 = group + ".log1";
+    String file2 = group + ".log2";
     files.add(file1);
     files.add(file2);
     for (String file : files) {
-      rq.addWAL(server.getServerName(), "1", file);
+      rq.addLog("1", file);
     }
     Server s1 = new DummyServer("dummyserver1.example.org");
+    ReplicationQueues rq1 =
+        ReplicationFactory.getReplicationQueues(s1.getZooKeeper(), s1.getConfiguration(), s1);
+    rq1.init(s1.getServerName().toString());
     ReplicationPeers rp1 =
-        ReplicationFactory.getReplicationPeers(s1.getZooKeeper(), s1.getConfiguration());
+        ReplicationFactory.getReplicationPeers(s1.getZooKeeper(), s1.getConfiguration(), s1);
     rp1.init();
     NodeFailoverWorker w1 =
-        manager.new NodeFailoverWorker(server.getServerName());
-    w1.run();
+        manager.new NodeFailoverWorker(server.getServerName().getServerName(), rq1, rp1, new UUID(
+            new Long(1), new Long(2)));
+    w1.start();
+    w1.join(10000);
     assertEquals(1, manager.getWalsByIdRecoveredQueues().size());
     String id = "1-" + server.getServerName().getServerName();
     assertEquals(files, manager.getWalsByIdRecoveredQueues().get(id).get(group));
-    ReplicationSourceInterface source = mock(ReplicationSourceInterface.class);
-    when(source.getQueueId()).thenReturn(id);
-    when(source.isRecovered()).thenReturn(true);
-    when(source.isSyncReplication()).thenReturn(false);
-    manager.cleanOldLogs(file2, false, source);
+    manager.cleanOldLogs(file2, id, true);
     // log1 should be deleted
     assertEquals(Sets.newHashSet(file2), manager.getWalsByIdRecoveredQueues().get(id).get(group));
   }
 
   @Test
+  public void testNodeFailoverDeadServerParsing() throws Exception {
+    LOG.debug("testNodeFailoverDeadServerParsing");
+    conf.setBoolean(HConstants.ZOOKEEPER_USEMULTI, true);
+    final Server server = new DummyServer("ec2-54-234-230-108.compute-1.amazonaws.com");
+    ReplicationQueues repQueues =
+        ReplicationFactory.getReplicationQueues(server.getZooKeeper(), conf, server);
+    repQueues.init(server.getServerName().toString());
+    // populate some znodes in the peer znode
+    files.add("log1");
+    files.add("log2");
+    for (String file : files) {
+      repQueues.addLog("1", file);
+    }
+
+    // create 3 DummyServers
+    Server s1 = new DummyServer("ip-10-8-101-114.ec2.internal");
+    Server s2 = new DummyServer("ec2-107-20-52-47.compute-1.amazonaws.com");
+    Server s3 = new DummyServer("ec2-23-20-187-167.compute-1.amazonaws.com");
+
+    // simulate three servers fail sequentially
+    ReplicationQueues rq1 =
+        ReplicationFactory.getReplicationQueues(s1.getZooKeeper(), s1.getConfiguration(), s1);
+    rq1.init(s1.getServerName().toString());
+    String serverName = server.getServerName().getServerName();
+    List<String> unclaimed = rq1.getUnClaimedQueueIds(serverName);
+    rq1.claimQueue(serverName, unclaimed.get(0)).getSecond();
+    rq1.removeReplicatorIfQueueIsEmpty(unclaimed.get(0));
+
+    ReplicationQueues rq2 =
+        ReplicationFactory.getReplicationQueues(s2.getZooKeeper(), s2.getConfiguration(), s2);
+    rq2.init(s2.getServerName().toString());
+    serverName = s1.getServerName().getServerName();
+    unclaimed = rq2.getUnClaimedQueueIds(serverName);
+    rq2.claimQueue(serverName, unclaimed.get(0)).getSecond();
+    rq2.removeReplicatorIfQueueIsEmpty(unclaimed.get(0));
+    ReplicationQueues rq3 =
+        ReplicationFactory.getReplicationQueues(s3.getZooKeeper(), s3.getConfiguration(), s3);
+    rq3.init(s3.getServerName().toString());
+    serverName = s2.getServerName().getServerName();
+    unclaimed = rq3.getUnClaimedQueueIds(serverName);
+    String queue3 = rq3.claimQueue(serverName, unclaimed.get(0)).getFirst();
+    rq3.removeReplicatorIfQueueIsEmpty(unclaimed.get(0));
+    ReplicationQueueInfo replicationQueueInfo = new ReplicationQueueInfo(queue3);
+    List<String> result = replicationQueueInfo.getDeadRegionServers();
+
+    // verify
+    assertTrue(result.contains(server.getServerName().getServerName()));
+    assertTrue(result.contains(s1.getServerName().getServerName()));
+    assertTrue(result.contains(s2.getServerName().getServerName()));
+
+    server.abort("", null);
+  }
+
+  @Test
+  public void testFailoverDeadServerCversionChange() throws Exception {
+    LOG.debug("testFailoverDeadServerCversionChange");
+
+    conf.setBoolean(HConstants.ZOOKEEPER_USEMULTI, true);
+    final Server s0 = new DummyServer("cversion-change0.example.org");
+    ReplicationQueues repQueues =
+        ReplicationFactory.getReplicationQueues(s0.getZooKeeper(), conf, s0);
+    repQueues.init(s0.getServerName().toString());
+    // populate some znodes in the peer znode
+    files.add("log1");
+    files.add("log2");
+    for (String file : files) {
+      repQueues.addLog("1", file);
+    }
+    // simulate queue transfer
+    Server s1 = new DummyServer("cversion-change1.example.org");
+    ReplicationQueues rq1 =
+        ReplicationFactory.getReplicationQueues(s1.getZooKeeper(), s1.getConfiguration(), s1);
+    rq1.init(s1.getServerName().toString());
+
+    ReplicationQueuesClient client =
+        ReplicationFactory.getReplicationQueuesClient(s1.getZooKeeper(), s1.getConfiguration(), s1);
+
+    int v0 = client.getQueuesZNodeCversion();
+    List<String> queues = rq1.getUnClaimedQueueIds(s0.getServerName().getServerName());
+    for(String queue : queues) {
+      rq1.claimQueue(s0.getServerName().getServerName(), queue);
+    }
+    rq1.removeReplicatorIfQueueIsEmpty(s0.getServerName().getServerName());
+    int v1 = client.getQueuesZNodeCversion();
+    // cversion should increased by 1 since a child node is deleted
+    assertEquals(v0 + 1, v1);
+
+    s0.abort("", null);
+  }
+
+  @Test
+  @edu.umd.cs.findbugs.annotations.SuppressWarnings(value="RU_INVOKE_RUN",
+    justification="Intended")
   public void testCleanupUnknownPeerZNode() throws Exception {
-    Server server = new DummyServer("hostname2.example.org");
-    ReplicationQueueStorage rq = ReplicationStorageFactory
-        .getReplicationQueueStorage(server.getZooKeeper(), server.getConfiguration());
+    final Server server = new DummyServer("hostname2.example.org");
+    ReplicationQueues rq =
+        ReplicationFactory.getReplicationQueues(server.getZooKeeper(), server.getConfiguration(),
+          server);
+    rq.init(server.getServerName().toString());
     // populate some znodes in the peer znode
     // add log to an unknown peer
     String group = "testgroup";
-    rq.addWAL(server.getServerName(), "2", group + ".log1");
-    rq.addWAL(server.getServerName(), "2", group + ".log2");
+    rq.addLog("2", group + ".log1");
+    rq.addLog("2", group + ".log2");
 
-    NodeFailoverWorker w1 = manager.new NodeFailoverWorker(server.getServerName());
+    NodeFailoverWorker w1 = manager.new NodeFailoverWorker(server.getServerName().getServerName());
     w1.run();
 
     // The log of the unknown peer should be removed from zk
@@ -436,52 +478,35 @@ public abstract class TestReplicationSourceManager {
     }
   }
 
-  /**
-   * Test for HBASE-9038, Replication.scopeWALEdits would NPE if it wasn't filtering out the
-   * compaction WALEdit.
-   */
-  @Test
-  public void testCompactionWALEdits() throws Exception {
-    TableName tableName = TableName.valueOf("testCompactionWALEdits");
-    WALProtos.CompactionDescriptor compactionDescriptor =
-      WALProtos.CompactionDescriptor.getDefaultInstance();
-    RegionInfo hri = RegionInfoBuilder.newBuilder(tableName).setStartKey(HConstants.EMPTY_START_ROW)
-        .setEndKey(HConstants.EMPTY_END_ROW).build();
-    WALEdit edit = WALEdit.createCompaction(hri, compactionDescriptor);
-    ReplicationSourceWALActionListener.scopeWALEdits(new WALKeyImpl(), edit, conf);
-  }
-
   @Test
   public void testBulkLoadWALEditsWithoutBulkLoadReplicationEnabled() throws Exception {
-    NavigableMap<byte[], Integer> scope = new TreeMap<>(Bytes.BYTES_COMPARATOR);
-    // 1. Get the bulk load wal edit event
-    WALEdit logEdit = getBulkLoadWALEdit(scope);
-    // 2. Create wal key
-    WALKeyImpl logKey = new WALKeyImpl(scope);
+    // 1. Create wal key
+    WALKey logKey = new WALKey();
+    // 2. Get the bulk load wal edit event
+    WALEdit logEdit = getBulkLoadWALEdit();
 
     // 3. Get the scopes for the key
-    ReplicationSourceWALActionListener.scopeWALEdits(logKey, logEdit, conf);
+    Replication.scopeWALEdits(htd, logKey, logEdit, conf, manager);
 
     // 4. Assert that no bulk load entry scopes are added if bulk load hfile replication is disabled
-    assertNull("No bulk load entries scope should be added if bulk load replication is disabled.",
-      logKey.getReplicationScopes());
+    assertNull("No bulk load entries scope should be added if bulk load replication is diabled.",
+      logKey.getScopes());
   }
 
   @Test
   public void testBulkLoadWALEdits() throws Exception {
-    // 1. Get the bulk load wal edit event
-    NavigableMap<byte[], Integer> scope = new TreeMap<>(Bytes.BYTES_COMPARATOR);
-    WALEdit logEdit = getBulkLoadWALEdit(scope);
-    // 2. Create wal key
-    WALKeyImpl logKey = new WALKeyImpl(scope);
+    // 1. Create wal key
+    WALKey logKey = new WALKey();
+    // 2. Get the bulk load wal edit event
+    WALEdit logEdit = getBulkLoadWALEdit();
     // 3. Enable bulk load hfile replication
     Configuration bulkLoadConf = HBaseConfiguration.create(conf);
     bulkLoadConf.setBoolean(HConstants.REPLICATION_BULKLOAD_ENABLE_KEY, true);
 
     // 4. Get the scopes for the key
-    ReplicationSourceWALActionListener.scopeWALEdits(logKey, logEdit, bulkLoadConf);
+    Replication.scopeWALEdits(htd, logKey, logEdit, bulkLoadConf, manager);
 
-    NavigableMap<byte[], Integer> scopes = logKey.getReplicationScopes();
+    NavigableMap<byte[], Integer> scopes = logKey.getScopes();
     // Assert family with replication scope global is present in the key scopes
     assertTrue("This family scope is set to global, should be part of replication key scopes.",
       scopes.containsKey(f1));
@@ -495,22 +520,25 @@ public abstract class TestReplicationSourceManager {
    * corresponding ReplicationSourceInterface correctly cleans up the corresponding
    * replication queue and ReplicationPeer.
    * See HBASE-16096.
+   * @throws Exception
    */
   @Test
   public void testPeerRemovalCleanup() throws Exception{
     String replicationSourceImplName = conf.get("replication.replicationsource.implementation");
     final String peerId = "FakePeer";
-    final ReplicationPeerConfig peerConfig = ReplicationPeerConfig.newBuilder()
-      .setClusterKey(utility.getZkCluster().getAddress().toString() + ":/hbase").build();
+    final ReplicationPeerConfig peerConfig =
+        new ReplicationPeerConfig().setClusterKey("localhost:1:/hbase");
     try {
       DummyServer server = new DummyServer();
-      ReplicationQueueStorage rq = ReplicationStorageFactory
-          .getReplicationQueueStorage(server.getZooKeeper(), server.getConfiguration());
+      final ReplicationQueues rq =
+          ReplicationFactory.getReplicationQueues(server.getZooKeeper(), server.getConfiguration(),
+              server);
+      rq.init(server.getServerName().toString());
       // Purposely fail ReplicationSourceManager.addSource() by causing ReplicationSourceInterface
       // initialization to throw an exception.
       conf.set("replication.replicationsource.implementation",
           FailInitializeDummyReplicationSource.class.getName());
-      manager.getReplicationPeers();
+      final ReplicationPeers rp = manager.getReplicationPeers();
       // Set up the znode and ReplicationPeer for the fake peer
       // Don't wait for replication source to initialize, we know it won't.
       addPeerAndWait(peerId, peerConfig, false);
@@ -518,60 +546,41 @@ public abstract class TestReplicationSourceManager {
       // Sanity check
       assertNull(manager.getSource(peerId));
 
+
       // Create a replication queue for the fake peer
-      rq.addWAL(server.getServerName(), peerId, "FakeFile");
+      rq.addLog(peerId, "FakeFile");
       // Unregister peer, this should remove the peer and clear all queues associated with it
       // Need to wait for the ReplicationTracker to pick up the changes and notify listeners.
       removePeerAndWait(peerId);
-      assertFalse(rq.getAllQueues(server.getServerName()).contains(peerId));
+      assertFalse(rq.getAllQueues().contains(peerId));
     } finally {
       conf.set("replication.replicationsource.implementation", replicationSourceImplName);
       removePeerAndWait(peerId);
     }
   }
 
-  private static MetricsReplicationSourceSource getGlobalSource() throws Exception {
-    ReplicationSourceInterface source = manager.getSource(slaveId);
-    // Retrieve the global replication metrics source
-    Field f = MetricsSource.class.getDeclaredField("globalSourceSource");
-    f.setAccessible(true);
-    return (MetricsReplicationSourceSource)f.get(source.getSourceMetrics());
-  }
-
-  private static long getSizeOfLatestPath() {
-    // If no mini cluster is running, there are extra replication manager influencing the metrics.
-    if (utility.getMiniHBaseCluster() == null) {
-      return 0;
-    }
-    return utility.getMiniHBaseCluster().getRegionServerThreads()
-        .stream().map(JVMClusterUtil.RegionServerThread::getRegionServer)
-        .map(RegionServerServices::getReplicationSourceService)
-        .map(r -> (Replication)r)
-        .map(Replication::getReplicationManager)
-        .mapToLong(ReplicationSourceManager::getSizeOfLatestPath)
-        .sum();
-  }
-
   @Test
   public void testRemovePeerMetricsCleanup() throws Exception {
     final String peerId = "DummyPeer";
-    final ReplicationPeerConfig peerConfig = ReplicationPeerConfig.newBuilder()
-      .setClusterKey(utility.getZkCluster().getAddress().toString() + ":/hbase").build();
+    final ReplicationPeerConfig peerConfig =
+        new ReplicationPeerConfig().setClusterKey("localhost:1:/hbase");
     try {
-      MetricsReplicationSourceSource globalSource = getGlobalSource();
-      final int globalLogQueueSizeInitial = globalSource.getSizeOfLogQueue();
-      final long sizeOfLatestPath = getSizeOfLatestPath();
       addPeerAndWait(peerId, peerConfig, true);
-      assertEquals(sizeOfLatestPath + globalLogQueueSizeInitial, globalSource.getSizeOfLogQueue());
+
       ReplicationSourceInterface source = manager.getSource(peerId);
       // Sanity check
       assertNotNull(source);
-      final int sizeOfSingleLogQueue = source.getSourceMetrics().getSizeOfLogQueue();
+      // Retrieve the global replication metrics source
+      Field f = MetricsSource.class.getDeclaredField("globalSourceSource");
+      f.setAccessible(true);
+      MetricsReplicationSourceSource globalSource =
+          (MetricsReplicationSourceSource)f.get(source.getSourceMetrics());
+      int globalLogQueueSizeInitial = globalSource.getSizeOfLogQueue();
+
       // Enqueue log and check if metrics updated
       source.enqueueLog(new Path("abc"));
-      assertEquals(1 + sizeOfSingleLogQueue, source.getSourceMetrics().getSizeOfLogQueue());
-      assertEquals(source.getSourceMetrics().getSizeOfLogQueue() + globalLogQueueSizeInitial,
-        globalSource.getSizeOfLogQueue());
+      assertEquals(1, source.getSourceMetrics().getSizeOfLogQueue());
+      assertEquals(1 + globalLogQueueSizeInitial, globalSource.getSizeOfLogQueue());
 
       // Removing the peer should reset the global metrics
       removePeerAndWait(peerId);
@@ -581,146 +590,56 @@ public abstract class TestReplicationSourceManager {
       addPeerAndWait(peerId, peerConfig, true);
       source = manager.getSource(peerId);
       assertNotNull(source);
-      assertEquals(source.getSourceMetrics().getSizeOfLogQueue() + globalLogQueueSizeInitial,
-        globalSource.getSizeOfLogQueue());
+      assertEquals(0, source.getSourceMetrics().getSizeOfLogQueue());
+      assertEquals(globalLogQueueSizeInitial, globalSource.getSizeOfLogQueue());
     } finally {
       removePeerAndWait(peerId);
     }
   }
 
-  private ReplicationSourceInterface mockReplicationSource(String peerId) {
-    ReplicationSourceInterface source = mock(ReplicationSourceInterface.class);
-    when(source.getPeerId()).thenReturn(peerId);
-    when(source.getQueueId()).thenReturn(peerId);
-    when(source.isRecovered()).thenReturn(false);
-    when(source.isSyncReplication()).thenReturn(true);
-    ReplicationPeerConfig config = mock(ReplicationPeerConfig.class);
-    when(config.getRemoteWALDir())
-      .thenReturn(remoteLogDir.makeQualified(fs.getUri(), fs.getWorkingDirectory()).toString());
-    ReplicationPeer peer = mock(ReplicationPeer.class);
-    when(peer.getPeerConfig()).thenReturn(config);
-    when(source.getPeer()).thenReturn(peer);
-    return source;
-  }
-
-  @Test
-  public void testRemoveRemoteWALs() throws Exception {
-    String peerId2 = slaveId + "_2";
-    addPeerAndWait(peerId2,
-      ReplicationPeerConfig.newBuilder()
-        .setClusterKey("localhost:" + utility.getZkCluster().getClientPort() + ":/hbase").build(),
-      true);
-    try {
-      // make sure that we can deal with files which does not exist
-      String walNameNotExists =
-        "remoteWAL-12345-" + slaveId + ".12345" + ReplicationUtils.SYNC_WAL_SUFFIX;
-      Path wal = new Path(logDir, walNameNotExists);
-      manager.preLogRoll(wal);
-      manager.postLogRoll(wal);
-
-      Path remoteLogDirForPeer = new Path(remoteLogDir, slaveId);
-      fs.mkdirs(remoteLogDirForPeer);
-      String walName =
-        "remoteWAL-12345-" + slaveId + ".23456" + ReplicationUtils.SYNC_WAL_SUFFIX;
-      Path remoteWAL =
-        new Path(remoteLogDirForPeer, walName).makeQualified(fs.getUri(), fs.getWorkingDirectory());
-      fs.create(remoteWAL).close();
-      wal = new Path(logDir, walName);
-      manager.preLogRoll(wal);
-      manager.postLogRoll(wal);
-
-      ReplicationSourceInterface source = mockReplicationSource(peerId2);
-      manager.cleanOldLogs(walName, true, source);
-      // still there if peer id does not match
-      assertTrue(fs.exists(remoteWAL));
-
-      source = mockReplicationSource(slaveId);
-      manager.cleanOldLogs(walName, true, source);
-      assertFalse(fs.exists(remoteWAL));
-    } finally {
-      removePeerAndWait(peerId2);
-    }
-  }
-
-  @Test
-  public void testSameWALPrefix() throws IOException {
-    Set<String> latestWalsBefore =
-      manager.getLastestPath().stream().map(Path::getName).collect(Collectors.toSet());
-    String walName1 = "localhost,8080,12345-45678-Peer.34567";
-    String walName2 = "localhost,8080,12345.56789";
-    manager.preLogRoll(new Path(walName1));
-    manager.preLogRoll(new Path(walName2));
-
-    Set<String> latestWals = manager.getLastestPath().stream().map(Path::getName)
-      .filter(n -> !latestWalsBefore.contains(n)).collect(Collectors.toSet());
-    assertEquals(2, latestWals.size());
-    assertTrue(latestWals.contains(walName1));
-    assertTrue(latestWals.contains(walName2));
-  }
-
   /**
    * Add a peer and wait for it to initialize
+   * @param peerId
+   * @param peerConfig
    * @param waitForSource Whether to wait for replication source to initialize
+   * @throws Exception
    */
   private void addPeerAndWait(final String peerId, final ReplicationPeerConfig peerConfig,
       final boolean waitForSource) throws Exception {
     final ReplicationPeers rp = manager.getReplicationPeers();
-    rp.getPeerStorage().addPeer(peerId, peerConfig, true, SyncReplicationState.NONE);
-    try {
-      manager.addPeer(peerId);
-    } catch (Exception e) {
-      // ignore the failed exception, because we'll test both success & failed case.
-    }
-    waitPeer(peerId, manager, waitForSource);
-    if (managerOfCluster != null) {
-      managerOfCluster.addPeer(peerId);
-      waitPeer(peerId, managerOfCluster, waitForSource);
-    }
-  }
-
-  private static void waitPeer(final String peerId,
-      ReplicationSourceManager manager, final boolean waitForSource) {
-    ReplicationPeers rp = manager.getReplicationPeers();
-    Waiter.waitFor(conf, 20000, () -> {
-      if (waitForSource) {
-        ReplicationSourceInterface rs = manager.getSource(peerId);
-        if (rs == null) {
-          return false;
+    rp.addPeer(peerId, peerConfig);
+    Waiter.waitFor(conf, 20000, new Waiter.Predicate<Exception>() {
+      @Override public boolean evaluate() throws Exception {
+        if (waitForSource) {
+          return (manager.getSource(peerId) != null);
+        } else {
+          return (rp.getPeer(peerId) != null);
         }
-        if (rs instanceof ReplicationSourceDummy) {
-          return ((ReplicationSourceDummy)rs).isStartup();
-        }
-        return true;
-      } else {
-        return (rp.getPeer(peerId) != null);
       }
     });
   }
 
   /**
    * Remove a peer and wait for it to get cleaned up
+   * @param peerId
+   * @throws Exception
    */
   private void removePeerAndWait(final String peerId) throws Exception {
     final ReplicationPeers rp = manager.getReplicationPeers();
-    if (rp.getPeerStorage().listPeerIds().contains(peerId)) {
-      rp.getPeerStorage().removePeer(peerId);
-      try {
-        manager.removePeer(peerId);
-      } catch (Exception e) {
-        // ignore the failed exception and continue.
-      }
+    if (rp.getAllPeerIds().contains(peerId)) {
+      rp.removePeer(peerId);
     }
     Waiter.waitFor(conf, 20000, new Waiter.Predicate<Exception>() {
-      @Override
-      public boolean evaluate() throws Exception {
-        Collection<String> peers = rp.getPeerStorage().listPeerIds();
+      @Override public boolean evaluate() throws Exception {
+        List<String> peers = rp.getAllPeerIds();
         return (!manager.getAllQueues().contains(peerId)) && (rp.getPeer(peerId) == null)
-            && (!peers.contains(peerId)) && manager.getSource(peerId) == null;
+            && (!peers.contains(peerId));
       }
     });
   }
 
-  private WALEdit getBulkLoadWALEdit(NavigableMap<byte[], Integer> scope) {
+
+  private WALEdit getBulkLoadWALEdit() {
     // 1. Create store files for the families
     Map<byte[], List<Path>> storeFiles = new HashMap<>(1);
     Map<String, Long> storeFilesSize = new HashMap<>(1);
@@ -734,7 +653,7 @@ public abstract class TestReplicationSourceManager {
       storeFilesSize.put(hfilePath1.getName(), 0L);
     }
     storeFiles.put(f1, p);
-    scope.put(f1, 1);
+
     p = new ArrayList<>(1);
     Path hfilePath2 = new Path(Bytes.toString(f2));
     p.add(hfilePath2);
@@ -745,10 +664,11 @@ public abstract class TestReplicationSourceManager {
       storeFilesSize.put(hfilePath2.getName(), 0L);
     }
     storeFiles.put(f2, p);
+
     // 2. Create bulk load descriptor
     BulkLoadDescriptor desc =
         ProtobufUtil.toBulkLoadDescriptor(hri.getTable(),
-      UnsafeByteOperations.unsafeWrap(hri.getEncodedNameAsBytes()), storeFiles, storeFilesSize, 1);
+          ByteStringer.wrap(hri.getEncodedNameAsBytes()), storeFiles, storeFilesSize, 1);
 
     // 3. create bulk load wal edit event
     WALEdit logEdit = WALEdit.createBulkLoadEvent(hri, desc);
@@ -756,26 +676,27 @@ public abstract class TestReplicationSourceManager {
   }
 
   static class DummyNodeFailoverWorker extends Thread {
-    private Map<String, Set<String>> logZnodesMap;
+    private SortedMap<String, SortedSet<String>> logZnodesMap;
     Server server;
-    private ServerName deadRS;
-    ReplicationQueueStorage rq;
+    private String deadRsZnode;
+    ReplicationQueues rq;
 
-    public DummyNodeFailoverWorker(ServerName deadRS, Server s) throws Exception {
-      this.deadRS = deadRS;
+    public DummyNodeFailoverWorker(String znode, Server s) throws Exception {
+      this.deadRsZnode = znode;
       this.server = s;
-      this.rq = ReplicationStorageFactory.getReplicationQueueStorage(server.getZooKeeper(),
-        server.getConfiguration());
+      this.rq =
+          ReplicationFactory.getReplicationQueues(server.getZooKeeper(), server.getConfiguration(),
+            server);
+      this.rq.init(this.server.getServerName().toString());
     }
 
     @Override
     public void run() {
       try {
-        logZnodesMap = new HashMap<>();
-        List<String> queues = rq.getAllQueues(deadRS);
-        for (String queue : queues) {
-          Pair<String, SortedSet<String>> pair =
-              rq.claimQueue(deadRS, queue, server.getServerName());
+        logZnodesMap = new TreeMap<>();
+        List<String> queues = rq.getUnClaimedQueueIds(deadRsZnode);
+        for(String queue:queues){
+          Pair<String, SortedSet<String>> pair = rq.claimQueue(deadRsZnode, queue);
           if (pair != null) {
             logZnodesMap.put(pair.getFirst(), pair.getSecond());
           }
@@ -792,12 +713,12 @@ public abstract class TestReplicationSourceManager {
      * @return 1 when the map is not empty.
      */
     private int isLogZnodesMapPopulated() {
-      Collection<Set<String>> sets = logZnodesMap.values();
+      Collection<SortedSet<String>> sets = logZnodesMap.values();
       if (sets.size() > 1) {
         throw new RuntimeException("unexpected size of logZnodesMap: " + sets.size());
       }
       if (sets.size() == 1) {
-        Set<String> s = sets.iterator().next();
+        SortedSet<String> s = sets.iterator().next();
         for (String file : files) {
           // at least one file was missing
           if (!s.contains(file)) {
@@ -814,14 +735,14 @@ public abstract class TestReplicationSourceManager {
 
     @Override
     public void init(Configuration conf, FileSystem fs, ReplicationSourceManager manager,
-        ReplicationQueueStorage rq, ReplicationPeer rp, Server server, String peerClusterId,
-        UUID clusterId, WALFileLengthProvider walFileLengthProvider, MetricsSource metrics)
+        ReplicationQueues rq, ReplicationPeers rp, Stoppable stopper, String peerClusterId,
+        UUID clusterId, ReplicationEndpoint replicationEndpoint, MetricsSource metrics)
         throws IOException {
       throw new IOException("Failing deliberately");
     }
   }
 
-  static class DummyServer extends MockServer {
+  static class DummyServer implements Server {
     String hostname;
 
     DummyServer() {
@@ -838,13 +759,52 @@ public abstract class TestReplicationSourceManager {
     }
 
     @Override
-    public ZKWatcher getZooKeeper() {
+    public ZooKeeperWatcher getZooKeeper() {
       return zkw;
+    }
+
+    @Override
+    public CoordinatedStateManager getCoordinatedStateManager() {
+      return null;
+    }
+    @Override
+    public ClusterConnection getConnection() {
+      return null;
+    }
+
+    @Override
+    public MetaTableLocator getMetaTableLocator() {
+      return null;
     }
 
     @Override
     public ServerName getServerName() {
       return ServerName.valueOf(hostname, 1234, 1L);
+    }
+
+    @Override
+    public void abort(String why, Throwable e) {
+      // To change body of implemented methods use File | Settings | File Templates.
+    }
+
+    @Override
+    public boolean isAborted() {
+      return false;
+    }
+
+    @Override
+    public void stop(String why) {
+      // To change body of implemented methods use File | Settings | File Templates.
+    }
+
+    @Override
+    public boolean isStopped() {
+      return false; // To change body of implemented methods use File | Settings | File Templates.
+    }
+
+    @Override
+    public ChoreService getChoreService() {
+      return null;
     }
   }
 }

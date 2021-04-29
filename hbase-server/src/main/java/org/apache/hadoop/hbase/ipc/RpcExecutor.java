@@ -26,17 +26,13 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.LongAdder;
-import java.util.Map;
-import java.util.HashMap;
-
+import java.util.concurrent.atomic.AtomicLong;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hbase.thirdparty.io.netty.util.internal.StringUtil;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.monitoring.MonitoredRPCHandler;
 import org.apache.hadoop.hbase.util.BoundedPriorityBlockingQueue;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
@@ -51,7 +47,7 @@ import org.apache.hbase.thirdparty.com.google.common.base.Strings;
  */
 @InterfaceAudience.Private
 public abstract class RpcExecutor {
-  private static final Logger LOG = LoggerFactory.getLogger(RpcExecutor.class);
+  private static final Log LOG = LogFactory.getLog(RpcExecutor.class);
 
   protected static final int DEFAULT_CALL_QUEUE_SIZE_HARD_LIMIT = 250;
   public static final String CALL_QUEUE_HANDLER_FACTOR_CONF_KEY = "hbase.ipc.server.callqueue.handler.factor";
@@ -79,8 +75,8 @@ public abstract class RpcExecutor {
   public static final int CALL_QUEUE_CODEL_DEFAULT_INTERVAL = 100;
   public static final double CALL_QUEUE_CODEL_DEFAULT_LIFO_THRESHOLD = 0.8;
 
-  private LongAdder numGeneralCallsDropped = new LongAdder();
-  private LongAdder numLifoModeSwitches = new LongAdder();
+  private AtomicLong numGeneralCallsDropped = new AtomicLong();
+  private AtomicLong numLifoModeSwitches = new AtomicLong();
 
   protected final int numCallQueues;
   protected final List<BlockingQueue<CallRunner>> queues;
@@ -102,6 +98,26 @@ public abstract class RpcExecutor {
   private Configuration conf = null;
   private Abortable abortable = null;
 
+  @Deprecated
+  public RpcExecutor(final String name, final int handlerCount, final int numCallQueues) {
+    this.name = Strings.nullToEmpty(name);
+    this.handlers = new ArrayList<Handler>(handlerCount);
+    this.handlerCount = handlerCount;
+    this.numCallQueues = numCallQueues;
+    this.queues = new ArrayList<>(this.numCallQueues);
+    this.queueClass = null;
+    this.queueInitArgs = new Object[0];
+    this.priority = null;
+  }
+
+  @Deprecated
+  public RpcExecutor(final String name, final int handlerCount, final int numCallQueues,
+      final Configuration conf, final Abortable abortable) {
+    this(name, handlerCount, numCallQueues);
+    this.conf = conf;
+    this.abortable = abortable;
+  }
+
   public RpcExecutor(final String name, final int handlerCount, final int maxQueueLength,
       final PriorityFunction priority, final Configuration conf, final Abortable abortable) {
     this(name, handlerCount, conf.get(CALL_QUEUE_TYPE_CONF_KEY,
@@ -115,7 +131,7 @@ public abstract class RpcExecutor {
     this.conf = conf;
     this.abortable = abortable;
 
-    float callQueuesHandlersFactor = this.conf.getFloat(CALL_QUEUE_HANDLER_FACTOR_CONF_KEY, 0.1f);
+    float callQueuesHandlersFactor = this.conf.getFloat(CALL_QUEUE_HANDLER_FACTOR_CONF_KEY, 0);
     if (Float.compare(callQueuesHandlersFactor, 1.0f) > 0 ||
         Float.compare(0.0f, callQueuesHandlersFactor) > 0) {
       LOG.warn(CALL_QUEUE_HANDLER_FACTOR_CONF_KEY +
@@ -159,58 +175,14 @@ public abstract class RpcExecutor {
       queueClass = LinkedBlockingQueue.class;
     }
 
-    LOG.info("Instantiated {} with queueClass={}; " +
-        "numCallQueues={}, maxQueueLength={}, handlerCount={}",
-        this.name, this.queueClass, this.numCallQueues, maxQueueLength, this.handlerCount);
+    LOG.info("RpcExecutor " + " name " + " using " + callQueueType
+        + " as call queue; numCallQueues=" + numCallQueues + "; maxQueueLength=" + maxQueueLength
+        + "; handlerCount=" + handlerCount);
   }
 
   protected int computeNumCallQueues(final int handlerCount, final float callQueuesHandlersFactor) {
-    return Math.max(1, Math.round(handlerCount * callQueuesHandlersFactor));
+    return Math.max(1, (int) Math.round(handlerCount * callQueuesHandlersFactor));
   }
-
-  public Map<String, Long> getCallQueueCountsSummary() {
-    HashMap<String, Long> callQueueMethodTotalCount = new HashMap<>();
-
-    for(BlockingQueue<CallRunner> queue: queues) {
-      for (CallRunner cr:queue) {
-        RpcCall rpcCall = cr.getRpcCall();
-
-        String method;
-
-        if (null==rpcCall.getMethod() ||
-             StringUtil.isNullOrEmpty(method = rpcCall.getMethod().getName())) {
-          method = "Unknown";
-        }
-
-        callQueueMethodTotalCount.put(method, 1+callQueueMethodTotalCount.getOrDefault(method, 0L));
-      }
-    }
-
-    return callQueueMethodTotalCount;
-  }
-
-  public Map<String, Long> getCallQueueSizeSummary() {
-    HashMap<String, Long> callQueueMethodTotalSize = new HashMap<>();
-
-    for(BlockingQueue<CallRunner> queue: queues) {
-      for (CallRunner cr:queue) {
-        RpcCall rpcCall = cr.getRpcCall();
-        String method;
-
-        if (null==rpcCall.getMethod() ||
-          StringUtil.isNullOrEmpty(method = rpcCall.getMethod().getName())) {
-          method = "Unknown";
-        }
-
-        long size = rpcCall.getSize();
-
-        callQueueMethodTotalSize.put(method, size+callQueueMethodTotalSize.getOrDefault(method, 0L));
-      }
-    }
-
-    return callQueueMethodTotalSize;
-  }
-
 
   protected void initializeQueues(final int numQueues) {
     if (queueInitArgs.length > 0) {
@@ -218,7 +190,8 @@ public abstract class RpcExecutor {
       queueInitArgs[0] = Math.max((int) queueInitArgs[0], DEFAULT_CALL_QUEUE_SIZE_HARD_LIMIT);
     }
     for (int i = 0; i < numQueues; ++i) {
-      queues.add(ReflectionUtils.newInstance(queueClass, queueInitArgs));
+      queues
+          .add((BlockingQueue<CallRunner>) ReflectionUtils.newInstance(queueClass, queueInitArgs));
     }
   }
 
@@ -238,7 +211,7 @@ public abstract class RpcExecutor {
   public abstract boolean dispatch(final CallRunner callTask) throws InterruptedException;
 
   /** Returns the list of request queues */
-  protected List<BlockingQueue<CallRunner>> getQueues() {
+  public List<BlockingQueue<CallRunner>> getQueues() {
     return queues;
   }
 
@@ -272,10 +245,9 @@ public abstract class RpcExecutor {
       Handler handler = getHandler(name, handlerFailureThreshhold, callQueues.get(index),
         activeHandlerCount);
       handler.start();
+      LOG.debug("Started " + name);
       handlers.add(handler);
     }
-    LOG.debug("Started handlerCount={} with threadPrefix={}, numCallQueues={}, port={}",
-        handlers.size(), threadPrefix, qsize, port);
   }
 
   /**
@@ -321,7 +293,7 @@ public abstract class RpcExecutor {
           }
         }
       } catch (Exception e) {
-        LOG.warn(e.toString(), e);
+        LOG.warn(e);
         throw e;
       } finally {
         if (interrupted) {
@@ -398,7 +370,6 @@ public abstract class RpcExecutor {
       this.queueSize = queueSize;
     }
 
-    @Override
     public int getNextQueue() {
       return ThreadLocalRandom.current().nextInt(queueSize);
     }
@@ -423,12 +394,12 @@ public abstract class RpcExecutor {
 
     @Override
     public int compare(CallRunner a, CallRunner b) {
-      RpcCall callA = a.getRpcCall();
-      RpcCall callB = b.getRpcCall();
-      long deadlineA = priority.getDeadline(callA.getHeader(), callA.getParam());
-      long deadlineB = priority.getDeadline(callB.getHeader(), callB.getParam());
-      deadlineA = callA.getReceiveTime() + Math.min(deadlineA, maxDelay);
-      deadlineB = callB.getReceiveTime() + Math.min(deadlineB, maxDelay);
+      RpcServer.Call callA = a.getCall();
+      RpcServer.Call callB = b.getCall();
+      long deadlineA = priority.getDeadline(callA.getHeader(), callA.param);
+      long deadlineB = priority.getDeadline(callB.getHeader(), callB.param);
+      deadlineA = callA.timestamp + Math.min(deadlineA, maxDelay);
+      deadlineB = callB.timestamp + Math.min(deadlineB, maxDelay);
       return Long.compare(deadlineA, deadlineB);
     }
   }
@@ -446,11 +417,11 @@ public abstract class RpcExecutor {
   }
 
   public long getNumGeneralCallsDropped() {
-    return numGeneralCallsDropped.longValue();
+    return numGeneralCallsDropped.get();
   }
 
   public long getNumLifoModeSwitches() {
-    return numLifoModeSwitches.longValue();
+    return numLifoModeSwitches.get();
   }
 
   public int getActiveHandlerCount() {
@@ -500,12 +471,8 @@ public abstract class RpcExecutor {
    */
   public void resizeQueues(Configuration conf) {
     String configKey = RpcScheduler.IPC_SERVER_MAX_CALLQUEUE_LENGTH;
-    if (name != null) {
-      if (name.toLowerCase(Locale.ROOT).contains("priority")) {
-        configKey = RpcScheduler.IPC_SERVER_PRIORITY_MAX_CALLQUEUE_LENGTH;
-      } else if (name.toLowerCase(Locale.ROOT).contains("replication")) {
-        configKey = RpcScheduler.IPC_SERVER_REPLICATION_MAX_CALLQUEUE_LENGTH;
-      }
+    if (name != null && name.toLowerCase(Locale.ROOT).contains("priority")) {
+      configKey = RpcScheduler.IPC_SERVER_PRIORITY_MAX_CALLQUEUE_LENGTH;
     }
     currentQueueLimit = conf.getInt(configKey, currentQueueLimit);
   }

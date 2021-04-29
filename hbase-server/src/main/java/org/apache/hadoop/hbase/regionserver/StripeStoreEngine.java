@@ -20,16 +20,15 @@ package org.apache.hadoop.hbase.regionserver;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequestImpl;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.KeyValue.KVComparator;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
+import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequest;
 import org.apache.hadoop.hbase.regionserver.compactions.StripeCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.compactions.StripeCompactor;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
@@ -43,11 +42,11 @@ import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.CONFIG)
 public class StripeStoreEngine extends StoreEngine<StripeStoreFlusher,
   StripeCompactionPolicy, StripeCompactor, StripeStoreFileManager> {
-  private static final Logger LOG = LoggerFactory.getLogger(StripeStoreEngine.class);
+  private static final Log LOG = LogFactory.getLog(StripeStoreEngine.class);
   private StripeStoreConfig config;
 
   @Override
-  public boolean needsCompaction(List<HStoreFile> filesCompacting) {
+  public boolean needsCompaction(List<StoreFile> filesCompacting) {
     return this.compactionPolicy.needsCompactions(this.storeFileManager, filesCompacting);
   }
 
@@ -58,7 +57,7 @@ public class StripeStoreEngine extends StoreEngine<StripeStoreFlusher,
 
   @Override
   protected void createComponents(
-      Configuration conf, HStore store, CellComparator comparator) throws IOException {
+      Configuration conf, Store store, KVComparator comparator) throws IOException {
     this.config = new StripeStoreConfig(conf, store);
     this.compactionPolicy = new StripeCompactionPolicy(conf, store, config);
     this.storeFileManager = new StripeStoreFileManager(comparator, conf, this.config);
@@ -74,22 +73,22 @@ public class StripeStoreEngine extends StoreEngine<StripeStoreFlusher,
     private StripeCompactionPolicy.StripeCompactionRequest stripeRequest = null;
 
     @Override
-    public List<HStoreFile> preSelect(List<HStoreFile> filesCompacting) {
+    public List<StoreFile> preSelect(List<StoreFile> filesCompacting) {
       return compactionPolicy.preSelectFilesForCoprocessor(storeFileManager, filesCompacting);
     }
 
     @Override
-    public boolean select(List<HStoreFile> filesCompacting, boolean isUserCompaction,
+    public boolean select(List<StoreFile> filesCompacting, boolean isUserCompaction,
         boolean mayUseOffPeak, boolean forceMajor) throws IOException {
       this.stripeRequest = compactionPolicy.selectCompaction(
           storeFileManager, filesCompacting, mayUseOffPeak);
       this.request = (this.stripeRequest == null)
-          ? new CompactionRequestImpl(new ArrayList<>()) : this.stripeRequest.getRequest();
+          ? new CompactionRequest(new ArrayList<StoreFile>()) : this.stripeRequest.getRequest();
       return this.stripeRequest != null;
     }
 
     @Override
-    public void forceSelect(CompactionRequestImpl request) {
+    public void forceSelect(CompactionRequest request) {
       super.forceSelect(request);
       if (this.stripeRequest != null) {
         this.stripeRequest.setRequest(this.request);

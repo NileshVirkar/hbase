@@ -1,4 +1,5 @@
-/**
+/*
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,67 +20,56 @@ package org.apache.hadoop.hbase;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
-import java.util.regex.Pattern;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Get;
+import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.junit.rules.TestName;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
-@Category({MiscTests.class, MediumTests.class})
+@Category(MediumTests.class)
 public class TestNamespace {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestNamespace.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestNamespace.class);
+  private static final Log LOG = LogFactory.getLog(TestNamespace.class);
   private static HMaster master;
   protected final static int NUM_SLAVES_BASE = 4;
   private static HBaseTestingUtility TEST_UTIL;
   protected static Admin admin;
   protected static HBaseCluster cluster;
+  private static ZKNamespaceManager zkNamespaceManager;
   private String prefix = "TestNamespace";
 
-  @Rule
-  public TestName name = new TestName();
 
   @BeforeClass
   public static void setUp() throws Exception {
     TEST_UTIL = new HBaseTestingUtility();
     TEST_UTIL.startMiniCluster(NUM_SLAVES_BASE);
-    admin = TEST_UTIL.getAdmin();
+    admin = TEST_UTIL.getHBaseAdmin();
     cluster = TEST_UTIL.getHBaseCluster();
     master = ((MiniHBaseCluster)cluster).getMaster();
+    zkNamespaceManager =
+        new ZKNamespaceManager(master.getZooKeeper());
+    zkNamespaceManager.start();
     LOG.info("Done initializing cluster");
   }
 
@@ -90,7 +80,7 @@ public class TestNamespace {
 
   @Before
   public void beforeMethod() throws IOException {
-    for (TableDescriptor desc : admin.listTableDescriptors(Pattern.compile(prefix + ".*"))) {
+    for (HTableDescriptor desc : admin.listTables(prefix+".*")) {
       admin.disableTable(desc.getTableName());
       admin.deleteTable(desc.getTableName());
     }
@@ -108,31 +98,35 @@ public class TestNamespace {
         admin.getNamespaceDescriptor(NamespaceDescriptor.DEFAULT_NAMESPACE.getName());
     assertNotNull(ns);
     assertEquals(ns.getName(), NamespaceDescriptor.DEFAULT_NAMESPACE.getName());
+    assertNotNull(zkNamespaceManager.get(NamespaceDescriptor.DEFAULT_NAMESPACE_NAME_STR));
 
     ns = admin.getNamespaceDescriptor(NamespaceDescriptor.SYSTEM_NAMESPACE.getName());
     assertNotNull(ns);
     assertEquals(ns.getName(), NamespaceDescriptor.SYSTEM_NAMESPACE.getName());
+    assertNotNull(zkNamespaceManager.get(NamespaceDescriptor.SYSTEM_NAMESPACE_NAME_STR));
 
     assertEquals(2, admin.listNamespaces().length);
     assertEquals(2, admin.listNamespaceDescriptors().length);
 
     //verify existence of system tables
-    Set<TableName> systemTables = Sets.newHashSet(TableName.META_TABLE_NAME);
-    List<TableDescriptor> descs = admin.listTableDescriptorsByNamespace(
-      Bytes.toBytes(NamespaceDescriptor.SYSTEM_NAMESPACE.getName()));
-    assertEquals(systemTables.size(), descs.size());
-    for (TableDescriptor desc : descs) {
+    Set<TableName> systemTables = Sets.newHashSet(
+        TableName.META_TABLE_NAME,
+        TableName.NAMESPACE_TABLE_NAME);
+    HTableDescriptor[] descs =
+        admin.listTableDescriptorsByNamespace(NamespaceDescriptor.SYSTEM_NAMESPACE.getName());
+    assertEquals(systemTables.size(), descs.length);
+    for (HTableDescriptor desc : descs) {
       assertTrue(systemTables.contains(desc.getTableName()));
     }
     //verify system tables aren't listed
-    assertEquals(0, admin.listTableDescriptors().size());
+    assertEquals(0, admin.listTables().length);
 
     //Try creating default and system namespaces.
     boolean exceptionCaught = false;
     try {
       admin.createNamespace(NamespaceDescriptor.DEFAULT_NAMESPACE);
     } catch (IOException exp) {
-      LOG.warn(exp.toString(), exp);
+      LOG.warn(exp);
       exceptionCaught = true;
     } finally {
       assertTrue(exceptionCaught);
@@ -142,7 +136,7 @@ public class TestNamespace {
     try {
       admin.createNamespace(NamespaceDescriptor.SYSTEM_NAMESPACE);
     } catch (IOException exp) {
-      LOG.warn(exp.toString(), exp);
+      LOG.warn(exp);
       exceptionCaught = true;
     } finally {
       assertTrue(exceptionCaught);
@@ -155,7 +149,7 @@ public class TestNamespace {
     try {
       admin.deleteNamespace(NamespaceDescriptor.DEFAULT_NAMESPACE_NAME_STR);
     } catch (IOException exp) {
-      LOG.warn(exp.toString(), exp);
+      LOG.warn(exp);
       exceptionCaught = true;
     } finally {
       assertTrue(exceptionCaught);
@@ -164,7 +158,7 @@ public class TestNamespace {
     try {
       admin.deleteNamespace(NamespaceDescriptor.SYSTEM_NAMESPACE_NAME_STR);
     } catch (IOException exp) {
-      LOG.warn(exp.toString(), exp);
+      LOG.warn(exp);
       exceptionCaught = true;
     } finally {
       assertTrue(exceptionCaught);
@@ -173,67 +167,76 @@ public class TestNamespace {
 
   @Test
   public void createRemoveTest() throws Exception {
-    String nsName = prefix + "_" + name.getMethodName();
-    LOG.info(name.getMethodName());
+    String testName = "createRemoveTest";
+    String nsName = prefix+"_"+testName;
+    LOG.info(testName);
 
     //create namespace and verify
     admin.createNamespace(NamespaceDescriptor.create(nsName).build());
     assertEquals(3, admin.listNamespaces().length);
     assertEquals(3, admin.listNamespaceDescriptors().length);
+    TEST_UTIL.waitFor(60000, new Waiter.Predicate<Exception>() {
+      @Override
+      public boolean evaluate() throws Exception {
+        return zkNamespaceManager.list().size() == 3;
+      }
+    });
+    assertNotNull(zkNamespaceManager.get(nsName));
     //remove namespace and verify
     admin.deleteNamespace(nsName);
     assertEquals(2, admin.listNamespaces().length);
     assertEquals(2, admin.listNamespaceDescriptors().length);
+    assertEquals(2, zkNamespaceManager.list().size());
+    assertNull(zkNamespaceManager.get(nsName));
   }
 
   @Test
   public void createDoubleTest() throws IOException, InterruptedException {
-    String nsName = prefix + "_" + name.getMethodName();
-    LOG.info(name.getMethodName());
+    String testName = "createDoubleTest";
+    String nsName = prefix+"_"+testName;
+    LOG.info(testName);
 
-    final TableName tableName = TableName.valueOf(name.getMethodName());
-    final TableName tableNameFoo = TableName.valueOf(nsName + ":" + name.getMethodName());
+    TableName tableName = TableName.valueOf("my_table");
+    TableName tableNameFoo = TableName.valueOf(nsName+":my_table");
     //create namespace and verify
     admin.createNamespace(NamespaceDescriptor.create(nsName).build());
     TEST_UTIL.createTable(tableName, Bytes.toBytes(nsName));
     TEST_UTIL.createTable(tableNameFoo,Bytes.toBytes(nsName));
-    assertEquals(2, admin.listTableDescriptors().size());
+    assertEquals(2, admin.listTables().length);
     assertNotNull(admin
-        .getDescriptor(tableName));
+        .getTableDescriptor(tableName));
     assertNotNull(admin
-        .getDescriptor(tableNameFoo));
+        .getTableDescriptor(tableNameFoo));
     //remove namespace and verify
     admin.disableTable(tableName);
     admin.deleteTable(tableName);
-    assertEquals(1, admin.listTableDescriptors().size());
+    assertEquals(1, admin.listTables().length);
   }
 
   @Test
   public void createTableTest() throws IOException, InterruptedException {
-    String nsName = prefix + "_" + name.getMethodName();
-    LOG.info(name.getMethodName());
+    String testName = "createTableTest";
+    String nsName = prefix+"_"+testName;
+    LOG.info(testName);
 
-    TableDescriptorBuilder tableDescriptorBuilder =
-      TableDescriptorBuilder.newBuilder(TableName.valueOf(nsName + ":" + name.getMethodName()));
-    ColumnFamilyDescriptor columnFamilyDescriptor =
-      ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("my_cf")).build();
-    tableDescriptorBuilder.setColumnFamily(columnFamilyDescriptor);
-    TableDescriptor tableDescriptor = tableDescriptorBuilder.build();
+    HTableDescriptor desc = new HTableDescriptor(TableName.valueOf(nsName+":my_table"));
+    HColumnDescriptor colDesc = new HColumnDescriptor("my_cf");
+    desc.addFamily(colDesc);
     try {
-      admin.createTable(tableDescriptor);
+      admin.createTable(desc);
       fail("Expected no namespace exists exception");
     } catch (NamespaceNotFoundException ex) {
     }
     //create table and in new namespace
     admin.createNamespace(NamespaceDescriptor.create(nsName).build());
-    admin.createTable(tableDescriptor);
-    TEST_UTIL.waitTableAvailable(tableDescriptor.getTableName().getName(), 10000);
+    admin.createTable(desc);
+    TEST_UTIL.waitTableAvailable(desc.getTableName().getName(), 10000);
     FileSystem fs = FileSystem.get(TEST_UTIL.getConfiguration());
     assertTrue(fs.exists(
         new Path(master.getMasterFileSystem().getRootDir(),
             new Path(HConstants.BASE_NAMESPACE_DIR,
-                new Path(nsName, tableDescriptor.getTableName().getQualifierAsString())))));
-    assertEquals(1, admin.listTableDescriptors().size());
+                new Path(nsName, desc.getTableName().getQualifierAsString())))));
+    assertEquals(1, admin.listTables().length);
 
     //verify non-empty namespace can't be removed
     try {
@@ -244,51 +247,45 @@ public class TestNamespace {
     }
 
     //sanity check try to write and read from table
-    Table table = TEST_UTIL.getConnection().getTable(tableDescriptor.getTableName());
+    Table table = new HTable(TEST_UTIL.getConfiguration(), desc.getTableName());
     Put p = new Put(Bytes.toBytes("row1"));
-    p.addColumn(Bytes.toBytes("my_cf"), Bytes.toBytes("my_col"), Bytes.toBytes("value1"));
+    p.add(Bytes.toBytes("my_cf"),Bytes.toBytes("my_col"),Bytes.toBytes("value1"));
     table.put(p);
     //flush and read from disk to make sure directory changes are working
-    admin.flush(tableDescriptor.getTableName());
+    admin.flush(desc.getTableName());
     Get g = new Get(Bytes.toBytes("row1"));
     assertTrue(table.exists(g));
 
     //normal case of removing namespace
-    TEST_UTIL.deleteTable(tableDescriptor.getTableName());
+    TEST_UTIL.deleteTable(desc.getTableName());
     admin.deleteNamespace(nsName);
   }
 
   @Test
   public void createTableInDefaultNamespace() throws Exception {
-    TableDescriptorBuilder tableDescriptorBuilder =
-      TableDescriptorBuilder.newBuilder(TableName.valueOf(name.getMethodName()));
-    ColumnFamilyDescriptor columnFamilyDescriptor =
-      ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("cf1")).build();
-    tableDescriptorBuilder.setColumnFamily(columnFamilyDescriptor);
-    TableDescriptor tableDescriptor = tableDescriptorBuilder.build();
-    admin.createTable(tableDescriptor);
-    assertTrue(admin.listTableDescriptors().size() == 1);
-    admin.disableTable(tableDescriptor.getTableName());
-    admin.deleteTable(tableDescriptor.getTableName());
+    HTableDescriptor desc = new HTableDescriptor(TableName.valueOf("default_table"));
+    HColumnDescriptor colDesc = new HColumnDescriptor("cf1");
+    desc.addFamily(colDesc);
+    admin.createTable(desc);
+    assertTrue(admin.listTables().length == 1);
+    admin.disableTable(desc.getTableName());
+    admin.deleteTable(desc.getTableName());
   }
 
   @Test
   public void createTableInSystemNamespace() throws Exception {
-    final TableName tableName = TableName.valueOf("hbase:" + name.getMethodName());
-    TableDescriptorBuilder tableDescriptorBuilder =
-      TableDescriptorBuilder.newBuilder(tableName);
-    ColumnFamilyDescriptor columnFamilyDescriptor =
-      ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("cf1")).build();
-    tableDescriptorBuilder.setColumnFamily(columnFamilyDescriptor);
-    TableDescriptor tableDescriptor = tableDescriptorBuilder.build();
-    admin.createTable(tableDescriptor);
-    assertEquals(0, admin.listTableDescriptors().size());
+    TableName tableName = TableName.valueOf("hbase:createTableInSystemNamespace");
+    HTableDescriptor desc = new HTableDescriptor(tableName);
+    HColumnDescriptor colDesc = new HColumnDescriptor("cf1");
+    desc.addFamily(colDesc);
+    admin.createTable(desc);
+    assertEquals(0, admin.listTables().length);
     assertTrue(admin.tableExists(tableName));
-    admin.disableTable(tableDescriptor.getTableName());
-    admin.deleteTable(tableDescriptor.getTableName());
+    admin.disableTable(desc.getTableName());
+    admin.deleteTable(desc.getTableName());
   }
 
-  @Test
+  @Test(timeout = 60000)
   public void testNamespaceOperations() throws IOException {
     admin.createNamespace(NamespaceDescriptor.create(prefix + "ns1").build());
     admin.createNamespace(NamespaceDescriptor.create(prefix + "ns2").build());
@@ -306,12 +303,9 @@ public class TestNamespace {
     runWithExpectedException(new Callable<Void>() {
       @Override
       public Void call() throws Exception {
-        TableDescriptorBuilder tableDescriptorBuilder = TableDescriptorBuilder
-          .newBuilder(TableName.valueOf("non_existing_namespace", name.getMethodName()));
-        ColumnFamilyDescriptor columnFamilyDescriptor =
-          ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("family1")).build();
-        tableDescriptorBuilder.setColumnFamily(columnFamilyDescriptor);
-        admin.createTable(tableDescriptorBuilder.build());
+        HTableDescriptor htd = new HTableDescriptor(TableName.valueOf("non_existing_namespace", "table1"));
+        htd.addFamily(new HColumnDescriptor("family1"));
+        admin.createTable(htd);
         return null;
       }
     }, NamespaceNotFoundException.class);
@@ -354,22 +348,18 @@ public class TestNamespace {
     }, NamespaceNotFoundException.class);
 
     // get table descriptors for existing namespace
-    TableDescriptorBuilder tableDescriptorBuilder =
-      TableDescriptorBuilder.newBuilder(TableName.valueOf(prefix + "ns1", name.getMethodName()));
-    ColumnFamilyDescriptor columnFamilyDescriptor =
-      ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("family1")).build();
-    tableDescriptorBuilder.setColumnFamily(columnFamilyDescriptor);
-    admin.createTable(tableDescriptorBuilder.build());
-    List<TableDescriptor> htds =
-      admin.listTableDescriptorsByNamespace(Bytes.toBytes(prefix + "ns1"));
+    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(prefix + "ns1", "table1"));
+    htd.addFamily(new HColumnDescriptor("family1"));
+    admin.createTable(htd);
+    HTableDescriptor[] htds = admin.listTableDescriptorsByNamespace(prefix + "ns1");
     assertNotNull("Should have not returned null", htds);
-    assertEquals("Should have returned non-empty array", 1, htds.size());
+    assertEquals("Should have returned non-empty array", 1, htds.length);
 
     // get table descriptors for non-existing namespace
     runWithExpectedException(new Callable<Void>() {
       @Override
       public Void call() throws Exception {
-        admin.listTableDescriptorsByNamespace(Bytes.toBytes("non_existant_namespace"));
+        admin.listTableDescriptorsByNamespace("non_existing_namespace");
         return null;
       }
     }, NamespaceNotFoundException.class);
@@ -399,4 +389,17 @@ public class TestNamespace {
     }
     fail("Should have thrown exception " + exceptionClass);
   }
+
+  @Test
+  public void testValueOfNamespaceAndQualifier() {
+    TableName name0 = TableName.valueOf("table");
+    TableName name1 = TableName.valueOf("table", "table");
+    assertEquals(NamespaceDescriptor.DEFAULT_NAMESPACE_NAME_STR, name0.getNamespaceAsString());
+    assertEquals("table", name0.getQualifierAsString());
+    assertEquals("table", name0.getNameAsString());
+    assertEquals("table", name1.getNamespaceAsString());
+    assertEquals("table", name1.getQualifierAsString());
+    assertEquals("table:table", name1.getNameAsString());
+  }
+
 }

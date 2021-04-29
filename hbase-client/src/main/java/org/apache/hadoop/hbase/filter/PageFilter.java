@@ -18,17 +18,17 @@
  */
 package org.apache.hadoop.hbase.filter;
 
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Objects;
-
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
 
 /**
  * Implementation of Filter interface that limits results to a specific page
@@ -42,6 +42,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
  * locally.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class PageFilter extends FilterBase {
   private long pageSize = Long.MAX_VALUE;
   private int rowsAccepted = 0;
@@ -61,15 +62,15 @@ public class PageFilter extends FilterBase {
   }
 
   @Override
-  public boolean filterRowKey(Cell cell) throws IOException {
-    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
-    if (filterAllRemaining()) return true;
-    return false;
+  public ReturnCode filterKeyValue(Cell ignored) throws IOException {
+    return ReturnCode.INCLUDE;
   }
 
+  // Override here explicitly as the method in super class FilterBase might do a KeyValue recreate.
+  // See HBASE-12068
   @Override
-  public ReturnCode filterCell(final Cell ignored) throws IOException {
-    return ReturnCode.INCLUDE;
+  public Cell transformCell(Cell v) {
+    return v;
   }
 
   @Override
@@ -124,18 +125,14 @@ public class PageFilter extends FilterBase {
   }
 
   /**
-   * @param o other Filter to compare with
-   * @return true if and only if the fields of the filter that are serialized are equal to the
-   *         corresponding fields in other.  Used for testing.
+   * @param other
+   * @return true if and only if the fields of the filter that are serialized
+   * are equal to the corresponding fields in other.  Used for testing.
    */
   @Override
   boolean areSerializedFieldsEqual(Filter o) {
-    if (o == this) {
-      return true;
-    }
-    if (!(o instanceof PageFilter)) {
-      return false;
-    }
+    if (o == this) return true;
+    if (!(o instanceof PageFilter)) return false;
 
     PageFilter other = (PageFilter)o;
     return this.getPageSize() == other.getPageSize();

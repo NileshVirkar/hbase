@@ -18,7 +18,6 @@
 package org.apache.hadoop.hbase.procedure;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyListOf;
 import static org.mockito.Matchers.eq;
@@ -34,20 +33,19 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.Abortable;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.errorhandling.ForeignException;
 import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
 import org.apache.hadoop.hbase.errorhandling.TimeoutException;
 import org.apache.hadoop.hbase.procedure.Subprocedure.SubprocedureImpl;
-import org.apache.hadoop.hbase.testclassification.MasterTests;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Pair;
-import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
+import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.mockito.Mockito;
@@ -55,22 +53,16 @@ import org.mockito.internal.matchers.ArrayEquals;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 import org.mockito.verification.VerificationMode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Cluster-wide testing of a distributed three-phase commit using a 'real' zookeeper cluster
  */
-@Category({MasterTests.class, MediumTests.class})
+@Category(MediumTests.class)
 public class TestZKProcedure {
 
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestZKProcedure.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestZKProcedure.class);
+  private static final Log LOG = LogFactory.getLog(TestZKProcedure.class);
   private static HBaseTestingUtility UTIL = new HBaseTestingUtility();
   private static final String COORDINATOR_NODE_NAME = "coordinator";
   private static final long KEEP_ALIVE = 100; // seconds
@@ -91,8 +83,8 @@ public class TestZKProcedure {
     UTIL.shutdownMiniZKCluster();
   }
 
-  private static ZKWatcher newZooKeeperWatcher() throws IOException {
-    return new ZKWatcher(UTIL.getConfiguration(), "testing utility", new Abortable() {
+  private static ZooKeeperWatcher newZooKeeperWatcher() throws IOException {
+    return new ZooKeeperWatcher(UTIL.getConfiguration(), "testing utility", new Abortable() {
       @Override
       public void abort(String why, Throwable e) {
         throw new RuntimeException(
@@ -129,11 +121,11 @@ public class TestZKProcedure {
     List<String> expected = Arrays.asList(members);
 
     // setup the constants
-    ZKWatcher coordZkw = newZooKeeperWatcher();
+    ZooKeeperWatcher coordZkw = newZooKeeperWatcher();
     String opDescription = "coordination test - " + members.length + " cohort members";
 
     // start running the controller
-    ZKProcedureCoordinator coordinatorComms = new ZKProcedureCoordinator(
+    ZKProcedureCoordinatorRpcs coordinatorComms = new ZKProcedureCoordinatorRpcs(
         coordZkw, opDescription, COORDINATOR_NODE_NAME);
     ThreadPoolExecutor pool = ProcedureCoordinator.defaultPool(COORDINATOR_NODE_NAME, POOL_SIZE, KEEP_ALIVE);
     ProcedureCoordinator coordinator = new ProcedureCoordinator(coordinatorComms, pool) {
@@ -147,19 +139,20 @@ public class TestZKProcedure {
     // build and start members
     // NOTE: There is a single subprocedure builder for all members here.
     SubprocedureFactory subprocFactory = Mockito.mock(SubprocedureFactory.class);
-    List<Pair<ProcedureMember, ZKProcedureMemberRpcs>> procMembers = new ArrayList<>(members.length);
+    List<Pair<ProcedureMember, ZKProcedureMemberRpcs>> procMembers = new ArrayList<Pair<ProcedureMember, ZKProcedureMemberRpcs>>(
+        members.length);
     // start each member
     for (String member : members) {
-      ZKWatcher watcher = newZooKeeperWatcher();
+      ZooKeeperWatcher watcher = newZooKeeperWatcher();
       ZKProcedureMemberRpcs comms = new ZKProcedureMemberRpcs(watcher, opDescription);
       ThreadPoolExecutor pool2 = ProcedureMember.defaultPool(member, 1, KEEP_ALIVE);
       ProcedureMember procMember = new ProcedureMember(comms, pool2, subprocFactory);
-      procMembers.add(new Pair<>(procMember, comms));
+      procMembers.add(new Pair<ProcedureMember, ZKProcedureMemberRpcs>(procMember, comms));
       comms.start(member, procMember);
     }
 
     // setup mock member subprocedures
-    final List<Subprocedure> subprocs = new ArrayList<>();
+    final List<Subprocedure> subprocs = new ArrayList<Subprocedure>();
     for (int i = 0; i < procMembers.size(); i++) {
       ForeignExceptionDispatcher cohortMonitor = new ForeignExceptionDispatcher();
       Subprocedure commit = Mockito
@@ -213,26 +206,27 @@ public class TestZKProcedure {
     final CountDownLatch coordinatorReceivedErrorLatch = new CountDownLatch(1);
 
     // start running the coordinator and its controller
-    ZKWatcher coordinatorWatcher = newZooKeeperWatcher();
-    ZKProcedureCoordinator coordinatorController = new ZKProcedureCoordinator(
+    ZooKeeperWatcher coordinatorWatcher = newZooKeeperWatcher();
+    ZKProcedureCoordinatorRpcs coordinatorController = new ZKProcedureCoordinatorRpcs(
         coordinatorWatcher, opDescription, COORDINATOR_NODE_NAME);
     ThreadPoolExecutor pool = ProcedureCoordinator.defaultPool(COORDINATOR_NODE_NAME, POOL_SIZE, KEEP_ALIVE);
     ProcedureCoordinator coordinator = spy(new ProcedureCoordinator(coordinatorController, pool));
 
     // start a member for each node
     SubprocedureFactory subprocFactory = Mockito.mock(SubprocedureFactory.class);
-    List<Pair<ProcedureMember, ZKProcedureMemberRpcs>> members = new ArrayList<>(expected.size());
+    List<Pair<ProcedureMember, ZKProcedureMemberRpcs>> members = new ArrayList<Pair<ProcedureMember, ZKProcedureMemberRpcs>>(
+        expected.size());
     for (String member : expected) {
-      ZKWatcher watcher = newZooKeeperWatcher();
+      ZooKeeperWatcher watcher = newZooKeeperWatcher();
       ZKProcedureMemberRpcs controller = new ZKProcedureMemberRpcs(watcher, opDescription);
       ThreadPoolExecutor pool2 = ProcedureMember.defaultPool(member, 1, KEEP_ALIVE);
       ProcedureMember mem = new ProcedureMember(controller, pool2, subprocFactory);
-      members.add(new Pair<>(mem, controller));
+      members.add(new Pair<ProcedureMember, ZKProcedureMemberRpcs>(mem, controller));
       controller.start(member, mem);
     }
 
     // setup mock subprocedures
-    final List<Subprocedure> cohortTasks = new ArrayList<>();
+    final List<Subprocedure> cohortTasks = new ArrayList<Subprocedure>();
     final int[] elem = new int[1];
     for (int i = 0; i < members.size(); i++) {
       ForeignExceptionDispatcher cohortMonitor = new ForeignExceptionDispatcher();
@@ -251,7 +245,7 @@ public class TestZKProcedure {
             Subprocedure r = ((Subprocedure) invocation.getMock());
             LOG.error("Remote commit failure, not propagating error:" + remoteCause);
             comms.receiveAbortProcedure(r.getName(), remoteCause);
-            assertTrue(r.isComplete());
+            assertEquals(r.isComplete(), true);
             // don't complete the error phase until the coordinator has gotten the error
             // notification (which ensures that we never progress past prepare)
             try {
@@ -290,7 +284,7 @@ public class TestZKProcedure {
     Procedure coordinatorTask = Mockito.spy(new Procedure(coordinator,
         coordinatorTaskErrorMonitor, WAKE_FREQUENCY, TIMEOUT,
         opName, data, expected));
-    when(coordinator.createProcedure(any(), eq(opName), eq(data), anyListOf(String.class)))
+    when(coordinator.createProcedure(any(ForeignExceptionDispatcher.class), eq(opName), eq(data), anyListOf(String.class)))
       .thenReturn(coordinatorTask);
     // count down the error latch when we get the remote error
     Mockito.doAnswer(new Answer<Void>() {
@@ -302,7 +296,7 @@ public class TestZKProcedure {
         coordinatorReceivedErrorLatch.countDown();
         return null;
       }
-    }).when(coordinatorTask).receive(Mockito.any());
+    }).when(coordinatorTask).receive(Mockito.any(ForeignException.class));
 
     // ----------------------------
     // start running the operation
@@ -409,7 +403,7 @@ public class TestZKProcedure {
 
   private void closeAll(
       ProcedureCoordinator coordinator,
-      ZKProcedureCoordinator coordinatorController,
+      ZKProcedureCoordinatorRpcs coordinatorController,
       List<Pair<ProcedureMember, ZKProcedureMemberRpcs>> cohort)
       throws IOException {
     // make sure we close all the resources

@@ -18,28 +18,20 @@
  */
 package org.apache.hadoop.hbase.filter;
 
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
 import java.util.Objects;
-import java.util.Optional;
-
-import org.apache.hadoop.hbase.ByteBufferExtendedCell;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValueUtil;
-import org.apache.hadoop.hbase.Tag;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.ClassSize;
-import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
 
 /**
  * A filter that will only return the key component of each KV (the value will
@@ -49,6 +41,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
  * the values.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class KeyOnlyFilter extends FilterBase {
 
   boolean lenAsVal;
@@ -56,31 +49,33 @@ public class KeyOnlyFilter extends FilterBase {
   public KeyOnlyFilter(boolean lenAsVal) { this.lenAsVal = lenAsVal; }
 
   @Override
-  public boolean filterRowKey(Cell cell) throws IOException {
-    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
-    return false;
-  }
-
-  @Override
   public Cell transformCell(Cell cell) {
     return createKeyOnlyCell(cell);
   }
 
   private Cell createKeyOnlyCell(Cell c) {
-    if (c instanceof ByteBufferExtendedCell) {
-      return new KeyOnlyByteBufferExtendedCell((ByteBufferExtendedCell) c, lenAsVal);
-    } else {
-      return new KeyOnlyCell(c, lenAsVal);
+    // KV format: <keylen:4><valuelen:4><key:keylen><value:valuelen>
+    // Rebuild as: <keylen:4><0:4><key:keylen>
+    int dataLen = lenAsVal ? Bytes.SIZEOF_INT : 0;
+    int keyOffset = (2 * Bytes.SIZEOF_INT);
+    int keyLen = KeyValueUtil.keyLength(c);
+    byte[] newBuffer = new byte[keyLen + keyOffset + dataLen];
+    Bytes.putInt(newBuffer, 0, keyLen);
+    Bytes.putInt(newBuffer, Bytes.SIZEOF_INT, dataLen);
+    KeyValueUtil.appendKeyTo(c, newBuffer, keyOffset);
+    if (lenAsVal) {
+      Bytes.putInt(newBuffer, newBuffer.length - dataLen, c.getValueLength());
     }
+    return new KeyValue(newBuffer);
   }
 
   @Override
-  public ReturnCode filterCell(final Cell ignored) throws IOException {
+  public ReturnCode filterKeyValue(Cell ignored) throws IOException {
     return ReturnCode.INCLUDE;
   }
-
+  
   public static Filter createFilterFromArguments(ArrayList<byte []> filterArguments) {
-    Preconditions.checkArgument((filterArguments.isEmpty() || filterArguments.size() == 1),
+    Preconditions.checkArgument((filterArguments.size() == 0 || filterArguments.size() == 1),
                                 "Expected: 0 or 1 but got: %s", filterArguments.size());
     KeyOnlyFilter filter = new KeyOnlyFilter();
     if (filterArguments.size() == 1) {
@@ -118,7 +113,7 @@ public class KeyOnlyFilter extends FilterBase {
   }
 
   /**
-   * @param o the other filter to compare with
+   * @param other
    * @return true if and only if the fields of the filter that are serialized
    * are equal to the corresponding fields in other.  Used for testing.
    */
@@ -140,330 +135,4 @@ public class KeyOnlyFilter extends FilterBase {
   public int hashCode() {
     return Objects.hash(this.lenAsVal);
   }
-
-  static class KeyOnlyCell implements Cell {
-    private Cell cell;
-    private int keyLen;
-    private boolean lenAsVal;
-
-    public KeyOnlyCell(Cell c, boolean lenAsVal) {
-      this.cell = c;
-      this.lenAsVal = lenAsVal;
-      this.keyLen = KeyValueUtil.keyLength(c);
-    }
-
-    @Override
-    public byte[] getRowArray() {
-      return cell.getRowArray();
-    }
-
-    @Override
-    public int getRowOffset() {
-      return cell.getRowOffset();
-    }
-
-    @Override
-    public short getRowLength() {
-      return cell.getRowLength();
-    }
-
-    @Override
-    public byte[] getFamilyArray() {
-      return cell.getFamilyArray();
-    }
-
-    @Override
-    public int getFamilyOffset() {
-      return cell.getFamilyOffset();
-    }
-
-    @Override
-    public byte getFamilyLength() {
-      return cell.getFamilyLength();
-    }
-
-    @Override
-    public byte[] getQualifierArray() {
-      return cell.getQualifierArray();
-    }
-
-    @Override
-    public int getQualifierOffset() {
-      return cell.getQualifierOffset();
-    }
-
-    @Override
-    public int getQualifierLength() {
-      return cell.getQualifierLength();
-    }
-
-    @Override
-    public long getTimestamp() {
-      return cell.getTimestamp();
-    }
-
-    @Override
-    public byte getTypeByte() {
-      return cell.getTypeByte();
-    }
-
-    @Override
-    public Type getType() {
-      return cell.getType();
-    }
-
-
-    @Override
-    public long getSequenceId() {
-      return 0;
-    }
-
-    @Override
-    public byte[] getValueArray() {
-      if (lenAsVal) {
-        return Bytes.toBytes(cell.getValueLength());
-      } else {
-        return HConstants.EMPTY_BYTE_ARRAY;
-      }
-    }
-
-    @Override
-    public int getValueOffset() {
-      return 0;
-    }
-
-    @Override
-    public int getValueLength() {
-      if (lenAsVal) {
-        return Bytes.SIZEOF_INT;
-      } else {
-        return 0;
-      }
-    }
-
-    @Override
-    public int getSerializedSize() {
-      return KeyValue.KEYVALUE_INFRASTRUCTURE_SIZE + keyLen + getValueLength();
-    }
-
-    @Override
-    public byte[] getTagsArray() {
-      return HConstants.EMPTY_BYTE_ARRAY;
-    }
-
-    @Override
-    public int getTagsOffset() {
-      return 0;
-    }
-
-    @Override
-    public int getTagsLength() {
-      return 0;
-    }
-
-    @Override
-    public long heapSize() {
-      return cell.heapSize();
-    }
-  }
-
-  static class KeyOnlyByteBufferExtendedCell extends ByteBufferExtendedCell {
-    public static final int FIXED_OVERHEAD = ClassSize.OBJECT + ClassSize.REFERENCE
-        + Bytes.SIZEOF_BOOLEAN;
-    private ByteBufferExtendedCell cell;
-    private boolean lenAsVal;
-
-    public KeyOnlyByteBufferExtendedCell(ByteBufferExtendedCell c, boolean lenAsVal) {
-      this.cell = c;
-      this.lenAsVal = lenAsVal;
-    }
-
-    @Override
-    public byte[] getRowArray() {
-      return cell.getRowArray();
-    }
-
-    @Override
-    public int getRowOffset() {
-      return cell.getRowOffset();
-    }
-
-    @Override
-    public short getRowLength() {
-      return cell.getRowLength();
-    }
-
-    @Override
-    public byte[] getFamilyArray() {
-      return cell.getFamilyArray();
-    }
-
-    @Override
-    public int getFamilyOffset() {
-      return cell.getFamilyOffset();
-    }
-
-    @Override
-    public byte getFamilyLength() {
-      return cell.getFamilyLength();
-    }
-
-    @Override
-    public byte[] getQualifierArray() {
-      return cell.getQualifierArray();
-    }
-
-    @Override
-    public int getQualifierOffset() {
-      return cell.getQualifierOffset();
-    }
-
-    @Override
-    public int getQualifierLength() {
-      return cell.getQualifierLength();
-    }
-
-    @Override
-    public long getTimestamp() {
-      return cell.getTimestamp();
-    }
-
-    @Override
-    public byte getTypeByte() {
-      return cell.getTypeByte();
-    }
-
-    @Override
-    public void setSequenceId(long seqId) throws IOException {
-      cell.setSequenceId(seqId);
-    }
-
-    @Override
-    public void setTimestamp(long ts) throws IOException {
-      cell.setTimestamp(ts);
-    }
-
-    @Override
-    public void setTimestamp(byte[] ts) throws IOException {
-      cell.setTimestamp(ts);
-    }
-
-    @Override
-    public long getSequenceId() {
-      return 0;
-    }
-
-    @Override
-    public Type getType() {
-      return cell.getType();
-    }
-
-    @Override
-    public byte[] getValueArray() {
-      if (lenAsVal) {
-        return Bytes.toBytes(cell.getValueLength());
-      } else {
-        return HConstants.EMPTY_BYTE_ARRAY;
-      }
-    }
-
-    @Override
-    public int getValueOffset() {
-      return 0;
-    }
-
-    @Override
-    public int getValueLength() {
-      if (lenAsVal) {
-        return Bytes.SIZEOF_INT;
-      } else {
-        return 0;
-      }
-    }
-
-    @Override
-    public byte[] getTagsArray() {
-      return HConstants.EMPTY_BYTE_ARRAY;
-    }
-
-    @Override
-    public int getTagsOffset() {
-      return 0;
-    }
-
-    @Override
-    public int getTagsLength() {
-      return 0;
-    }
-
-    @Override
-    public ByteBuffer getRowByteBuffer() {
-      return cell.getRowByteBuffer();
-    }
-
-    @Override
-    public int getRowPosition() {
-      return cell.getRowPosition();
-    }
-
-    @Override
-    public ByteBuffer getFamilyByteBuffer() {
-      return cell.getFamilyByteBuffer();
-    }
-
-    @Override
-    public int getFamilyPosition() {
-      return cell.getFamilyPosition();
-    }
-
-    @Override
-    public ByteBuffer getQualifierByteBuffer() {
-      return cell.getQualifierByteBuffer();
-    }
-
-    @Override
-    public int getQualifierPosition() {
-      return cell.getQualifierPosition();
-    }
-
-    @Override
-    public ByteBuffer getValueByteBuffer() {
-      if (lenAsVal) {
-        return ByteBuffer.wrap(Bytes.toBytes(cell.getValueLength()));
-      } else {
-        return HConstants.EMPTY_BYTE_BUFFER;
-      }
-    }
-
-    @Override
-    public int getValuePosition() {
-      return 0;
-    }
-
-    @Override
-    public ByteBuffer getTagsByteBuffer() {
-      return HConstants.EMPTY_BYTE_BUFFER;
-    }
-
-    @Override
-    public int getTagsPosition() {
-      return 0;
-    }
-
-    @Override
-    public Iterator<Tag> getTags() {
-      return Collections.emptyIterator();
-    }
-
-    @Override
-    public Optional<Tag> getTag(byte type) {
-      return Optional.empty();
-    }
-
-    @Override
-    public long heapSize() {
-      return ClassSize.align(FIXED_OVERHEAD + cell.heapSize());
-    }
-  }
-
 }

@@ -21,13 +21,12 @@ package org.apache.hadoop.hbase;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.List;
-
-import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.IterableUtils;
 import org.apache.hadoop.hbase.util.Strings;
-import org.apache.yetus.audience.InterfaceAudience;
+
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-import org.apache.hbase.thirdparty.org.apache.commons.collections4.IterableUtils;
 
 @InterfaceAudience.Private
 public class KeyValueTestUtil {
@@ -64,7 +63,7 @@ public class KeyValueTestUtil {
       boolean includeMemstoreTS) {
     int totalBytes = KeyValueUtil.totalLengthWithMvccVersion(kvs, includeMemstoreTS);
     ByteBuffer bb = ByteBuffer.allocate(totalBytes);
-    for (KeyValue kv : IterableUtils.emptyIfNull(kvs)) {
+    for (KeyValue kv : IterableUtils.nullSafe(kvs)) {
       KeyValueUtil.appendToByteBuffer(bb, kv, includeMemstoreTS);
     }
     bb.rewind();
@@ -73,9 +72,9 @@ public class KeyValueTestUtil {
 
   /**
    * Checks whether KeyValues from kvCollection2 are contained in kvCollection1.
-   *
+   * 
    * The comparison is made without distinguishing MVCC version of the KeyValues
-   *
+   * 
    * @param kvCollection1
    * @param kvCollection2
    * @return true if KeyValues from kvCollection2 are contained in kvCollection1
@@ -85,13 +84,13 @@ public class KeyValueTestUtil {
     for (Cell kv1 : kvCollection1) {
       boolean found = false;
       for (Cell kv2 : kvCollection2) {
-        if (PrivateCellUtil.equalsIgnoreMvccVersion(kv1, kv2)) found = true;
+        if (CellComparator.equalsIgnoreMvccVersion(kv1, kv2)) found = true;
       }
       if (!found) return false;
     }
     return true;
   }
-
+  
   public static List<KeyValue> rewindThenToList(final ByteBuffer bb,
       final boolean includesMemstoreTS, final boolean useTags) {
     bb.rewind();
@@ -153,24 +152,23 @@ public class KeyValueTestUtil {
     int spacesAfterQualifier = maxQualifierLength - getQualifierString(kv).length() + 1;
     int spacesAfterTimestamp = maxTimestampLength
         - Long.valueOf(kv.getTimestamp()).toString().length() + 1;
-    return leadingLengths + getRowString(kv) + StringUtils.repeat(' ', spacesAfterRow)
-        + familyLength + getFamilyString(kv) + StringUtils.repeat(' ', spacesAfterFamily)
-        + getQualifierString(kv) + StringUtils.repeat(' ', spacesAfterQualifier)
-        + getTimestampString(kv) + StringUtils.repeat(' ', spacesAfterTimestamp)
+    return leadingLengths + getRowString(kv) + Strings.repeat(' ', spacesAfterRow)
+        + familyLength + getFamilyString(kv) + Strings.repeat(' ', spacesAfterFamily)
+        + getQualifierString(kv) + Strings.repeat(' ', spacesAfterQualifier)
+        + getTimestampString(kv) + Strings.repeat(' ', spacesAfterTimestamp)
         + getTypeString(kv) + " " + getValueString(kv);
   }
 
   protected static String getRowString(final KeyValue kv) {
-    return Bytes.toStringBinary(kv.getRowArray(), kv.getRowOffset(), kv.getRowLength());
+    return Bytes.toStringBinary(kv.getRow());
   }
 
   protected static String getFamilyString(final KeyValue kv) {
-    return Bytes.toStringBinary(kv.getFamilyArray(), kv.getFamilyOffset(), kv.getFamilyLength());
+    return Bytes.toStringBinary(kv.getFamily());
   }
 
   protected static String getQualifierString(final KeyValue kv) {
-    return Bytes.toStringBinary(kv.getQualifierArray(), kv.getQualifierOffset(),
-      kv.getQualifierLength());
+    return Bytes.toStringBinary(kv.getQualifier());
   }
 
   protected static String getTimestampString(final KeyValue kv) {
@@ -178,11 +176,11 @@ public class KeyValueTestUtil {
   }
 
   protected static String getTypeString(final KeyValue kv) {
-    return KeyValue.Type.codeToType(kv.getTypeByte()).toString();
+    return KeyValue.Type.codeToType(kv.getType()).toString();
   }
 
   protected static String getValueString(final KeyValue kv) {
-    return Bytes.toStringBinary(kv.getValueArray(), kv.getValueOffset(), kv.getValueLength());
+    return Bytes.toStringBinary(kv.getValue());
   }
 
 }

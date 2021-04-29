@@ -18,10 +18,11 @@
 package org.apache.hadoop.hbase.metrics.impl;
 
 import java.util.Map;
-import java.util.Optional;
+import java.util.Map.Entry;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.metrics.Counter;
 import org.apache.hadoop.hbase.metrics.Gauge;
 import org.apache.hadoop.hbase.metrics.Histogram;
@@ -31,8 +32,8 @@ import org.apache.hadoop.hbase.metrics.MetricRegistry;
 import org.apache.hadoop.hbase.metrics.MetricRegistryInfo;
 import org.apache.hadoop.hbase.metrics.MetricSet;
 import org.apache.hadoop.hbase.metrics.Timer;
-import org.apache.hadoop.hbase.util.ConcurrentMapUtils;
-import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
 
 /**
  * Custom implementation of {@link MetricRegistry}.
@@ -51,7 +52,18 @@ public class MetricRegistryImpl implements MetricRegistry {
 
   @Override
   public Timer timer(String name) {
-    return (Timer) ConcurrentMapUtils.computeIfAbsent(metrics, name, this::createTimer);
+    Timer metric = (Timer) metrics.get(name);
+    if (metric != null) {
+      return metric;
+    }
+
+    Timer newTimer = createTimer();
+    metric = (Timer) metrics.putIfAbsent(name, newTimer);
+    if (metric != null) {
+      return metric;
+    }
+
+    return newTimer;
   }
 
   protected Timer createTimer() {
@@ -60,7 +72,18 @@ public class MetricRegistryImpl implements MetricRegistry {
 
   @Override
   public Histogram histogram(String name) {
-    return (Histogram) ConcurrentMapUtils.computeIfAbsent(metrics, name, this::createHistogram);
+    Histogram metric = (Histogram) metrics.get(name);
+    if (metric != null) {
+      return metric;
+    }
+
+    Histogram newHistogram = createHistogram();
+    metric = (Histogram) metrics.putIfAbsent(name, newHistogram);
+    if (metric != null) {
+      return metric;
+    }
+
+    return newHistogram;
   }
 
   protected Histogram createHistogram() {
@@ -69,7 +92,18 @@ public class MetricRegistryImpl implements MetricRegistry {
 
   @Override
   public Meter meter(String name) {
-    return (Meter) ConcurrentMapUtils.computeIfAbsent(metrics, name, this::createMeter);
+    Meter metric = (Meter) metrics.get(name);
+    if (metric != null) {
+      return metric;
+    }
+
+    Meter newmeter = createMeter();
+    metric = (Meter) metrics.putIfAbsent(name, newmeter);
+    if (metric != null) {
+      return metric;
+    }
+
+    return newmeter;
   }
 
   protected Meter createMeter() {
@@ -78,7 +112,18 @@ public class MetricRegistryImpl implements MetricRegistry {
 
   @Override
   public Counter counter(String name) {
-    return (Counter) ConcurrentMapUtils.computeIfAbsent(metrics, name, this::createCounter);
+    Counter metric = (Counter) metrics.get(name);
+    if (metric != null) {
+      return metric;
+    }
+
+    Counter newCounter = createCounter();
+    metric = (Counter) metrics.putIfAbsent(name, newCounter);
+    if (metric != null) {
+      return metric;
+    }
+
+    return newCounter;
   }
 
   protected Counter createCounter() {
@@ -87,12 +132,23 @@ public class MetricRegistryImpl implements MetricRegistry {
 
   @Override
   public Optional<Metric> get(String name) {
-    return Optional.ofNullable(metrics.get(name));
+
+    return Optional.fromNullable(metrics.get(name));
   }
 
   @Override
   public Metric register(String name, Metric metric) {
-    return ConcurrentMapUtils.computeIfAbsent(metrics, name, () -> metric);
+    Metric m = metrics.get(name);
+    if (m != null) {
+      return m;
+    }
+
+    Metric oldMetric = metrics.putIfAbsent(name, metric);
+    if (oldMetric != null) {
+      return oldMetric;
+    }
+
+    return metric;
   }
 
   @Override
@@ -102,7 +158,10 @@ public class MetricRegistryImpl implements MetricRegistry {
 
   @Override
   public void registerAll(MetricSet metricSet) {
-    metricSet.getMetrics().forEach(this::register);
+    Set<Entry<String,Metric>> entrySet = metricSet.getMetrics().entrySet();
+    for (Entry<String, Metric> entry : entrySet) {
+      register(entry.getKey(), entry.getValue());
+    }
   }
 
   @Override

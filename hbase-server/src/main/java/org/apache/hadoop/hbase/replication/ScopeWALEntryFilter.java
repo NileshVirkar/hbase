@@ -15,15 +15,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.hadoop.hbase.replication;
 
 import java.util.NavigableMap;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.wal.WAL.Entry;
-import org.apache.hadoop.hbase.wal.WALEdit;
-import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Predicate;
 
@@ -33,35 +34,38 @@ import org.apache.hbase.thirdparty.com.google.common.base.Predicate;
 @InterfaceAudience.Private
 public class ScopeWALEntryFilter implements WALEntryFilter, WALCellFilter {
 
-  private final BulkLoadCellFilter bulkLoadFilter = new BulkLoadCellFilter();
+  BulkLoadCellFilter bulkLoadFilter = new BulkLoadCellFilter();
 
   @Override
   public Entry filter(Entry entry) {
-    // Do not filter out an entire entry by replication scopes. As now we support serial
-    // replication, the sequence id of a marker is also needed by upper layer. We will filter out
-    // all the cells in the filterCell method below if the replication scopes is null or empty.
-    return entry;
-  }
-
-  private boolean hasGlobalScope(NavigableMap<byte[], Integer> scopes, byte[] family) {
-    Integer scope = scopes.get(family);
-    return scope != null && scope.intValue() == HConstants.REPLICATION_SCOPE_GLOBAL;
-  }
-  @Override
-  public Cell filterCell(Entry entry, Cell cell) {
-    NavigableMap<byte[], Integer> scopes = entry.getKey().getReplicationScopes();
+    NavigableMap<byte[], Integer> scopes = entry.getKey().getScopes();
     if (scopes == null || scopes.isEmpty()) {
       return null;
     }
-    byte[] family = CellUtil.cloneFamily(cell);
-    if (CellUtil.matchingColumn(cell, WALEdit.METAFAMILY, WALEdit.BULK_LOAD)) {
-      return bulkLoadFilter.filterCell(cell, new Predicate<byte[]>() {
-        @Override
-        public boolean apply(byte[] family) {
-          return !hasGlobalScope(scopes, family);
+    return entry;
+  }
+
+  @Override
+  public Cell filterCell(Entry entry, Cell cell) {
+    final NavigableMap<byte[], Integer> scopes = entry.getKey().getScopes();
+      // The scope will be null or empty if
+      // there's nothing to replicate in that WALEdit
+      byte[] fam = CellUtil.cloneFamily(cell);
+      if (CellUtil.matchingColumn(cell, WALEdit.METAFAMILY, WALEdit.BULK_LOAD)) {
+        cell = bulkLoadFilter.filterCell(cell, new Predicate<byte[]>() {
+          @Override
+          public boolean apply(byte[] fam) {
+            return !scopes.containsKey(fam) || scopes.get(fam) == HConstants.REPLICATION_SCOPE_LOCAL;
+          }
+          public boolean test(byte[] fam) {
+            return apply(fam);
+          }
+        });
+      } else {
+        if (!scopes.containsKey(fam) || scopes.get(fam) == HConstants.REPLICATION_SCOPE_LOCAL) {
+          return null;
         }
-      });
-    }
-    return hasGlobalScope(scopes, family) ? cell : null;
+      }
+    return cell;
   }
 }

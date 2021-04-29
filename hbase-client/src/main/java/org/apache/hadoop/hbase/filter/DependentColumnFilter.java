@@ -18,26 +18,25 @@
  */
 package org.apache.hadoop.hbase.filter;
 
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.CompareOperator;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.ByteStringer;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
 
 /**
  * A filter for adding inter-column timestamp matching
@@ -47,31 +46,32 @@ import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
  * full rows for correct filtering 
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class DependentColumnFilter extends CompareFilter {
 
   protected byte[] columnFamily;
   protected byte[] columnQualifier;
   protected boolean dropDependentColumn;
 
-  protected Set<Long> stampSet = new HashSet<>();
-
+  protected Set<Long> stampSet = new HashSet<Long>();
+  
   /**
    * Build a dependent column filter with value checking
    * dependent column varies will be compared using the supplied
    * compareOp and comparator, for usage of which
    * refer to {@link CompareFilter}
-   *
+   * 
    * @param family dependent column family
    * @param qualifier dependent column qualifier
    * @param dropDependentColumn whether the column should be discarded after
-   * @param op Value comparison op
+   * @param valueCompareOp comparison op 
    * @param valueComparator comparator
    */
   public DependentColumnFilter(final byte [] family, final byte[] qualifier,
-                               final boolean dropDependentColumn, final CompareOperator op,
-                               final ByteArrayComparable valueComparator) {
-    // set up the comparator
-    super(op, valueComparator);
+      final boolean dropDependentColumn, final CompareOp valueCompareOp,
+      final ByteArrayComparable valueComparator) {
+    // set up the comparator   
+    super(valueCompareOp, valueComparator);
     this.columnFamily = family;
     this.columnQualifier = qualifier;
     this.dropDependentColumn = dropDependentColumn;
@@ -100,7 +100,7 @@ public class DependentColumnFilter extends CompareFilter {
    */
   public DependentColumnFilter(final byte [] family, final byte [] qualifier,
       final boolean dropDependentColumn) {
-    this(family, qualifier, dropDependentColumn, CompareOperator.NO_OP, null);
+    this(family, qualifier, dropDependentColumn, CompareOp.NO_OP, null);
   }
 
   /**
@@ -134,17 +134,18 @@ public class DependentColumnFilter extends CompareFilter {
   }
 
   @Override
-  public ReturnCode filterCell(final Cell c) {
+  public ReturnCode filterKeyValue(Cell c) {
     // Check if the column and qualifier match
     if (!CellUtil.matchingColumn(c, this.columnFamily, this.columnQualifier)) {
-        // include non-matches for the time being, they'll be discarded afterwards
-        return ReturnCode.INCLUDE;
+      // include non-matches for the time being, they'll be discarded afterwards
+      return ReturnCode.INCLUDE;
     }
     // If it doesn't pass the op, skip it
     if (comparator != null
-        && compareValue(getCompareOperator(), comparator, c))
+        && doCompare(compareOp, comparator, c.getValueArray(), c.getValueOffset(),
+            c.getValueLength()))
       return ReturnCode.SKIP;
-  
+
     stampSet.add(c.getTimestamp());
     if(dropDependentColumn) {
       return ReturnCode.SKIP;
@@ -154,7 +155,14 @@ public class DependentColumnFilter extends CompareFilter {
 
   @Override
   public void filterRowCells(List<Cell> kvs) {
-    kvs.removeIf(kv -> !stampSet.contains(kv.getTimestamp()));
+    Iterator<? extends Cell> it = kvs.iterator();
+    Cell kv;
+    while(it.hasNext()) {
+      kv = it.next();
+      if(!stampSet.contains(kv.getTimestamp())) {
+        it.remove();
+      }
+    }
   }
 
   @Override
@@ -167,6 +175,10 @@ public class DependentColumnFilter extends CompareFilter {
     return false;
   }
 
+  @Override
+  public boolean filterRowKey(byte[] buffer, int offset, int length) {
+    return false;
+  }
   @Override
   public void reset() {
     stampSet.clear();    
@@ -192,11 +204,11 @@ public class DependentColumnFilter extends CompareFilter {
       byte [] family = ParseFilter.removeQuotesFromByteArray(filterArguments.get(0));
       byte [] qualifier = ParseFilter.removeQuotesFromByteArray(filterArguments.get(1));
       boolean dropDependentColumn = ParseFilter.convertByteArrayToBoolean(filterArguments.get(2));
-      CompareOperator op = ParseFilter.createCompareOperator(filterArguments.get(3));
+      CompareOp compareOp = ParseFilter.createCompareOp(filterArguments.get(3));
       ByteArrayComparable comparator = ParseFilter.createComparator(
         ParseFilter.removeQuotesFromByteArray(filterArguments.get(4)));
       return new DependentColumnFilter(family, qualifier, dropDependentColumn,
-                                       op, comparator);
+                                       compareOp, comparator);
     } else {
       throw new IllegalArgumentException("Expected 2, 3 or 5 but got: " + filterArguments.size());
     }
@@ -211,10 +223,10 @@ public class DependentColumnFilter extends CompareFilter {
       FilterProtos.DependentColumnFilter.newBuilder();
     builder.setCompareFilter(super.convert());
     if (this.columnFamily != null) {
-      builder.setColumnFamily(UnsafeByteOperations.unsafeWrap(this.columnFamily));
+      builder.setColumnFamily(ByteStringer.wrap(this.columnFamily));
     }
     if (this.columnQualifier != null) {
-      builder.setColumnQualifier(UnsafeByteOperations.unsafeWrap(this.columnQualifier));
+      builder.setColumnQualifier(ByteStringer.wrap(this.columnQualifier));
     }
     builder.setDropDependentColumn(this.dropDependentColumn);
     return builder.build().toByteArray();
@@ -234,8 +246,8 @@ public class DependentColumnFilter extends CompareFilter {
     } catch (InvalidProtocolBufferException e) {
       throw new DeserializationException(e);
     }
-    final CompareOperator valueCompareOp =
-    CompareOperator.valueOf(proto.getCompareFilter().getCompareOp().name());
+    final CompareOp valueCompareOp =
+      CompareOp.valueOf(proto.getCompareFilter().getCompareOp().name());
     ByteArrayComparable valueComparator = null;
     try {
       if (proto.getCompareFilter().hasComparator()) {
@@ -276,7 +288,7 @@ public class DependentColumnFilter extends CompareFilter {
         Bytes.toStringBinary(this.columnFamily),
         Bytes.toStringBinary(this.columnQualifier),
         this.dropDependentColumn,
-        this.op.name(),
+        this.compareOp.name(),
         this.comparator != null ? Bytes.toStringBinary(this.comparator.getValue()) : "null");
   }
 
@@ -288,6 +300,6 @@ public class DependentColumnFilter extends CompareFilter {
   @Override
   public int hashCode() {
     return Objects.hash(Bytes.hashCode(getFamily()), Bytes.hashCode(getQualifier()),
-      dropDependentColumn(), getComparator(), getCompareOperator());
+      dropDependentColumn(), getComparator(), getOperator());
   }
 }

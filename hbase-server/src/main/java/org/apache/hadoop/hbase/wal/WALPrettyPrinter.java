@@ -29,6 +29,12 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+import org.apache.commons.cli.PosixParser;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -36,24 +42,20 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.hadoop.hbase.PrivateCellUtil;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.Tag;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.regionserver.wal.ProtobufLogReader;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.GsonUtil;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.apache.yetus.audience.InterfaceStability;
+import org.apache.hadoop.hbase.util.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.hbase.thirdparty.com.google.common.base.Strings;
+
 import org.apache.hbase.thirdparty.com.google.gson.Gson;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLineParser;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.HelpFormatter;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.Options;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.ParseException;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.PosixParser;
 
 /**
  * WALPrettyPrinter prints the contents of a given WAL with a variety of
@@ -90,7 +92,6 @@ public class WALPrettyPrinter {
   private String row;
   // prefix of rows which needs to be filtered
   private String rowPrefix;
-
   private boolean outputOnlyRowKey;
   // enable in order to output a single list of transactions from several files
   private boolean persistentOutput;
@@ -106,17 +107,57 @@ public class WALPrettyPrinter {
    * Basic constructor that simply initializes values to reasonable defaults.
    */
   public WALPrettyPrinter() {
-    outputValues = false;
-    outputJSON = false;
-    sequence = -1;
-    tableSet = new HashSet<>();
-    region = null;
-    row = null;
-    rowPrefix = null;
-    outputOnlyRowKey = false;
-    persistentOutput = false;
-    firstTxn = true;
-    out = System.out;
+    this(false, false, -1, new HashSet<String>(), null, null, null, false, false, System.out);
+  }
+
+  /**
+   * Fully specified constructor.
+   *
+   * @param outputValues
+   *          when true, enables output of values along with other log
+   *          information
+   * @param outputJSON
+   *          when true, enables output in JSON format rather than a
+   *          "pretty string"
+   * @param sequence
+   *          when nonnegative, serves as a filter; only log entries with this
+   *          sequence id will be printed
+   * @param tableSet
+   *          when non null, serves as a filter. only entries corresponding to tables
+   *          in the tableSet are printed
+   * @param region
+   *          when not null, serves as a filter; only log entries from this
+   *          region will be printed
+   * @param row
+   *          when not null, serves as a filter; only log entries from this row
+   *          will be printed
+   * @param rowPrefix
+   *          when not null, serves as a filter; only log entries with row key
+   *          having this prefix will be printed
+   * @param persistentOutput
+   *          keeps a single list running for multiple files. if enabled, the
+   *          endPersistentOutput() method must be used!
+   * @param out
+   *          Specifies an alternative to stdout for the destination of this
+   *          PrettyPrinter's output.
+   */
+  public WALPrettyPrinter(boolean outputValues, boolean outputJSON, long sequence,
+    Set<String> tableSet, String region, String row, String rowPrefix, boolean outputOnlyRowKey,
+    boolean persistentOutput, PrintStream out) {
+    this.outputValues = outputValues;
+    this.outputJSON = outputJSON;
+    this.sequence = sequence;
+    this.tableSet = tableSet;
+    this.region = region;
+    this.row = row;
+    this.rowPrefix = rowPrefix;
+    this.outputOnlyRowKey = outputOnlyRowKey;
+    this.persistentOutput = persistentOutput;
+    if (persistentOutput) {
+      beginPersistentOutput();
+    }
+    this.out = out;
+    this.firstTxn = true;
   }
 
   /**
@@ -191,8 +232,8 @@ public class WALPrettyPrinter {
    * sets the rowPrefix key prefix by which output will be filtered
    *
    * @param rowPrefix
-   *          when not null, serves as a filter; only log entries with rows
-   *          having this prefix will be printed
+   *          when not null, serves as a filter; only log entries from this rowPrefix
+   *          will be printed
    */
   public void setRowPrefixFilter(String rowPrefix) {
     this.rowPrefix = rowPrefix;
@@ -352,6 +393,7 @@ public class WALPrettyPrinter {
         if (!outputOnlyRowKey) {
           out.println("edit heap size: " + entry.getEdit().heapSize());
           out.println("position: " + log.getPosition());
+
         }
       }
     } finally {
@@ -363,7 +405,7 @@ public class WALPrettyPrinter {
   }
 
   public static void printCell(PrintStream out, Map<String, Object> op,
-    boolean outputValues, boolean outputOnlyRowKey) {
+      boolean outputValues, boolean outputOnlyRowKey) {
     String rowDetails = "row=" + op.get("row");
     if (outputOnlyRowKey) {
       out.println(rowDetails);
@@ -383,15 +425,15 @@ public class WALPrettyPrinter {
   }
 
   public static Map<String, Object> toStringMap(Cell cell,
-    boolean printRowKeyOnly, String rowPrefix, String row, boolean outputValues) {
+      boolean printRowKeyOnly, String rowPrefix, String row, boolean outputValues) {
     Map<String, Object> stringMap = new HashMap<>();
     String rowKey = Bytes.toStringBinary(cell.getRowArray(),
       cell.getRowOffset(), cell.getRowLength());
     // Row and row prefix are mutually options so both cannot be true at the
     // same time. We can include checks in the same condition
     // Check if any of the filters are satisfied by the row, if not return empty map
-    if ((!Strings.isNullOrEmpty(rowPrefix) && !rowKey.startsWith(rowPrefix)) ||
-      (!Strings.isNullOrEmpty(row) && !rowKey.equals(row))) {
+    if ((!Strings.isEmpty(rowPrefix) && !rowKey.startsWith(rowPrefix)) ||
+      (!Strings.isEmpty(row) && !rowKey.equals(row))) {
       return stringMap;
     }
 
@@ -399,22 +441,23 @@ public class WALPrettyPrinter {
     if (printRowKeyOnly) {
       return stringMap;
     }
-    stringMap.put("type", cell.getType());
-    stringMap.put("family", Bytes.toStringBinary(cell.getFamilyArray(), cell.getFamilyOffset(),
-      cell.getFamilyLength()));
-    stringMap.put("qualifier",
-      Bytes.toStringBinary(cell.getQualifierArray(), cell.getQualifierOffset(),
+    stringMap.put("type", KeyValue.Type.codeToType(cell.getTypeByte()));
+    stringMap.put("family",
+      Bytes.toStringBinary(cell.getFamilyArray(), cell.getFamilyOffset(), cell.getFamilyLength()));
+    stringMap.put("qualifier", Bytes
+      .toStringBinary(cell.getQualifierArray(), cell.getQualifierOffset(),
         cell.getQualifierLength()));
     stringMap.put("timestamp", cell.getTimestamp());
     stringMap.put("vlen", cell.getValueLength());
-    stringMap.put("total_size_sum", cell.heapSize());
+    stringMap.put("total_size_sum", CellUtil.estimatedHeapSizeOf(cell));
     if (cell.getTagsLength() > 0) {
       List<String> tagsString = new ArrayList<>();
-      Iterator<Tag> tagsIterator = PrivateCellUtil.tagsIterator(cell);
+      Iterator<Tag> tagsIterator =
+        CellUtil.tagsIterator(cell.getTagsArray(), cell.getTagsOffset(), cell.getTagsLength());
       while (tagsIterator.hasNext()) {
         Tag tag = tagsIterator.next();
-        tagsString
-          .add((tag.getType()) + ":" + Bytes.toStringBinary(Tag.cloneValue(tag)));
+        tagsString.add((tag.getType()) + ":" + Bytes
+          .toStringBinary(tag.getBuffer(), tag.getTagOffset(), tag.getTagLength()));
       }
       stringMap.put("tag", tagsString);
     }
@@ -465,7 +508,7 @@ public class WALPrettyPrinter {
     try {
       CommandLine cmd = parser.parse(options, args);
       files = cmd.getArgList();
-      if (files.isEmpty() || cmd.hasOption("h")) {
+      if (files.size() == 0 || cmd.hasOption("h")) {
         HelpFormatter formatter = new HelpFormatter();
         formatter.printHelp("WAL <filename...>", options, true);
         System.exit(-1);
@@ -512,7 +555,7 @@ public class WALPrettyPrinter {
     }
     // get configuration, file system, and process the given files
     Configuration conf = HBaseConfiguration.create();
-    CommonFSUtils.setFsDefault(conf, CommonFSUtils.getRootDir(conf));
+    FSUtils.setFsDefault(conf, FSUtils.getRootDir(conf));
 
     // begin output
     printer.beginPersistentOutput();

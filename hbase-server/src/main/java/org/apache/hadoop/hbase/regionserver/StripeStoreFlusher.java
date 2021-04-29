@@ -23,16 +23,16 @@ import static org.apache.hadoop.hbase.regionserver.StripeStoreFileManager.OPEN_K
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.CellComparator;
+import org.apache.hadoop.hbase.KeyValue.KVComparator;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
+import org.apache.hadoop.hbase.regionserver.StoreFile.Writer;
 import org.apache.hadoop.hbase.regionserver.compactions.StripeCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Stripe implementation of StoreFlusher. Flushes files either into L0 file w/o metadata, or
@@ -40,12 +40,12 @@ import org.slf4j.LoggerFactory;
  */
 @InterfaceAudience.Private
 public class StripeStoreFlusher extends StoreFlusher {
-  private static final Logger LOG = LoggerFactory.getLogger(StripeStoreFlusher.class);
+  private static final Log LOG = LogFactory.getLog(StripeStoreFlusher.class);
   private final Object flushLock = new Object();
   private final StripeCompactionPolicy policy;
   private final StripeCompactionPolicy.StripeInformationProvider stripes;
 
-  public StripeStoreFlusher(Configuration conf, HStore store,
+  public StripeStoreFlusher(Configuration conf, Store store,
       StripeCompactionPolicy policy, StripeStoreFileManager stripes) {
     super(conf, store);
     this.policy = policy;
@@ -54,13 +54,16 @@ public class StripeStoreFlusher extends StoreFlusher {
 
   @Override
   public List<Path> flushSnapshot(MemStoreSnapshot snapshot, long cacheFlushSeqNum,
-      MonitoredTask status, ThroughputController throughputController,
-      FlushLifeCycleTracker tracker) throws IOException {
-    List<Path> result = new ArrayList<>();
+      MonitoredTask status, ThroughputController throughputController) throws IOException {
+    List<Path> result = new ArrayList<Path>();
     int cellsCount = snapshot.getCellsCount();
     if (cellsCount == 0) return result; // don't flush if there are no entries
 
-    InternalScanner scanner = createScanner(snapshot.getScanners(), tracker);
+    long smallestReadPoint = store.getSmallestReadPoint();
+    InternalScanner scanner = createScanner(snapshot.getScanner(), smallestReadPoint);
+    if (scanner == null) {
+      return result; // NULL scanner returned from coprocessor hooks means skip normal processing
+    }
 
     // Let policy select flush method.
     StripeFlushRequest req = this.policy.selectFlush(store.getComparator(), this.stripes,
@@ -70,12 +73,13 @@ public class StripeStoreFlusher extends StoreFlusher {
     StripeMultiFileWriter mw = null;
     try {
       mw = req.createWriter(); // Writer according to the policy.
-      StripeMultiFileWriter.WriterFactory factory = createWriterFactory(cellsCount);
+      StripeMultiFileWriter.WriterFactory factory = createWriterFactory(
+          snapshot.getTimeRangeTracker(), cellsCount);
       StoreScanner storeScanner = (scanner instanceof StoreScanner) ? (StoreScanner)scanner : null;
       mw.init(storeScanner, factory);
 
       synchronized (flushLock) {
-        performFlush(scanner, mw, throughputController);
+        performFlush(scanner, mw, smallestReadPoint, throughputController);
         result = mw.commitWriters(cacheFlushSeqNum, false);
         success = true;
       }
@@ -98,12 +102,18 @@ public class StripeStoreFlusher extends StoreFlusher {
     return result;
   }
 
-  private StripeMultiFileWriter.WriterFactory createWriterFactory(final long kvCount) {
+  private StripeMultiFileWriter.WriterFactory createWriterFactory(
+      final TimeRangeTracker tracker, final long kvCount) {
     return new StripeMultiFileWriter.WriterFactory() {
       @Override
-      public StoreFileWriter createWriter() throws IOException {
-        StoreFileWriter writer = store.createWriterInTmp(kvCount,
-            store.getColumnFamilyDescriptor().getCompressionType(), false, true, true, false);
+      public Writer createWriter() throws IOException {
+        StoreFile.Writer writer = store.createWriterInTmp(
+            kvCount, store.getFamily().getCompression(),
+            /* isCompaction = */ false,
+            /* includeMVCCReadpoint = */ true,
+            /* includesTags = */ true,
+            /* shouldDropBehind = */ false,
+            tracker, -1);
         return writer;
       }
     };
@@ -112,9 +122,9 @@ public class StripeStoreFlusher extends StoreFlusher {
   /** Stripe flush request wrapper that writes a non-striped file. */
   public static class StripeFlushRequest {
 
-    protected final CellComparator comparator;
+    protected final KVComparator comparator;
 
-    public StripeFlushRequest(CellComparator comparator) {
+    public StripeFlushRequest(KVComparator comparator) {
       this.comparator = comparator;
     }
 
@@ -131,7 +141,7 @@ public class StripeStoreFlusher extends StoreFlusher {
     private final List<byte[]> targetBoundaries;
 
     /** @param targetBoundaries New files should be written with these boundaries. */
-    public BoundaryStripeFlushRequest(CellComparator comparator, List<byte[]> targetBoundaries) {
+    public BoundaryStripeFlushRequest(KVComparator comparator, List<byte[]> targetBoundaries) {
       super(comparator);
       this.targetBoundaries = targetBoundaries;
     }
@@ -153,7 +163,7 @@ public class StripeStoreFlusher extends StoreFlusher {
      * @param targetKvs The KV count of each segment. If targetKvs*targetCount is less than
      *                  total number of kvs, all the overflow data goes into the last stripe.
      */
-    public SizeStripeFlushRequest(CellComparator comparator, int targetCount, long targetKvs) {
+    public SizeStripeFlushRequest(KVComparator comparator, int targetCount, long targetKvs) {
       super(comparator);
       this.targetCount = targetCount;
       this.targetKvs = targetKvs;

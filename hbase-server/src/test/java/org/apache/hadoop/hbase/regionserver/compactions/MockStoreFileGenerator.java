@@ -24,11 +24,9 @@ import static org.mockito.Mockito.when;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Random;
-
-import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.lang.RandomStringUtils;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.regionserver.HStoreFile;
-import org.apache.hadoop.hbase.regionserver.StoreFileReader;
+import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.util.StringUtils;
 
 import org.apache.hbase.thirdparty.com.google.common.base.MoreObjects;
@@ -42,31 +40,31 @@ class MockStoreFileGenerator {
   /** The random number generator. */
   protected Random random;
 
-  MockStoreFileGenerator(Class<?> klass) {
+  MockStoreFileGenerator(Class klass) {
     random = new Random(klass.getSimpleName().hashCode());
   }
 
-  protected List<HStoreFile> createStoreFileList(final int[] fs) {
-    List<HStoreFile> storeFiles = new LinkedList<>();
+  protected List<StoreFile> createStoreFileList(final int[] fs) {
+    List<StoreFile> storeFiles = new LinkedList<StoreFile>();
     for (int fileSize : fs) {
       storeFiles.add(createMockStoreFile(fileSize));
     }
     return storeFiles;
   }
 
-  protected HStoreFile createMockStoreFile(final long size) {
+  protected StoreFile createMockStoreFile(final long size) {
     return createMockStoreFile(size * 1024 * 1024, -1L);
   }
 
-  protected HStoreFile createMockStoreFileBytes(final long size) {
+  protected StoreFile createMockStoreFileBytes(final long size) {
     return createMockStoreFile(size, -1L);
   }
 
-  protected HStoreFile createMockStoreFile(final long sizeInBytes, final long seqId) {
-    HStoreFile mockSf = mock(HStoreFile.class);
-    StoreFileReader reader = mock(StoreFileReader.class);
-    String stringPath = "/hbase/testTable/regionA/" +
-        RandomStringUtils.random(FILENAME_LENGTH, 0, 0, true, true, null, random);
+  protected StoreFile createMockStoreFile(final long sizeInBytes, final long seqId) {
+    StoreFile mockSf = mock(StoreFile.class);
+    StoreFile.Reader reader = mock(StoreFile.Reader.class);
+    String stringPath = "/hbase/testTable/regionA/"
+        + RandomStringUtils.random(FILENAME_LENGTH, 0, 0, true, true, null, random);
     Path path = new Path(stringPath);
 
 

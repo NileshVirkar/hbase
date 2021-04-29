@@ -20,8 +20,10 @@ package org.apache.hadoop.hbase.chaos.util;
 import java.io.IOException;
 import java.util.Properties;
 import java.util.Set;
-
-import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
@@ -31,13 +33,11 @@ import org.apache.hadoop.hbase.chaos.factories.MonkeyFactory;
 import org.apache.hadoop.hbase.chaos.monkies.ChaosMonkey;
 import org.apache.hadoop.hbase.util.AbstractHBaseTool;
 import org.apache.hadoop.util.ToolRunner;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
 
 public class ChaosMonkeyRunner extends AbstractHBaseTool {
-  private static final Logger LOG = LoggerFactory.getLogger(ChaosMonkeyRunner.class);
+  private static final Log LOG = LogFactory.getLog(ChaosMonkeyRunner.class);
 
   public static final String MONKEY_LONG_OPT = "monkey";
   public static final String CHAOS_MONKEY_PROPS = "monkeyProps";
@@ -74,7 +74,7 @@ public class ChaosMonkeyRunner extends AbstractHBaseTool {
           monkeyProps.load(this.getClass().getClassLoader()
               .getResourceAsStream(chaosMonkeyPropsFile));
         } catch (IOException e) {
-          LOG.warn(e.toString(), e);
+          LOG.warn(e);
           System.exit(EXIT_FAILURE);
         }
       }
@@ -93,9 +93,8 @@ public class ChaosMonkeyRunner extends AbstractHBaseTool {
     getAndStartMonkey();
     while (!monkey.isStopped()) {
       // loop here until got killed
-      try {
-        // TODO: make sleep time configurable
-        Thread.sleep(5000); // 5 seconds
+      try{
+        Thread.sleep(5000);
       } catch (InterruptedException ite) {
         // Chaos monkeys got interrupted.
         // It is ok to stop monkeys and exit.
@@ -106,6 +105,7 @@ public class ChaosMonkeyRunner extends AbstractHBaseTool {
     monkey.waitForStop();
     return 0;
   }
+
 
   public void stopRunner() {
     if (monkey != null) {
@@ -167,26 +167,10 @@ public class ChaosMonkeyRunner extends AbstractHBaseTool {
     return Sets.newHashSet(familyName);
   }
 
-  /*
-   * If caller wants to add config parameters contained in a file, the path of conf file
-   * can be passed as the first two arguments like this:
-   *   -c <path-to-conf>
-   */
   public static void main(String[] args) throws Exception {
     Configuration conf = HBaseConfiguration.create();
-    String[] actualArgs = args;
-    if (args.length > 0 && "-c".equals(args[0])) {
-      int argCount = args.length - 2;
-      if (argCount < 0) {
-        throw new IllegalArgumentException("Missing path for -c parameter");
-      }
-      // load the resource specified by the second parameter
-      conf.addResource(args[1]);
-      actualArgs = new String[argCount];
-      System.arraycopy(args, 2, actualArgs, 0, argCount);
-    }
     IntegrationTestingUtility.setUseDistributedCluster(conf);
-    int ret = ToolRunner.run(conf, new ChaosMonkeyRunner(), actualArgs);
+    int ret = ToolRunner.run(conf, new ChaosMonkeyRunner(), args);
     System.exit(ret);
   }
 

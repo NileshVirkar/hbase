@@ -17,12 +17,14 @@
  */
 package org.apache.hadoop.hbase.client.backoff;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
+
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
 /**
@@ -30,9 +32,10 @@ import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
  * max backoff to generate the backoff time.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Unstable
 public class ExponentialClientBackoffPolicy implements ClientBackoffPolicy {
 
-  private static final Logger LOG = LoggerFactory.getLogger(ExponentialClientBackoffPolicy.class);
+  private static final Log LOG = LogFactory.getLog(ExponentialClientBackoffPolicy.class);
 
   private static final long ONE_MINUTE = 60 * 1000;
   public static final long DEFAULT_MAX_BACKOFF = 5 * ONE_MINUTE;
@@ -63,7 +66,7 @@ public class ExponentialClientBackoffPolicy implements ClientBackoffPolicy {
     }
 
     // Factor in memstore load
-    double percent = regionStats.getMemStoreLoadPercent() / 100.0;
+    double percent = regionStats.getMemstoreLoadPercent() / 100.0;
 
     // Factor in heap occupancy
     float heapOccupancy = regionStats.getHeapOccupancyPercent() / 100.0f;

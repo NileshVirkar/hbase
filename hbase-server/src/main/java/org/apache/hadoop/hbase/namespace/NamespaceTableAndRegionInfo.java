@@ -1,19 +1,12 @@
 /**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed to the Apache Software Foundation (ASF) under one or more contributor license
+ * agreements. See the NOTICE file distributed with this work for additional information regarding
+ * copyright ownership. The ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License. You may obtain a
+ * copy of the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable
+ * law or agreed to in writing, software distributed under the License is distributed on an "AS IS"
+ * BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ * for the specific language governing permissions and limitations under the License.
  */
 
 package org.apache.hadoop.hbase.namespace;
@@ -23,15 +16,14 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
-
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
-import org.apache.yetus.audience.InterfaceAudience;
 
 /**
- * NamespaceTableAndRegionInfo is a helper class that contains information
- * about current state of tables and regions in a namespace.
+ * NamespaceTableAndRegionInfo is a helper class that contains information about current state of
+ * tables and regions in a namespace.
  */
 @InterfaceAudience.Private
 class NamespaceTableAndRegionInfo {
@@ -40,12 +32,11 @@ class NamespaceTableAndRegionInfo {
 
   public NamespaceTableAndRegionInfo(String namespace) {
     this.name = namespace;
-    this.tableAndRegionInfo = new HashMap<>();
+    this.tableAndRegionInfo = new HashMap<TableName, AtomicInteger>();
   }
 
   /**
    * Gets the name of the namespace.
-   *
    * @return name of the namespace.
    */
   String getName() {
@@ -54,16 +45,14 @@ class NamespaceTableAndRegionInfo {
 
   /**
    * Gets the set of table names belonging to namespace.
-   *
    * @return A set of table names.
    */
-  synchronized  Set<TableName> getTables() {
+  synchronized Set<TableName> getTables() {
     return this.tableAndRegionInfo.keySet();
   }
 
   /**
    * Gets the total number of regions in namespace.
-   *
    * @return the region count
    */
   synchronized int getRegionCount() {

@@ -25,8 +25,8 @@ import java.math.BigInteger;
 import java.math.MathContext;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
-
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 
 /**
  * Utility class that handles ordered byte arrays. That is, unlike
@@ -264,6 +264,7 @@ import org.apache.yetus.audience.InterfaceAudience;
  * </p>
  */
 @InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class OrderedBytes {
 
   /*
@@ -337,7 +338,7 @@ public class OrderedBytes {
 
   /**
    * Perform unsigned comparison between two long values. Conforms to the same interface as
-   * {@link org.apache.hadoop.hbase.CellComparator}.
+   * {@link Comparator#compare(Object, Object)}.
    */
   private static int unsignedCmp(long x1, long x2) {
     int cmp;
@@ -366,6 +367,7 @@ public class OrderedBytes {
    * @param comp Compliment the encoded value when {@code comp} is true.
    * @return number of bytes written.
    */
+  @InterfaceAudience.Private
   static int putVaruint64(PositionedByteRange dst, long val, boolean comp) {
     int w, y, len = 0;
     final int offset = dst.getOffset(), start = dst.getPosition();
@@ -454,6 +456,7 @@ public class OrderedBytes {
    * @param comp if true, parse the compliment of the value.
    * @return the number of bytes consumed by this value.
    */
+  @InterfaceAudience.Private
   static int lengthVaruint64(PositionedByteRange src, boolean comp) {
     int a0 = (comp ? DESCENDING : ASCENDING).apply(src.peek()) & 0xff;
     if (a0 <= 240) return 1;
@@ -474,6 +477,7 @@ public class OrderedBytes {
    * @param cmp if true, parse the compliment of the value.
    * @return the number of bytes skipped.
    */
+  @InterfaceAudience.Private
   static int skipVaruint64(PositionedByteRange src, boolean cmp) {
     final int len = lengthVaruint64(src, cmp);
     src.setPosition(src.getPosition() + len);
@@ -485,6 +489,7 @@ public class OrderedBytes {
    * encoded value when {@code comp} is true.
    * @return the decoded value.
    */
+  @InterfaceAudience.Private
   static long getVaruint64(PositionedByteRange src, boolean comp) {
     assert src.getRemaining() >= lengthVaruint64(src, comp);
     final long ret;
@@ -541,6 +546,7 @@ public class OrderedBytes {
    * From Phoenix's {@code NumberUtil}.
    * @return new {@link BigDecimal} instance
    */
+  @InterfaceAudience.Private
   static BigDecimal normalize(BigDecimal val) {
     return null == val ? null : val.stripTrailingZeros().round(DEFAULT_MATH_CONTEXT);
   }
@@ -1006,6 +1012,7 @@ public class OrderedBytes {
   /**
    * Calculate the expected BlobVar decoded length based on encoded length.
    */
+  @InterfaceAudience.Private
   static int blobVarDecodedLength(int len) {
     return
         ((len

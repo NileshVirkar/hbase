@@ -25,25 +25,27 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.concurrent.locks.ReentrantLock;
-import org.apache.hadoop.hbase.exceptions.IllegalArgumentIOException;
-import org.apache.hadoop.hbase.io.hfile.Cacheable;
-import org.apache.hadoop.hbase.nio.ByteBuff;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * IO engine that stores data to a file on the local file system.
  */
 @InterfaceAudience.Private
-public class FileIOEngine extends PersistentIOEngine {
-  private static final Logger LOG = LoggerFactory.getLogger(FileIOEngine.class);
+public class FileIOEngine implements PersistentIOEngine {
+  private static final Log LOG = LogFactory.getLog(FileIOEngine.class);
   public static final String FILE_DELIMITER = ",";
+  private static final DuFileCommand DU = new DuFileCommand(new String[] {"du", ""});
+
+  private final String[] filePaths;
   private final FileChannel[] fileChannels;
   private final RandomAccessFile[] rafs;
   private final ReentrantLock[] channelLocks;
@@ -54,24 +56,11 @@ public class FileIOEngine extends PersistentIOEngine {
   private FileReadAccessor readAccessor = new FileReadAccessor();
   private FileWriteAccessor writeAccessor = new FileWriteAccessor();
 
-  public FileIOEngine(long capacity, boolean maintainPersistence, String... filePaths)
-      throws IOException {
-    super(filePaths);
+  public FileIOEngine(long capacity, String... filePaths) throws IOException {
     this.sizePerFile = capacity / filePaths.length;
     this.capacity = this.sizePerFile * filePaths.length;
+    this.filePaths = filePaths;
     this.fileChannels = new FileChannel[filePaths.length];
-    if (!maintainPersistence) {
-      for (String filePath : filePaths) {
-        File file = new File(filePath);
-        if (file.exists()) {
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("File " + filePath + " already exists. Deleting!!");
-          }
-          file.delete();
-          // If deletion fails still we can manage with the writes
-        }
-      }
-    }
     this.rafs = new RandomAccessFile[filePaths.length];
     this.channelLocks = new ReentrantLock[filePaths.length];
     for (int i = 0; i < filePaths.length; i++) {
@@ -83,8 +72,8 @@ public class FileIOEngine extends PersistentIOEngine {
           // The next setting length will throw exception,logging this message
           // is just used for the detail reason of exception，
           String msg = "Only " + StringUtils.byteDesc(totalSpace)
-              + " total space under " + filePath + ", not enough for requested "
-              + StringUtils.byteDesc(sizePerFile);
+            + " total space under " + filePath + ", not enough for requested "
+            + StringUtils.byteDesc(sizePerFile);
           LOG.warn(msg);
         }
         File file = new File(filePath);
@@ -96,13 +85,25 @@ public class FileIOEngine extends PersistentIOEngine {
         fileChannels[i] = rafs[i].getChannel();
         channelLocks[i] = new ReentrantLock();
         LOG.info("Allocating cache " + StringUtils.byteDesc(sizePerFile)
-            + ", on the path:" + filePath);
+          + ", on the path: " + filePath);
       } catch (IOException fex) {
         LOG.error("Failed allocating cache on " + filePath, fex);
         shutdown();
         throw fex;
       }
     }
+  }
+
+  @Override
+  public boolean verifyFileIntegrity(byte[] persistentChecksum, String algorithm) {
+    byte[] calculateChecksum = calculateChecksum(algorithm);
+    if (!Bytes.equals(persistentChecksum, calculateChecksum)) {
+      LOG.error("Mismatch of checksum! The persistent checksum is " +
+        Bytes.toString(persistentChecksum) + ", but the calculate checksum is " +
+        Bytes.toString(calculateChecksum));
+      return false;
+    }
+    return true;
   }
 
   @Override
@@ -122,34 +123,17 @@ public class FileIOEngine extends PersistentIOEngine {
 
   /**
    * Transfers data from file to the given byte buffer
-   * @param be an {@link BucketEntry} which maintains an (offset, len, refCnt)
-   * @return the {@link Cacheable} with block data inside.
-   * @throws IOException if any IO error happen.
+   * @param dstBuffer the given byte buffer into which bytes are to be written
+   * @param offset The offset in the file where the first byte to be read
+   * @return number of bytes read
+   * @throws IOException
    */
   @Override
-  public Cacheable read(BucketEntry be) throws IOException {
-    long offset = be.offset();
-    int length = be.getLength();
-    Preconditions.checkArgument(length >= 0, "Length of read can not be less than 0.");
-    ByteBuff dstBuff = be.allocator.allocate(length);
-    if (length != 0) {
-      try {
-        accessFile(readAccessor, dstBuff, offset);
-        // The buffer created out of the fileChannel is formed by copying the data from the file
-        // Hence in this case there is no shared memory that we point to. Even if the BucketCache
-        // evicts this buffer from the file the data is already copied and there is no need to
-        // ensure that the results are not corrupted before consuming them.
-        if (dstBuff.limit() != length) {
-          throw new IllegalArgumentIOException(
-              "Only " + dstBuff.limit() + " bytes read, " + length + " expected");
-        }
-      } catch (IOException ioe) {
-        dstBuff.release();
-        throw ioe;
-      }
+  public int read(ByteBuffer dstBuffer, long offset) throws IOException {
+    if (dstBuffer.remaining() != 0) {
+      return accessFile(readAccessor, dstBuffer, offset);
     }
-    dstBuff.rewind();
-    return be.wrapAsCacheable(dstBuff);
+    return 0;
   }
 
   void closeFileChannels() {
@@ -170,7 +154,10 @@ public class FileIOEngine extends PersistentIOEngine {
    */
   @Override
   public void write(ByteBuffer srcBuffer, long offset) throws IOException {
-    write(ByteBuff.wrap(srcBuffer), offset);
+    if (!srcBuffer.hasRemaining()) {
+      return;
+    }
+    accessFile(writeAccessor, srcBuffer, offset);
   }
 
   /**
@@ -210,31 +197,23 @@ public class FileIOEngine extends PersistentIOEngine {
     }
   }
 
-  @Override
-  public void write(ByteBuff srcBuff, long offset) throws IOException {
-    if (!srcBuff.hasRemaining()) {
-      return;
-    }
-    accessFile(writeAccessor, srcBuff, offset);
-  }
-
-  private void accessFile(FileAccessor accessor, ByteBuff buff,
-      long globalOffset) throws IOException {
+  private int accessFile(FileAccessor accessor, ByteBuffer buffer, long globalOffset)
+      throws IOException {
     int startFileNum = getFileNum(globalOffset);
-    int remainingAccessDataLen = buff.remaining();
+    int remainingAccessDataLen = buffer.remaining();
     int endFileNum = getFileNum(globalOffset + remainingAccessDataLen - 1);
     int accessFileNum = startFileNum;
     long accessOffset = getAbsoluteOffsetInFile(accessFileNum, globalOffset);
-    int bufLimit = buff.limit();
+    int bufLimit = buffer.limit();
     while (true) {
       FileChannel fileChannel = fileChannels[accessFileNum];
       int accessLen = 0;
       if (endFileNum > accessFileNum) {
         // short the limit;
-        buff.limit((int) (buff.limit() - remainingAccessDataLen + sizePerFile - accessOffset));
+        buffer.limit((int) (buffer.limit() - remainingAccessDataLen + sizePerFile - accessOffset));
       }
       try {
-        accessLen = accessor.access(fileChannel, buff, accessOffset);
+        accessLen = accessor.access(fileChannel, buffer, accessOffset);
       } catch (ClosedByInterruptException e) {
         throw e;
       } catch (ClosedChannelException e) {
@@ -242,7 +221,7 @@ public class FileIOEngine extends PersistentIOEngine {
         continue;
       }
       // recover the limit
-      buff.limit(bufLimit);
+      buffer.limit(bufLimit);
       if (accessLen < remainingAccessDataLen) {
         remainingAccessDataLen -= accessLen;
         accessFileNum++;
@@ -251,11 +230,12 @@ public class FileIOEngine extends PersistentIOEngine {
         break;
       }
       if (accessFileNum >= fileChannels.length) {
-        throw new IOException("Required data len " + StringUtils.byteDesc(buff.remaining())
+        throw new IOException("Required data len " + StringUtils.byteDesc(buffer.remaining())
             + " exceed the engine's capacity " + StringUtils.byteDesc(capacity) + " where offset="
             + globalOffset);
       }
     }
+    return bufLimit;
   }
 
   /**
@@ -274,8 +254,7 @@ public class FileIOEngine extends PersistentIOEngine {
     }
     int fileNum = (int) (offset / sizePerFile);
     if (fileNum >= fileChannels.length) {
-      throw new RuntimeException("Not expected offset " + offset
-          + " where capacity=" + capacity);
+      throw new RuntimeException("Not expected offset " + offset + " where capacity=" + capacity);
     }
     return fileNum;
   }
@@ -306,24 +285,80 @@ public class FileIOEngine extends PersistentIOEngine {
     }
   }
 
-  private interface FileAccessor {
-    int access(FileChannel fileChannel, ByteBuff buff, long accessOffset)
+  @Override
+  public byte[] calculateChecksum(String algorithm) {
+    if (filePaths == null) {
+      return null;
+    }
+    try {
+      StringBuilder sb = new StringBuilder();
+      for (String filePath : filePaths){
+        File file = new File(filePath);
+        sb.append(filePath);
+        sb.append(getFileSize(filePath));
+        sb.append(file.lastModified());
+      }
+      MessageDigest messageDigest = MessageDigest.getInstance(algorithm);
+      messageDigest.update(Bytes.toBytes(sb.toString()));
+      return messageDigest.digest();
+    } catch (IOException ioex) {
+      LOG.error("Calculating checksum failed.", ioex);
+      return null;
+    } catch (NoSuchAlgorithmException e) {
+      LOG.error("No such algorithm : " + algorithm + "!");
+      return null;
+    }
+  }
+
+  /**
+   * Using Linux command du to get file's real size
+   * @param filePath the file
+   * @return file's real size
+   * @throws IOException something happened like file not exists
+   */
+  private static long getFileSize(String filePath) throws IOException {
+    DU.setExecCommand(filePath);
+    DU.execute();
+    return Long.parseLong(DU.getOutput().split("\t")[0]);
+  }
+
+  private static class DuFileCommand extends Shell.ShellCommandExecutor {
+    private String[] execCommand;
+
+    DuFileCommand(String[] execString) {
+      super(execString);
+      execCommand = execString;
+    }
+
+    void setExecCommand(String filePath) {
+      this.execCommand[1] = filePath;
+    }
+
+    @Override
+    public String[] getExecString() {
+      return this.execCommand;
+    }
+  }
+
+  private static interface FileAccessor {
+    int access(FileChannel fileChannel, ByteBuffer byteBuffer, long accessOffset)
         throws IOException;
   }
 
   private static class FileReadAccessor implements FileAccessor {
     @Override
-    public int access(FileChannel fileChannel, ByteBuff buff,
-        long accessOffset) throws IOException {
-      return buff.read(fileChannel, accessOffset);
+    public int access(FileChannel fileChannel, ByteBuffer byteBuffer, long accessOffset)
+        throws IOException {
+      return fileChannel.read(byteBuffer, accessOffset);
     }
   }
 
   private static class FileWriteAccessor implements FileAccessor {
     @Override
-    public int access(FileChannel fileChannel, ByteBuff buff,
-        long accessOffset) throws IOException {
-      return buff.write(fileChannel, accessOffset);
+    public int access(FileChannel fileChannel, ByteBuffer byteBuffer, long accessOffset)
+        throws IOException {
+      return fileChannel.write(byteBuffer, accessOffset);
     }
   }
+
 }

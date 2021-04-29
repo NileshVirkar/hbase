@@ -18,12 +18,9 @@
 
 package org.apache.hadoop.hbase.io.util;
 
-import java.nio.ByteBuffer;
 import java.util.HashMap;
-
-import org.apache.hadoop.hbase.util.ByteBufferUtils;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
@@ -60,12 +57,8 @@ public class LRUDictionary implements Dictionary {
 
   @Override
   public short addEntry(byte[] data, int offset, int length) {
-    return addEntryInternal(data, offset, length, true);
-  }
-
-  private short addEntryInternal(byte[] data, int offset, int length, boolean copy) {
     if (length <= 0) return NOT_IN_DICTIONARY;
-    return backingStore.put(data, offset, length, copy);
+    return backingStore.put(data, offset, length);
   }
 
   @Override
@@ -86,7 +79,7 @@ public class LRUDictionary implements Dictionary {
     private Node head;
     private Node tail;
 
-    private HashMap<Node, Short> nodeToIndex = new HashMap<>();
+    private HashMap<Node, Short> nodeToIndex = new HashMap<Node, Short>();
     private Node[] indexToNode;
     private int initSize = 0;
 
@@ -95,23 +88,16 @@ public class LRUDictionary implements Dictionary {
       indexToNode = new Node[initialSize];
     }
 
-    private short put(byte[] array, int offset, int length, boolean copy) {
-      if (copy) {
-        // We copy the bytes we want, otherwise we might be holding references to
-        // massive arrays in our dictionary (or those arrays might change)
-        byte[] stored = new byte[length];
-        Bytes.putBytes(stored, 0, array, offset, length);
-        return putInternal(stored);
-      } else {
-        return putInternal(array);
-      }
-    }
+    private short put(byte[] array, int offset, int length) {
+      // We copy the bytes we want, otherwise we might be holding references to
+      // massive arrays in our dictionary (or those arrays might change)
+      byte[] stored = new byte[length];
+      Bytes.putBytes(stored, 0, array, offset, length);
 
-    private short putInternal(byte[] stored) {
       if (currSize < initSize) {
         // There is space to add without evicting.
         if (indexToNode[currSize] == null) {
-          indexToNode[currSize] = new ByteArrayBackedNode();
+          indexToNode[currSize] = new Node();
         }
         indexToNode[currSize].setContents(stored, 0, stored.length);
         setHead(indexToNode[currSize]);
@@ -130,20 +116,8 @@ public class LRUDictionary implements Dictionary {
 
     private short findIdx(byte[] array, int offset, int length) {
       Short s;
-      final Node comparisonNode = new ByteArrayBackedNode();
+      final Node comparisonNode = new Node();
       comparisonNode.setContents(array, offset, length);
-      if ((s = nodeToIndex.get(comparisonNode)) != null) {
-        moveToHead(indexToNode[s]);
-        return s;
-      } else {
-        return -1;
-      }
-    }
-
-    private short findIdx(ByteBuffer buf, int offset, int length) {
-      Short s;
-      final ByteBufferBackedNode comparisonNode = new ByteBufferBackedNode();
-      comparisonNode.setContents(buf, offset, length);
       if ((s = nodeToIndex.get(comparisonNode)) != null) {
         moveToHead(indexToNode[s]);
         return s;
@@ -155,11 +129,11 @@ public class LRUDictionary implements Dictionary {
     private byte[] get(short idx) {
       Preconditions.checkElementIndex(idx, currSize);
       moveToHead(indexToNode[idx]);
-      return indexToNode[idx].getContents();
+      return indexToNode[idx].container;
     }
 
     private void moveToHead(Node n) {
-      if (head == n) {
+      if (head.equals(n)) {
         // no-op -- it's already the head.
         return;
       }
@@ -172,13 +146,13 @@ public class LRUDictionary implements Dictionary {
       if (n.next != null) {
         n.next.prev = n.prev;
       } else {
-        assert n == tail;
+        assert n.equals(tail);
         tail = n.prev;
       }
       // Node is now removed from the list. Re-add it at the head.
       setHead(n);
     }
-
+    
     private void setHead(Node n) {
       // assume it's already unlinked from the list at this point.
       n.prev = null;
@@ -200,7 +174,7 @@ public class LRUDictionary implements Dictionary {
       for (int i = 0; i < currSize; i++) {
         indexToNode[i].next = null;
         indexToNode[i].prev = null;
-        indexToNode[i].resetContents();
+        indexToNode[i].container = null;
       }
       currSize = 0;
       nodeToIndex.clear();
@@ -208,29 +182,20 @@ public class LRUDictionary implements Dictionary {
       head = null;
     }
 
-    private static abstract class Node {
+    private static class Node {
+      byte[] container;
       int offset;
       int length;
       Node next; // link towards the tail
       Node prev; // link towards the head
-      abstract void setContents(byte[] container, int offset, int length);
-      abstract byte[] getContents();
-      abstract void resetContents();
-    }
-    // The actual contents of the LRUDictionary are of ByteArrayBackedNode type 
-    private static class ByteArrayBackedNode extends Node {
-      private byte[] container;
 
-      @Override
-      void setContents(byte[] container, int offset, int length) {
+      public Node() {
+      }
+
+      private void setContents(byte[] container, int offset, int length) {
         this.container = container;
         this.offset = offset;
         this.length = length;
-      }
-
-      @Override
-      byte[] getContents() {
-        return this.container;
       }
 
       @Override
@@ -239,86 +204,15 @@ public class LRUDictionary implements Dictionary {
       }
 
       @Override
-      void resetContents() {
-        this.container = null;
-      }
-
-      @Override
       public boolean equals(Object other) {
         if (!(other instanceof Node)) {
           return false;
         }
 
         Node casted = (Node) other;
-        return Bytes.equals(container, offset, length, casted.getContents(),
+        return Bytes.equals(container, offset, length, casted.container,
             casted.offset, casted.length);
       }
     }
-
-    // Currently only used for finding the index and hence this node acts
-    // as a temporary holder to look up in the indexToNode map
-    // which is formed by ByteArrayBackedNode
-    private static class ByteBufferBackedNode extends Node {
-      private ByteBuffer container;
-
-      public ByteBufferBackedNode() {
-      }
-
-      @Override
-      void setContents(byte[] container, int offset, int length) {
-        this.container = ByteBuffer.wrap(container);
-        this.offset = offset;
-        this.length = length;
-      }
-
-      void setContents(ByteBuffer container, int offset, int length) {
-        this.container = container;
-        this.offset = offset;
-        this.length = length;
-      }
-
-      @Override
-      void resetContents() {
-        this.container = null;
-      }
-
-      @Override
-      byte[] getContents() {
-        // This ideally should not be called
-        byte[] copy = new byte[this.length];
-        ByteBufferUtils.copyFromBufferToArray(copy, (ByteBuffer) this.container, this.offset, 0,
-            length);
-        return copy;
-      }
-
-      @Override
-      public int hashCode() {
-        return ByteBufferUtils.hashCode(container, offset, length);
-      }
-
-      @Override
-      public boolean equals(Object other) {
-        if (!(other instanceof Node)) {
-          return false;
-        }
-        // This was done to avoid findbugs comment
-        Node casted = (Node) other;
-        // The other side should be a byte array backed node only as we add only
-        // ByteArrayBackedNode to the indexToNode map.
-        return ByteBufferUtils.equals(this.container, offset, length,
-            casted.getContents(), casted.offset, casted.length);
-      }
-    }
-  }
-
-  @Override
-  public short findEntry(ByteBuffer data, int offset, int length) {
-    short ret = backingStore.findIdx(data, offset, length);
-    if (ret == NOT_IN_DICTIONARY) {
-      byte[] copy = new byte[length];
-      ByteBufferUtils.copyFromBufferToArray(copy, data, offset, 0, length);
-      addEntryInternal(copy, 0, length, false);
-    }
-    return ret;
   }
 }

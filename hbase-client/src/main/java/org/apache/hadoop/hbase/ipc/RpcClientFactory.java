@@ -19,9 +19,9 @@ package org.apache.hadoop.hbase.ipc;
 
 import java.net.SocketAddress;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.MetricsConnection;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
-import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 
@@ -64,7 +64,7 @@ public final class RpcClientFactory {
   private static String getRpcClientClass(Configuration conf) {
     String rpcClientClass = conf.get(CUSTOM_RPC_CLIENT_IMPL_CONF_KEY);
     if (rpcClientClass == null) {
-      return NettyRpcClient.class.getName();
+      return BlockingRpcClient.class.getName();
     }
     String mappedName = DEPRECATED_NAME_MAPPING.get(rpcClientClass);
     return mappedName == null ? rpcClientClass : mappedName;

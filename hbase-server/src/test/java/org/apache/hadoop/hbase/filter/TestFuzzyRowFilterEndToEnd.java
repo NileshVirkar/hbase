@@ -24,14 +24,16 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Durability;
+import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
@@ -41,34 +43,25 @@ import org.apache.hadoop.hbase.filter.FilterList.Operator;
 import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.RegionScanner;
-import org.apache.hadoop.hbase.testclassification.FilterTests;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.junit.rules.TestName;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
-@Category({ FilterTests.class, LargeTests.class })
+/**
+ */
+@Category(MediumTests.class)
 public class TestFuzzyRowFilterEndToEnd {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestFuzzyRowFilterEndToEnd.class);
-
   private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
   private final static byte fuzzyValue = (byte) 63;
-  private static final Logger LOG = LoggerFactory.getLogger(TestFuzzyRowFilterEndToEnd.class);
+  private static final Log LOG = LogFactory.getLog(TestFuzzyRowFilterEndToEnd.class);
 
   private static int firstPartCardinality = 50;
   private static int secondPartCardinality = 50;
@@ -77,9 +70,6 @@ public class TestFuzzyRowFilterEndToEnd {
   private static int totalFuzzyKeys = thirdPartCardinality / 2;
 
   private static String table = "TestFuzzyRowFilterEndToEnd";
-
-  @Rule
-  public TestName name = new TestName();
 
   /**
    * @throws java.lang.Exception
@@ -91,7 +81,7 @@ public class TestFuzzyRowFilterEndToEnd {
     conf.set(HConstants.HBASE_REGION_SPLIT_POLICY_KEY,
       ConstantSizeRegionSplitPolicy.class.getName());
     // set no splits
-    conf.setLong(HConstants.HREGION_MAX_FILESIZE, (1024L) * 1024 * 1024 * 10);
+    conf.setLong(HConstants.HREGION_MAX_FILESIZE, ((long) 1024) * 1024 * 1024 * 10);
 
     TEST_UTIL.startMiniCluster();
   }
@@ -125,9 +115,10 @@ public class TestFuzzyRowFilterEndToEnd {
   public void testAllFixedBits() throws IOException {
     String cf = "f";
     String cq = "q";
+    String table = "testAllFixedBits";
 
     Table ht =
-        TEST_UTIL.createTable(TableName.valueOf(name.getMethodName()), Bytes.toBytes(cf), Integer.MAX_VALUE);
+        TEST_UTIL.createTable(TableName.valueOf(table), Bytes.toBytes(cf), Integer.MAX_VALUE);
     // Load data
     String[] rows = new String[] { "\\x9C\\x00\\x044\\x00\\x00\\x00\\x00",
         "\\x9C\\x00\\x044\\x01\\x00\\x00\\x00", "\\x9C\\x00\\x044\\x00\\x01\\x00\\x00",
@@ -136,13 +127,13 @@ public class TestFuzzyRowFilterEndToEnd {
 
     for (int i = 0; i < rows.length; i++) {
       Put p = new Put(Bytes.toBytesBinary(rows[i]));
-      p.addColumn(Bytes.toBytes(cf), Bytes.toBytes(cq), Bytes.toBytes("value"));
+      p.addColumn(cf.getBytes(), cq.getBytes(), "value".getBytes());
       ht.put(p);
     }
 
     TEST_UTIL.flush();
 
-    List<Pair<byte[], byte[]>> data = new ArrayList<>();
+    List<Pair<byte[], byte[]>> data = new ArrayList<Pair<byte[], byte[]>>();
     byte[] fuzzyKey = Bytes.toBytesBinary("\\x9B\\x00\\x044e");
     byte[] mask = new byte[] { 0, 0, 0, 0, 0 };
 
@@ -150,7 +141,7 @@ public class TestFuzzyRowFilterEndToEnd {
     byte[] copyFuzzyKey = Arrays.copyOf(fuzzyKey, fuzzyKey.length);
     byte[] copyMask = Arrays.copyOf(mask, mask.length);
 
-    data.add(new Pair<>(fuzzyKey, mask));
+    data.add(new Pair<byte[], byte[]>(fuzzyKey, mask));
     FuzzyRowFilter filter = new FuzzyRowFilter(data);
 
     Scan scan = new Scan();
@@ -166,7 +157,7 @@ public class TestFuzzyRowFilterEndToEnd {
     assertEquals(true, Arrays.equals(copyFuzzyKey, fuzzyKey));
     assertEquals(true, Arrays.equals(copyMask, mask));
 
-    TEST_UTIL.deleteTable(TableName.valueOf(name.getMethodName()));
+    TEST_UTIL.deleteTable(TableName.valueOf(table));
   }
 
   @Test
@@ -174,56 +165,57 @@ public class TestFuzzyRowFilterEndToEnd {
   {
     String cf = "f";
     String cq = "q";
+    String table = "HBASE14872";
 
     Table ht =
-        TEST_UTIL.createTable(TableName.valueOf(name.getMethodName()), Bytes.toBytes(cf), Integer.MAX_VALUE);
+        TEST_UTIL.createTable(TableName.valueOf(table), Bytes.toBytes(cf), Integer.MAX_VALUE);
     // Load data
-    String[] rows = new String[] {
-      "\\x9C\\x00\\x044\\x00\\x00\\x00\\x00",
-      "\\x9C\\x00\\x044\\x01\\x00\\x00\\x00",
-      "\\x9C\\x00\\x044\\x00\\x01\\x00\\x00",
-      "\\x9C\\x00\\x044\\x00\\x00\\x01\\x00",
-      "\\x9C\\x00\\x044\\x00\\x01\\x00\\x01",
-      "\\x9B\\x00\\x044e\\xBB\\xB2\\xBB",
+    String[] rows = new String[]{
+        "\\x9C\\x00\\x044\\x00\\x00\\x00\\x00",
+        "\\x9C\\x00\\x044\\x01\\x00\\x00\\x00", 
+        "\\x9C\\x00\\x044\\x00\\x01\\x00\\x00",
+        "\\x9C\\x00\\x044\\x00\\x00\\x01\\x00",
+        "\\x9C\\x00\\x044\\x00\\x01\\x00\\x01", 
+        "\\x9B\\x00\\x044e\\xBB\\xB2\\xBB", 
     };
-
+    
     String badRow = "\\x9C\\x00\\x03\\xE9e\\xBB{X\\x1Fwts\\x1F\\x15vRX";
-
+    
     for(int i=0; i < rows.length; i++){
       Put p = new Put(Bytes.toBytesBinary(rows[i]));
-      p.addColumn(Bytes.toBytes(cf), Bytes.toBytes(cq), Bytes.toBytes("value"));
-      ht.put(p);
+      p.addColumn(cf.getBytes(), cq.getBytes(), "value".getBytes());
+      ht.put(p);            
     }
-
+    
     Put p = new Put(Bytes.toBytesBinary(badRow));
-    p.addColumn(Bytes.toBytes(cf), Bytes.toBytes(cq), Bytes.toBytes("value"));
-    ht.put(p);
+    p.addColumn(cf.getBytes(), cq.getBytes(), "value".getBytes());
+    ht.put(p);            
 
     TEST_UTIL.flush();
 
-    List<Pair<byte[], byte[]>> data =  new ArrayList<>();
+    List<Pair<byte[], byte[]>> data =  new ArrayList<Pair<byte[], byte[]>>();
     byte[] fuzzyKey = Bytes.toBytesBinary("\\x00\\x00\\x044");
     byte[] mask = new byte[] { 1,0,0,0};
-    data.add(new Pair<>(fuzzyKey, mask));
+    data.add(new Pair<byte[], byte[]>(fuzzyKey, mask));
     FuzzyRowFilter filter = new FuzzyRowFilter(data);
-
+    
     Scan scan = new Scan();
     scan.setFilter(filter);
-
+    
     ResultScanner scanner = ht.getScanner(scan);
     int total = 0;
     while(scanner.next() != null){
       total++;
-    }
+    }    
     assertEquals(rows.length, total);
-    TEST_UTIL.deleteTable(TableName.valueOf(name.getMethodName()));
+    TEST_UTIL.deleteTable(TableName.valueOf(table));
   }
-
+  
   @Test
   public void testEndToEnd() throws Exception {
     String cf = "f";
 
-    Table ht =
+    HTable ht =
         TEST_UTIL.createTable(TableName.valueOf(table), Bytes.toBytes(cf), Integer.MAX_VALUE);
 
     // 10 byte row key - (2 bytes 4 bytes 4 bytes)
@@ -248,7 +240,7 @@ public class TestFuzzyRowFilterEndToEnd {
 
             Put p = new Put(rk);
             p.setDurability(Durability.SKIP_WAL);
-            p.addColumn(Bytes.toBytes(cf), cq, Bytes.toBytes(c));
+            p.add(cf.getBytes(), cq, Bytes.toBytes(c));
             ht.put(p);
           }
         }
@@ -268,7 +260,7 @@ public class TestFuzzyRowFilterEndToEnd {
 
     byte[] mask = new byte[] { 0, 0, 1, 1, 1, 1, 0, 0, 0, 0 };
 
-    List<Pair<byte[], byte[]>> list = new ArrayList<>();
+    List<Pair<byte[], byte[]>> list = new ArrayList<Pair<byte[], byte[]>>();
     for (int i = 0; i < totalFuzzyKeys; i++) {
       byte[] fuzzyKey = new byte[10];
       ByteBuffer buf = ByteBuffer.wrap(fuzzyKey);
@@ -279,7 +271,7 @@ public class TestFuzzyRowFilterEndToEnd {
       }
       buf.putInt(i);
 
-      Pair<byte[], byte[]> pair = new Pair<>(fuzzyKey, mask);
+      Pair<byte[], byte[]> pair = new Pair<byte[], byte[]>(fuzzyKey, mask);
       list.add(pair);
     }
 
@@ -300,7 +292,7 @@ public class TestFuzzyRowFilterEndToEnd {
 
     byte[] mask = new byte[] { 0, 0, 1, 1, 1, 1, 0, 0, 0, 0 };
 
-    List<Pair<byte[], byte[]>> list = new ArrayList<>();
+    List<Pair<byte[], byte[]>> list = new ArrayList<Pair<byte[], byte[]>>();
 
     for (int i = 0; i < totalFuzzyKeys; i++) {
       byte[] fuzzyKey = new byte[10];
@@ -312,7 +304,7 @@ public class TestFuzzyRowFilterEndToEnd {
       }
       buf.putInt(i * 2);
 
-      Pair<byte[], byte[]> pair = new Pair<>(fuzzyKey, mask);
+      Pair<byte[], byte[]> pair = new Pair<byte[], byte[]>(fuzzyKey, mask);
       list.add(pair);
     }
 
@@ -333,13 +325,13 @@ public class TestFuzzyRowFilterEndToEnd {
 
     String cf = "f";
     Scan scan = new Scan();
-    scan.addFamily(Bytes.toBytes(cf));
+    scan.addFamily(cf.getBytes());
     scan.setFilter(filter);
-    List<HRegion> regions = TEST_UTIL.getHBaseCluster().getRegions(TableName.valueOf(table));
+    List<HRegion> regions = TEST_UTIL.getHBaseCluster().getRegions(table.getBytes());
     HRegion first = regions.get(0);
     first.getScanner(scan);
     RegionScanner scanner = first.getScanner(scan);
-    List<Cell> results = new ArrayList<>();
+    List<Cell> results = new ArrayList<Cell>();
     // Result result;
     long timeBeforeScan = System.currentTimeMillis();
     int found = 0;
@@ -361,8 +353,9 @@ public class TestFuzzyRowFilterEndToEnd {
   @Test
   public void testFilterList() throws Exception {
     String cf = "f";
-    Table ht =
-        TEST_UTIL.createTable(TableName.valueOf(name.getMethodName()), Bytes.toBytes(cf), Integer.MAX_VALUE);
+    String table = "TestFuzzyRowFiltersInFilterList";
+    HTable ht =
+        TEST_UTIL.createTable(TableName.valueOf(table), Bytes.toBytes(cf), Integer.MAX_VALUE);
 
     // 10 byte row key - (2 bytes 4 bytes 4 bytes)
     // 4 byte qualifier
@@ -385,7 +378,7 @@ public class TestFuzzyRowFilterEndToEnd {
 
           Put p = new Put(rk);
           p.setDurability(Durability.SKIP_WAL);
-          p.addColumn(Bytes.toBytes(cf), cq, Bytes.toBytes(c));
+          p.add(cf.getBytes(), cq, Bytes.toBytes(c));
           ht.put(p);
           LOG.info("Inserting: rk: " + Bytes.toStringBinary(rk) + " cq: "
               + Bytes.toStringBinary(cq));
@@ -401,7 +394,7 @@ public class TestFuzzyRowFilterEndToEnd {
   }
 
   @SuppressWarnings("unchecked")
-  private void runTest(Table hTable, int expectedSize) throws IOException {
+  private void runTest(HTable hTable, int expectedSize) throws IOException {
     // [0, 2, ?, ?, ?, ?, 0, 0, 0, 1]
     byte[] fuzzyKey1 = new byte[10];
     ByteBuffer buf = ByteBuffer.wrap(fuzzyKey1);
@@ -422,8 +415,8 @@ public class TestFuzzyRowFilterEndToEnd {
 
     byte[] mask2 = new byte[] { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1 };
 
-    Pair<byte[], byte[]> pair1 = new Pair<>(fuzzyKey1, mask1);
-    Pair<byte[], byte[]> pair2 = new Pair<>(fuzzyKey2, mask2);
+    Pair<byte[], byte[]> pair1 = new Pair<byte[], byte[]>(fuzzyKey1, mask1);
+    Pair<byte[], byte[]> pair2 = new Pair<byte[], byte[]>(fuzzyKey2, mask2);
 
     FuzzyRowFilter fuzzyRowFilter1 = new FuzzyRowFilter(Lists.newArrayList(pair1));
     FuzzyRowFilter fuzzyRowFilter2 = new FuzzyRowFilter(Lists.newArrayList(pair2));
@@ -435,12 +428,12 @@ public class TestFuzzyRowFilterEndToEnd {
       throws IOException {
     String cf = "f";
     Scan scan = new Scan();
-    scan.addFamily(Bytes.toBytes(cf));
+    scan.addFamily(cf.getBytes());
     FilterList filterList = new FilterList(Operator.MUST_PASS_ALL, filter1, filter2);
     scan.setFilter(filterList);
 
     ResultScanner scanner = hTable.getScanner(scan);
-    List<Cell> results = new ArrayList<>();
+    List<Cell> results = new ArrayList<Cell>();
     Result result;
     long timeBeforeScan = System.currentTimeMillis();
     while ((result = scanner.next()) != null) {

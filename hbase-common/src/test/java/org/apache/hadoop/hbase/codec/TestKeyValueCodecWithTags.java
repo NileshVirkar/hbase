@@ -27,30 +27,21 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.List;
-import org.apache.hadoop.hbase.ArrayBackedTag;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.PrivateCellUtil;
-import org.apache.hadoop.hbase.Tag;
-import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
+import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 import org.apache.hbase.thirdparty.com.google.common.io.CountingInputStream;
 import org.apache.hbase.thirdparty.com.google.common.io.CountingOutputStream;
 
-@Category({MiscTests.class, SmallTests.class})
+@Category(SmallTests.class)
 public class TestKeyValueCodecWithTags {
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestKeyValueCodecWithTags.class);
-
   @Test
   public void testKeyValueWithTag() throws IOException {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -60,16 +51,16 @@ public class TestKeyValueCodecWithTags {
     Codec.Encoder encoder = codec.getEncoder(dos);
     final KeyValue kv1 = new KeyValue(Bytes.toBytes("r"), Bytes.toBytes("f"), Bytes.toBytes("1"),
         HConstants.LATEST_TIMESTAMP, Bytes.toBytes("1"), new Tag[] {
-          new ArrayBackedTag((byte) 1, Bytes.toBytes("teststring1")),
-          new ArrayBackedTag((byte) 2, Bytes.toBytes("teststring2")) });
+            new Tag((byte) 1, Bytes.toBytes("teststring1")),
+            new Tag((byte) 2, Bytes.toBytes("teststring2")) });
     final KeyValue kv2 = new KeyValue(Bytes.toBytes("r"), Bytes.toBytes("f"), Bytes.toBytes("2"),
-        HConstants.LATEST_TIMESTAMP, Bytes.toBytes("2"), new Tag[] { new ArrayBackedTag((byte) 1,
+        HConstants.LATEST_TIMESTAMP, Bytes.toBytes("2"), new Tag[] { new Tag((byte) 1,
             Bytes.toBytes("teststring3")), });
     final KeyValue kv3 = new KeyValue(Bytes.toBytes("r"), Bytes.toBytes("f"), Bytes.toBytes("3"),
         HConstants.LATEST_TIMESTAMP, Bytes.toBytes("3"), new Tag[] {
-          new ArrayBackedTag((byte) 2, Bytes.toBytes("teststring4")),
-          new ArrayBackedTag((byte) 2, Bytes.toBytes("teststring5")),
-          new ArrayBackedTag((byte) 1, Bytes.toBytes("teststring6")) });
+            new Tag((byte) 2, Bytes.toBytes("teststring4")),
+            new Tag((byte) 2, Bytes.toBytes("teststring5")),
+            new Tag((byte) 1, Bytes.toBytes("teststring6")) });
 
     encoder.write(kv1);
     encoder.write(kv2);
@@ -82,38 +73,37 @@ public class TestKeyValueCodecWithTags {
     Codec.Decoder decoder = codec.getDecoder(dis);
     assertTrue(decoder.advance());
     Cell c = decoder.current();
-    assertTrue(CellUtil.equals(c, kv1));
-    List<Tag> tags =
-        PrivateCellUtil.getTags(c);
+    assertTrue(CellComparator.equals(c, kv1));
+    List<Tag> tags = Tag.asList(c.getTagsArray(), c.getTagsOffset(), c.getTagsLength());
     assertEquals(2, tags.size());
     Tag tag = tags.get(0);
     assertEquals(1, tag.getType());
-    assertTrue(Bytes.equals(Bytes.toBytes("teststring1"), Tag.cloneValue(tag)));
+    assertTrue(Bytes.equals(Bytes.toBytes("teststring1"), tag.getValue()));
     tag = tags.get(1);
     assertEquals(2, tag.getType());
-    assertTrue(Bytes.equals(Bytes.toBytes("teststring2"), Tag.cloneValue(tag)));
+    assertTrue(Bytes.equals(Bytes.toBytes("teststring2"), tag.getValue()));
     assertTrue(decoder.advance());
     c = decoder.current();
-    assertTrue(CellUtil.equals(c, kv2));
-    tags = PrivateCellUtil.getTags(c);
+    assertTrue(CellComparator.equals(c, kv2));
+    tags = Tag.asList(c.getTagsArray(), c.getTagsOffset(), c.getTagsLength());
     assertEquals(1, tags.size());
     tag = tags.get(0);
     assertEquals(1, tag.getType());
-    assertTrue(Bytes.equals(Bytes.toBytes("teststring3"), Tag.cloneValue(tag)));
+    assertTrue(Bytes.equals(Bytes.toBytes("teststring3"), tag.getValue()));
     assertTrue(decoder.advance());
     c = decoder.current();
-    assertTrue(CellUtil.equals(c, kv3));
-    tags = PrivateCellUtil.getTags(c);
+    assertTrue(CellComparator.equals(c, kv3));
+    tags = Tag.asList(c.getTagsArray(), c.getTagsOffset(), c.getTagsLength());
     assertEquals(3, tags.size());
     tag = tags.get(0);
     assertEquals(2, tag.getType());
-    assertTrue(Bytes.equals(Bytes.toBytes("teststring4"), Tag.cloneValue(tag)));
+    assertTrue(Bytes.equals(Bytes.toBytes("teststring4"), tag.getValue()));
     tag = tags.get(1);
     assertEquals(2, tag.getType());
-    assertTrue(Bytes.equals(Bytes.toBytes("teststring5"), Tag.cloneValue(tag)));
+    assertTrue(Bytes.equals(Bytes.toBytes("teststring5"), tag.getValue()));
     tag = tags.get(2);
     assertEquals(1, tag.getType());
-    assertTrue(Bytes.equals(Bytes.toBytes("teststring6"), Tag.cloneValue(tag)));
+    assertTrue(Bytes.equals(Bytes.toBytes("teststring6"), tag.getValue()));
     assertFalse(decoder.advance());
     dis.close();
     assertEquals(offset, cis.getCount());

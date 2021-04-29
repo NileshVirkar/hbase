@@ -18,27 +18,24 @@
 package org.apache.hadoop.hbase.client;
 
 import java.util.Map;
-
-import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.io.TimeRange;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.security.access.AccessControlConstants;
-import org.apache.hadoop.hbase.security.access.AccessControlUtil;
 import org.apache.hadoop.hbase.security.access.Permission;
 import org.apache.hadoop.hbase.security.visibility.Authorizations;
 import org.apache.hadoop.hbase.security.visibility.VisibilityConstants;
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.util.Bytes;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ArrayListMultimap;
 import org.apache.hbase.thirdparty.com.google.common.collect.ListMultimap;
-import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 
-/**
- * Base class for HBase read operations; e.g. Scan and Get.
- */
 @InterfaceAudience.Public
+@InterfaceStability.Evolving
 public abstract class Query extends OperationWithAttributes {
   private static final String ISOLATION_LEVEL = "_isolationlevel_";
   protected Filter filter = null;
@@ -46,6 +43,7 @@ public abstract class Query extends OperationWithAttributes {
   protected Consistency consistency = Consistency.STRONG;
   protected Map<byte[], TimeRange> colFamTimeRangeMap = Maps.newTreeMap(Bytes.BYTES_COMPARATOR);
   protected Boolean loadColumnFamiliesOnDemand = null;
+
   /**
    * @return Filter
    */
@@ -54,9 +52,9 @@ public abstract class Query extends OperationWithAttributes {
   }
 
   /**
-   * Apply the specified server-side filter when performing the Query. Only
-   * {@link Filter#filterCell(org.apache.hadoop.hbase.Cell)} is called AFTER all tests for ttl,
-   * column match, deletes and column family's max versions have been run.
+   * Apply the specified server-side filter when performing the Query.
+   * Only {@link Filter#filterKeyValue(Cell)} is called AFTER all tests
+   * for ttl, column match, deletes and max versions have been run.
    * @param filter filter to run on the server
    * @return this for invocation chaining
    */
@@ -98,7 +96,7 @@ public abstract class Query extends OperationWithAttributes {
    */
   public Query setACL(String user, Permission perms) {
     setAttribute(AccessControlConstants.OP_ATTRIBUTE_ACL,
-      AccessControlUtil.toUsersAndPermissions(user, perms).toByteArray());
+      ProtobufUtil.toUsersAndPermissions(user, perms).toByteArray());
     return this;
   }
 
@@ -111,7 +109,7 @@ public abstract class Query extends OperationWithAttributes {
       permMap.put(entry.getKey(), entry.getValue());
     }
     setAttribute(AccessControlConstants.OP_ATTRIBUTE_ACL,
-        AccessControlUtil.toUsersAndPermissions(permMap).toByteArray());
+      ProtobufUtil.toUsersAndPermissions(permMap).toByteArray());
     return this;
   }
 
@@ -212,8 +210,7 @@ public abstract class Query extends OperationWithAttributes {
    * Get the logical value indicating whether on-demand CF loading should be allowed.
    */
   public boolean doLoadColumnFamiliesOnDemand() {
-    return (this.loadColumnFamiliesOnDemand != null)
-      && this.loadColumnFamiliesOnDemand;
+    return (this.loadColumnFamiliesOnDemand != null) && this.loadColumnFamiliesOnDemand;
   }
 
   /**
@@ -230,12 +227,12 @@ public abstract class Query extends OperationWithAttributes {
    */
 
   public Query setColumnFamilyTimeRange(byte[] cf, long minStamp, long maxStamp) {
-    colFamTimeRangeMap.put(cf, TimeRange.between(minStamp, maxStamp));
+    colFamTimeRangeMap.put(cf, new TimeRange(minStamp, maxStamp));
     return this;
   }
 
   /**
-   * @return A map of column families to time ranges
+   * @return Map<byte[], TimeRange> a map of column families to time ranges
    */
   public Map<byte[], TimeRange> getColumnFamilyTimeRange() {
     return this.colFamTimeRangeMap;

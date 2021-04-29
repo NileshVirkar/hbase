@@ -23,14 +23,13 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.AdditionalMatchers.aryEq;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyBoolean;
+import static org.mockito.Matchers.anyInt;
+import static org.mockito.Matchers.anyLong;
+import static org.mockito.Matchers.argThat;
+import static org.mockito.Matchers.eq;
+import static org.mockito.Matchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.only;
 import static org.mockito.Mockito.times;
@@ -43,29 +42,23 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
-import java.util.OptionalLong;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.CellComparatorImpl;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.HColumnDescriptor;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.RegionInfoBuilder;
-import org.apache.hadoop.hbase.io.TimeRange;
+import org.apache.hadoop.hbase.KeyValue.KVComparator;
+import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.hfile.HFile;
 import org.apache.hadoop.hbase.regionserver.BloomType;
-import org.apache.hadoop.hbase.regionserver.HStore;
-import org.apache.hadoop.hbase.regionserver.HStoreFile;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
-import org.apache.hadoop.hbase.regionserver.ScanInfo;
 import org.apache.hadoop.hbase.regionserver.ScanType;
 import org.apache.hadoop.hbase.regionserver.ScannerContext;
+import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
-import org.apache.hadoop.hbase.regionserver.StoreFileReader;
+import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.regionserver.StoreFileScanner;
 import org.apache.hadoop.hbase.regionserver.StripeMultiFileWriter;
 import org.apache.hadoop.hbase.regionserver.StripeStoreConfig;
@@ -74,13 +67,12 @@ import org.apache.hadoop.hbase.regionserver.StripeStoreFlusher;
 import org.apache.hadoop.hbase.regionserver.compactions.StripeCompactionPolicy.StripeInformationProvider;
 import org.apache.hadoop.hbase.regionserver.compactions.TestCompactor.StoreFileWritersCapture;
 import org.apache.hadoop.hbase.regionserver.throttle.NoLimitThroughputController;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.testclassification.RegionServerTests;
+import org.apache.hadoop.hbase.security.User;
+import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ConcatenatedLists;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.ManualEnvironmentEdge;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
@@ -93,13 +85,8 @@ import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 @RunWith(Parameterized.class)
-@Category({RegionServerTests.class, MediumTests.class})
+@Category(SmallTests.class)
 public class TestStripeCompactionPolicy {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestStripeCompactionPolicy.class);
-
   private static final byte[] KEY_A = Bytes.toBytes("aaa");
   private static final byte[] KEY_B = Bytes.toBytes("bbb");
   private static final byte[] KEY_C = Bytes.toBytes("ccc");
@@ -124,7 +111,6 @@ public class TestStripeCompactionPolicy {
 
   @Parameter
   public boolean usePrivateReaders;
-
   @Test
   public void testNoStripesFromFlush() throws Exception {
     Configuration conf = HBaseConfiguration.create();
@@ -144,7 +130,7 @@ public class TestStripeCompactionPolicy {
 
     KeyValue[] input = new KeyValue[] { KV_B, KV_C, KV_C, KV_D, KV_E };
     KeyValue[][] expected = new KeyValue[][] { new KeyValue[] { KV_B },
-      new KeyValue[] { KV_C, KV_C }, new KeyValue[] {  KV_D, KV_E } };
+        new KeyValue[] { KV_C, KV_C }, new KeyValue[] {  KV_D, KV_E } };
     verifyFlush(policy, si, input, expected, new byte[][] { OPEN_KEY, KEY_C, KEY_D, OPEN_KEY });
   }
 
@@ -162,31 +148,24 @@ public class TestStripeCompactionPolicy {
   public void testSingleStripeCompaction() throws Exception {
     // Create a special policy that only compacts single stripes, using standard methods.
     Configuration conf = HBaseConfiguration.create();
-    // Test depends on this not being set to pass.  Default breaks test.  TODO: Revisit.
-    conf.unset("hbase.hstore.compaction.min.size");
     conf.setFloat(CompactionConfiguration.HBASE_HSTORE_COMPACTION_RATIO_KEY, 1.0F);
     conf.setInt(StripeStoreConfig.MIN_FILES_KEY, 3);
     conf.setInt(StripeStoreConfig.MAX_FILES_KEY, 4);
     conf.setLong(StripeStoreConfig.SIZE_TO_SPLIT_KEY, 1000); // make sure the are no splits
     StoreConfigInformation sci = mock(StoreConfigInformation.class);
-    when(sci.getRegionInfo()).thenReturn(RegionInfoBuilder.FIRST_META_REGIONINFO);
     StripeStoreConfig ssc = new StripeStoreConfig(conf, sci);
     StripeCompactionPolicy policy = new StripeCompactionPolicy(conf, sci, ssc) {
       @Override
       public StripeCompactionRequest selectCompaction(StripeInformationProvider si,
-          List<HStoreFile> filesCompacting, boolean isOffpeak) throws IOException {
-        if (!filesCompacting.isEmpty()) {
-          return null;
-        }
+          List<StoreFile> filesCompacting, boolean isOffpeak) throws IOException {
+        if (!filesCompacting.isEmpty()) return null;
         return selectSingleStripeCompaction(si, false, false, isOffpeak);
       }
 
       @Override
       public boolean needsCompactions(
-          StripeInformationProvider si, List<HStoreFile> filesCompacting) {
-        if (!filesCompacting.isEmpty()) {
-          return false;
-        }
+          StripeInformationProvider si, List<StoreFile> filesCompacting) {
+        if (!filesCompacting.isEmpty()) return false;
         return needsSingleStripeCompaction(si);
       }
     };
@@ -211,13 +190,13 @@ public class TestStripeCompactionPolicy {
     si = createStripesWithSizes(0, 0,
         new Long[] { 5L }, new Long[] { 3L, 2L, 2L, 1L }, new Long[] { 3L, 2L, 2L });
     verifySingleStripeCompaction(policy, si, 1, null);
-    // Or with smallest files, if the count is the same
+    // Or with smallest files, if the count is the same 
     si = createStripesWithSizes(0, 0,
         new Long[] { 3L, 3L, 3L }, new Long[] { 3L, 1L, 2L }, new Long[] { 3L, 2L, 2L });
     verifySingleStripeCompaction(policy, si, 1, null);
     // Verify max count is respected.
     si = createStripesWithSizes(0, 0, new Long[] { 5L }, new Long[] { 5L, 4L, 4L, 4L, 4L });
-    List<HStoreFile> sfs = si.getStripes().get(1).subList(1, 5);
+    List<StoreFile> sfs = si.getStripes().get(1).subList(1, 5);
     verifyCompaction(policy, si, sfs, null, 1, null, si.getStartRow(1), si.getEndRow(1), true);
     // Verify ratio is applied.
     si = createStripesWithSizes(0, 0, new Long[] { 5L }, new Long[] { 50L, 4L, 4L, 4L, 4L });
@@ -237,21 +216,19 @@ public class TestStripeCompactionPolicy {
   public void testWithReferences() throws Exception {
     StripeCompactionPolicy policy = createPolicy(HBaseConfiguration.create());
     StripeCompactor sc = mock(StripeCompactor.class);
-    HStoreFile ref = createFile();
+    StoreFile ref = createFile();
     when(ref.isReference()).thenReturn(true);
     StripeInformationProvider si = mock(StripeInformationProvider.class);
-    Collection<HStoreFile> sfs = al(ref, createFile());
+    Collection<StoreFile> sfs = al(ref, createFile());
     when(si.getStorefiles()).thenReturn(sfs);
 
     assertTrue(policy.needsCompactions(si, al()));
     StripeCompactionPolicy.StripeCompactionRequest scr = policy.selectCompaction(si, al(), false);
-    // UnmodifiableCollection does not implement equals so we need to change it here to a
-    // collection that implements it.
-    assertEquals(si.getStorefiles(), new ArrayList<>(scr.getRequest().getFiles()));
+    assertEquals(si.getStorefiles(), scr.getRequest().getFiles());
     scr.execute(sc, NoLimitThroughputController.INSTANCE, null);
     verify(sc, only()).compact(eq(scr.getRequest()), anyInt(), anyLong(), aryEq(OPEN_KEY),
       aryEq(OPEN_KEY), aryEq(OPEN_KEY), aryEq(OPEN_KEY),
-      any(), any());
+      any(NoLimitThroughputController.class), any(User.class));
   }
 
   @Test
@@ -290,39 +267,8 @@ public class TestStripeCompactionPolicy {
   }
 
   @Test
-  public void testCheckExpiredStripeCompaction() throws Exception {
-    Configuration conf = HBaseConfiguration.create();
-    conf.setInt(StripeStoreConfig.MIN_FILES_L0_KEY, 5);
-    conf.setInt(StripeStoreConfig.MIN_FILES_KEY, 4);
-
-    ManualEnvironmentEdge edge = new ManualEnvironmentEdge();
-    long now = defaultTtl + 2;
-    edge.setValue(now);
-    EnvironmentEdgeManager.injectEdge(edge);
-    HStoreFile expiredFile = createFile(10), notExpiredFile = createFile(10);
-    when(expiredFile.getReader().getMaxTimestamp()).thenReturn(now - defaultTtl - 1);
-    when(notExpiredFile.getReader().getMaxTimestamp()).thenReturn(now - defaultTtl + 1);
-    List<HStoreFile> expired = Lists.newArrayList(expiredFile, expiredFile);
-    List<HStoreFile> mixed = Lists.newArrayList(expiredFile, notExpiredFile);
-
-    StripeCompactionPolicy policy =
-      createPolicy(conf, defaultSplitSize, defaultSplitCount, defaultInitialCount, true);
-    // Merge expired if there are eligible stripes.
-    StripeCompactionPolicy.StripeInformationProvider si =
-      createStripesWithFiles(mixed, mixed, mixed);
-    assertFalse(policy.needsCompactions(si, al()));
-
-    si = createStripesWithFiles(mixed, mixed, mixed, expired);
-    assertFalse(policy.needsSingleStripeCompaction(si));
-    assertTrue(policy.hasExpiredStripes(si));
-    assertTrue(policy.needsCompactions(si, al()));
-  }
-
-  @Test
   public void testSplitOffStripe() throws Exception {
     Configuration conf = HBaseConfiguration.create();
-    // Test depends on this not being set to pass.  Default breaks test.  TODO: Revisit.
-    conf.unset("hbase.hstore.compaction.min.size");
     // First test everything with default split count of 2, then split into more.
     conf.setInt(StripeStoreConfig.MIN_FILES_KEY, 2);
     Long[] toSplit = new Long[] { defaultSplitSize - 2, 1L, 1L };
@@ -353,10 +299,6 @@ public class TestStripeCompactionPolicy {
   public void testSplitOffStripeOffPeak() throws Exception {
     // for HBASE-11439
     Configuration conf = HBaseConfiguration.create();
-
-    // Test depends on this not being set to pass.  Default breaks test.  TODO: Revisit.
-    conf.unset("hbase.hstore.compaction.min.size");
-
     conf.setInt(StripeStoreConfig.MIN_FILES_KEY, 2);
     // Select the last 2 files.
     StripeCompactionPolicy.StripeInformationProvider si =
@@ -395,12 +337,12 @@ public class TestStripeCompactionPolicy {
     edge.setValue(now);
     EnvironmentEdgeManager.injectEdge(edge);
     try {
-      HStoreFile expiredFile = createFile(), notExpiredFile = createFile();
+      StoreFile expiredFile = createFile(), notExpiredFile = createFile();
       when(expiredFile.getReader().getMaxTimestamp()).thenReturn(now - defaultTtl - 1);
       when(notExpiredFile.getReader().getMaxTimestamp()).thenReturn(now - defaultTtl + 1);
-      List<HStoreFile> expired = Lists.newArrayList(expiredFile, expiredFile);
-      List<HStoreFile> notExpired = Lists.newArrayList(notExpiredFile, notExpiredFile);
-      List<HStoreFile> mixed = Lists.newArrayList(expiredFile, notExpiredFile);
+      List<StoreFile> expired = Lists.newArrayList(expiredFile, expiredFile);
+      List<StoreFile> notExpired = Lists.newArrayList(notExpiredFile, notExpiredFile);
+      List<StoreFile> mixed = Lists.newArrayList(expiredFile, notExpiredFile);
 
       StripeCompactionPolicy policy = createPolicy(HBaseConfiguration.create(),
           defaultSplitSize, defaultSplitCount, defaultInitialCount, true);
@@ -435,11 +377,11 @@ public class TestStripeCompactionPolicy {
     edge.setValue(now);
     EnvironmentEdgeManager.injectEdge(edge);
     try {
-      HStoreFile expiredFile = createFile(), notExpiredFile = createFile();
+      StoreFile expiredFile = createFile(), notExpiredFile = createFile();
       when(expiredFile.getReader().getMaxTimestamp()).thenReturn(now - defaultTtl - 1);
       when(notExpiredFile.getReader().getMaxTimestamp()).thenReturn(now - defaultTtl + 1);
-      List<HStoreFile> expired = Lists.newArrayList(expiredFile, expiredFile);
-      List<HStoreFile> notExpired = Lists.newArrayList(notExpiredFile, notExpiredFile);
+      List<StoreFile> expired = Lists.newArrayList(expiredFile, expiredFile);
+      List<StoreFile> notExpired = Lists.newArrayList(notExpiredFile, notExpiredFile);
 
       StripeCompactionPolicy policy =
           createPolicy(HBaseConfiguration.create(), defaultSplitSize, defaultSplitCount,
@@ -460,16 +402,14 @@ public class TestStripeCompactionPolicy {
 
   @SuppressWarnings("unchecked")
   private static StripeCompactionPolicy.StripeInformationProvider createStripesWithFiles(
-      List<HStoreFile>... stripeFiles) throws Exception {
+      List<StoreFile>... stripeFiles) throws Exception {
     return createStripesWithFiles(createBoundaries(stripeFiles.length),
-        Lists.newArrayList(stripeFiles), new ArrayList<>());
+        Lists.newArrayList(stripeFiles), new ArrayList<StoreFile>());
   }
 
   @Test
   public void testSingleStripeDropDeletes() throws Exception {
     Configuration conf = HBaseConfiguration.create();
-    // Test depends on this not being set to pass.  Default breaks test.  TODO: Revisit.
-    conf.unset("hbase.hstore.compaction.min.size");
     StripeCompactionPolicy policy = createPolicy(conf);
     // Verify the deletes can be dropped if there are no L0 files.
     Long[][] stripes = new Long[][] { new Long[] { 3L, 2L, 2L, 2L }, new Long[] { 6L } };
@@ -480,7 +420,7 @@ public class TestStripeCompactionPolicy {
     verifySingleStripeCompaction(policy, si, 0, false);
     // Unless there are enough to cause L0 compaction.
     si = createStripesWithSizes(6, 2, stripes);
-    ConcatenatedLists<HStoreFile> sfs = new ConcatenatedLists<>();
+    ConcatenatedLists<StoreFile> sfs = new ConcatenatedLists<StoreFile>();
     sfs.addSublist(si.getLevel0Files());
     sfs.addSublist(si.getStripes().get(0));
     verifyCompaction(
@@ -493,13 +433,12 @@ public class TestStripeCompactionPolicy {
     // if all files of stripe aren't selected, delete must not be dropped.
     stripes = new Long[][] { new Long[] { 100L, 3L, 2L, 2L, 2L }, new Long[] { 6L } };
     si = createStripesWithSizes(0, 0, stripes);
-    List<HStoreFile> compactFile = new ArrayList<>();
-    Iterator<HStoreFile> iter = si.getStripes().get(0).listIterator(1);
+    List<StoreFile> compact_file = new ArrayList<StoreFile>();
+    Iterator<StoreFile> iter = si.getStripes().get(0).listIterator(1);
     while (iter.hasNext()) {
-      compactFile.add(iter.next());
+        compact_file.add(iter.next());
     }
-    verifyCompaction(policy, si, compactFile, false, 1, null, si.getStartRow(0), si.getEndRow(0),
-      true);
+    verifyCompaction(policy, si, compact_file, false, 1, null, si.getStartRow(0), si.getEndRow(0), true);
   }
 
   /********* HELPER METHODS ************/
@@ -515,19 +454,18 @@ public class TestStripeCompactionPolicy {
     conf.setInt(StripeStoreConfig.INITIAL_STRIPE_COUNT_KEY, initialCount);
     StoreConfigInformation sci = mock(StoreConfigInformation.class);
     when(sci.getStoreFileTtl()).thenReturn(hasTtl ? defaultTtl : Long.MAX_VALUE);
-    when(sci.getRegionInfo()).thenReturn(RegionInfoBuilder.FIRST_META_REGIONINFO);
     StripeStoreConfig ssc = new StripeStoreConfig(conf, sci);
     return new StripeCompactionPolicy(conf, sci, ssc);
   }
 
-  private static ArrayList<HStoreFile> al(HStoreFile... sfs) {
-    return new ArrayList<>(Arrays.asList(sfs));
+  private static ArrayList<StoreFile> al(StoreFile... sfs) {
+    return new ArrayList<StoreFile>(Arrays.asList(sfs));
   }
 
   private void verifyMergeCompatcion(StripeCompactionPolicy policy, StripeInformationProvider si,
       int from, int to) throws Exception {
     StripeCompactionPolicy.StripeCompactionRequest scr = policy.selectCompaction(si, al(), false);
-    Collection<HStoreFile> sfs = getAllFiles(si, from, to);
+    Collection<StoreFile> sfs = getAllFiles(si, from, to);
     verifyCollectionsEqual(sfs, scr.getRequest().getFiles());
 
     // All the Stripes are expired, so the Compactor will not create any Writers. We need to create
@@ -586,7 +524,7 @@ public class TestStripeCompactionPolicy {
    * @param boundaries Expected target stripe boundaries.
    */
   private void verifyCompaction(StripeCompactionPolicy policy, StripeInformationProvider si,
-      Collection<HStoreFile> sfs, byte[] dropDeletesFrom, byte[] dropDeletesTo,
+      Collection<StoreFile> sfs, byte[] dropDeletesFrom, byte[] dropDeletesTo,
       final List<byte[]> boundaries) throws Exception {
     StripeCompactor sc = mock(StripeCompactor.class);
     assertTrue(policy.needsCompactions(si, al()));
@@ -595,21 +533,18 @@ public class TestStripeCompactionPolicy {
     scr.execute(sc, NoLimitThroughputController.INSTANCE, null);
     verify(sc, times(1)).compact(eq(scr.getRequest()), argThat(new ArgumentMatcher<List<byte[]>>() {
       @Override
-      public boolean matches(List<byte[]> argument) {
-        List<byte[]> other = argument;
-        if (other.size() != boundaries.size()) {
-          return false;
-        }
+      public boolean matches(Object argument) {
+        @SuppressWarnings("unchecked")
+        List<byte[]> other = (List<byte[]>) argument;
+        if (other.size() != boundaries.size()) return false;
         for (int i = 0; i < other.size(); ++i) {
-          if (!Bytes.equals(other.get(i), boundaries.get(i))) {
-            return false;
-          }
+          if (!Bytes.equals(other.get(i), boundaries.get(i))) return false;
         }
         return true;
       }
     }), dropDeletesFrom == null ? isNull(byte[].class) : aryEq(dropDeletesFrom),
       dropDeletesTo == null ? isNull(byte[].class) : aryEq(dropDeletesTo),
-      any(), any());
+      any(NoLimitThroughputController.class), any(User.class));
   }
 
   /**
@@ -621,10 +556,10 @@ public class TestStripeCompactionPolicy {
    * @param count Expected # of resulting stripes, null if not checked.
    * @param size Expected target stripe size, null if not checked.
    * @param start Left boundary of the compaction.
-   * @param end Right boundary of the compaction.
+   * @param righr Right boundary of the compaction.
    */
   private void verifyCompaction(StripeCompactionPolicy policy, StripeInformationProvider si,
-      Collection<HStoreFile> sfs, Boolean dropDeletes, Integer count, Long size,
+      Collection<StoreFile> sfs, Boolean dropDeletes, Integer count, Long size,
       byte[] start, byte[] end, boolean needsCompaction) throws IOException {
     StripeCompactor sc = mock(StripeCompactor.class);
     assertTrue(!needsCompaction || policy.needsCompactions(si, al()));
@@ -635,15 +570,15 @@ public class TestStripeCompactionPolicy {
       count == null ? anyInt() : eq(count.intValue()),
       size == null ? anyLong() : eq(size.longValue()), aryEq(start), aryEq(end),
       dropDeletesMatcher(dropDeletes, start), dropDeletesMatcher(dropDeletes, end),
-      any(), any());
+      any(NoLimitThroughputController.class), any(User.class));
   }
 
   /** Verify arbitrary flush. */
   protected void verifyFlush(StripeCompactionPolicy policy, StripeInformationProvider si,
       KeyValue[] input, KeyValue[][] expected, byte[][] boundaries) throws IOException {
     StoreFileWritersCapture writers = new StoreFileWritersCapture();
-    StripeStoreFlusher.StripeFlushRequest req =
-      policy.selectFlush(CellComparatorImpl.COMPARATOR, si, input.length);
+    StripeStoreFlusher.StripeFlushRequest req = policy.selectFlush(new KVComparator(), si,
+      input.length);
     StripeMultiFileWriter mw = req.createWriter();
     mw.init(null, writers);
     for (KeyValue kv : input) {
@@ -659,19 +594,19 @@ public class TestStripeCompactionPolicy {
 
 
   private byte[] dropDeletesMatcher(Boolean dropDeletes, byte[] value) {
-    return dropDeletes == null ? any()
+    return dropDeletes == null ? any(byte[].class)
             : (dropDeletes.booleanValue() ? aryEq(value) : isNull(byte[].class));
   }
 
-  private void verifyCollectionsEqual(Collection<HStoreFile> sfs, Collection<HStoreFile> scr) {
+  private void verifyCollectionsEqual(Collection<StoreFile> sfs, Collection<StoreFile> scr) {
     // Dumb.
     assertEquals(sfs.size(), scr.size());
     assertTrue(scr.containsAll(sfs));
   }
 
-  private static List<HStoreFile> getAllFiles(
+  private static List<StoreFile> getAllFiles(
       StripeInformationProvider si, int fromStripe, int toStripe) {
-    ArrayList<HStoreFile> expected = new ArrayList<>();
+    ArrayList<StoreFile> expected = new ArrayList<StoreFile>();
     for (int i = fromStripe; i <= toStripe; ++i) {
       expected.addAll(si.getStripes().get(i));
     }
@@ -685,11 +620,11 @@ public class TestStripeCompactionPolicy {
    */
   private static StripeInformationProvider createStripes(
       int l0Count, byte[]... boundaries) throws Exception {
-    List<Long> l0Sizes = new ArrayList<>();
+    List<Long> l0Sizes = new ArrayList<Long>();
     for (int i = 0; i < l0Count; ++i) {
       l0Sizes.add(5L);
     }
-    List<List<Long>> sizes = new ArrayList<>();
+    List<List<Long>> sizes = new ArrayList<List<Long>>();
     for (int i = 0; i <= boundaries.length; ++i) {
       sizes.add(Arrays.asList(Long.valueOf(5)));
     }
@@ -703,11 +638,11 @@ public class TestStripeCompactionPolicy {
    */
   private static StripeInformationProvider createStripesL0Only(
       int l0Count, long l0Size) throws Exception {
-    List<Long> l0Sizes = new ArrayList<>();
+    List<Long> l0Sizes = new ArrayList<Long>();
     for (int i = 0; i < l0Count; ++i) {
       l0Sizes.add(l0Size);
     }
-    return createStripes(null, new ArrayList<>(), l0Sizes);
+    return createStripes(null, new ArrayList<List<Long>>(), l0Sizes);
   }
 
   /**
@@ -718,7 +653,7 @@ public class TestStripeCompactionPolicy {
    */
   private static StripeInformationProvider createStripesWithSizes(
       int l0Count, long l0Size, Long[]... sizes) throws Exception {
-    ArrayList<List<Long>> sizeList = new ArrayList<>(sizes.length);
+    ArrayList<List<Long>> sizeList = new ArrayList<List<Long>>();
     for (Long[] size : sizes) {
       sizeList.add(Arrays.asList(size));
     }
@@ -728,7 +663,7 @@ public class TestStripeCompactionPolicy {
   private static StripeInformationProvider createStripesWithSizes(
       int l0Count, long l0Size, List<List<Long>> sizes) throws Exception {
     List<byte[]> boundaries = createBoundaries(sizes.size());
-    List<Long> l0Sizes = new ArrayList<>();
+    List<Long> l0Sizes = new ArrayList<Long>();
     for (int i = 0; i < l0Count; ++i) {
       l0Sizes.add(l0Size);
     }
@@ -738,22 +673,22 @@ public class TestStripeCompactionPolicy {
   private static List<byte[]> createBoundaries(int stripeCount) {
     byte[][] keys = new byte[][] { KEY_A, KEY_B, KEY_C, KEY_D, KEY_E };
     assert stripeCount <= keys.length + 1;
-    List<byte[]> boundaries = new ArrayList<>();
+    List<byte[]> boundaries = new ArrayList<byte[]>();
     boundaries.addAll(Arrays.asList(keys).subList(0, stripeCount - 1));
     return boundaries;
   }
 
   private static StripeInformationProvider createStripes(List<byte[]> boundaries,
       List<List<Long>> stripeSizes, List<Long> l0Sizes) throws Exception {
-    List<List<HStoreFile>> stripeFiles = new ArrayList<>(stripeSizes.size());
+    List<List<StoreFile>> stripeFiles = new ArrayList<List<StoreFile>>(stripeSizes.size());
     for (List<Long> sizes : stripeSizes) {
-      List<HStoreFile> sfs = new ArrayList<>(sizes.size());
+      List<StoreFile> sfs = new ArrayList<StoreFile>();
       for (Long size : sizes) {
         sfs.add(createFile(size));
       }
       stripeFiles.add(sfs);
     }
-    List<HStoreFile> l0Files = new ArrayList<>();
+    List<StoreFile> l0Files = new ArrayList<StoreFile>();
     for (Long size : l0Sizes) {
       l0Files.add(createFile(size));
     }
@@ -764,9 +699,9 @@ public class TestStripeCompactionPolicy {
    * This method actually does all the work.
    */
   private static StripeInformationProvider createStripesWithFiles(List<byte[]> boundaries,
-      List<List<HStoreFile>> stripeFiles, List<HStoreFile> l0Files) throws Exception {
-    ArrayList<ImmutableList<HStoreFile>> stripes = new ArrayList<>();
-    ArrayList<byte[]> boundariesList = new ArrayList<>();
+      List<List<StoreFile>> stripeFiles, List<StoreFile> l0Files) throws Exception {
+    ArrayList<ImmutableList<StoreFile>> stripes = new ArrayList<ImmutableList<StoreFile>>();
+    ArrayList<byte[]> boundariesList = new ArrayList<byte[]>();
     StripeInformationProvider si = mock(StripeInformationProvider.class);
     if (!stripeFiles.isEmpty()) {
       assert stripeFiles.size() == (boundaries.size() + 1);
@@ -775,7 +710,7 @@ public class TestStripeCompactionPolicy {
         byte[] startKey = ((i == 0) ? OPEN_KEY : boundaries.get(i - 1));
         byte[] endKey = ((i == boundaries.size()) ? OPEN_KEY : boundaries.get(i));
         boundariesList.add(endKey);
-        for (HStoreFile sf : stripeFiles.get(i)) {
+        for (StoreFile sf : stripeFiles.get(i)) {
           setFileStripe(sf, startKey, endKey);
         }
         stripes.add(ImmutableList.copyOf(stripeFiles.get(i)));
@@ -783,7 +718,7 @@ public class TestStripeCompactionPolicy {
         when(si.getEndRow(eq(i))).thenReturn(endKey);
       }
     }
-    ConcatenatedLists<HStoreFile> sfs = new ConcatenatedLists<>();
+    ConcatenatedLists<StoreFile> sfs = new ConcatenatedLists<StoreFile>();
     sfs.addAllSublists(stripes);
     sfs.addSublist(l0Files);
     when(si.getStorefiles()).thenReturn(sfs);
@@ -794,10 +729,10 @@ public class TestStripeCompactionPolicy {
     return si;
   }
 
-  private static HStoreFile createFile(long size) throws Exception {
-    HStoreFile sf = mock(HStoreFile.class);
+  private static StoreFile createFile(long size) throws Exception {
+    StoreFile sf = mock(StoreFile.class);
     when(sf.getPath()).thenReturn(new Path("moo"));
-    StoreFileReader r = mock(StoreFileReader.class);
+    StoreFile.Reader r = mock(StoreFile.Reader.class);
     when(r.getEntries()).thenReturn(size);
     when(r.length()).thenReturn(size);
     when(r.getBloomFilterType()).thenReturn(BloomType.NONE);
@@ -805,51 +740,47 @@ public class TestStripeCompactionPolicy {
     when(r.getStoreFileScanner(anyBoolean(), anyBoolean(), anyBoolean(), anyLong(), anyLong(),
       anyBoolean())).thenReturn(mock(StoreFileScanner.class));
     when(sf.getReader()).thenReturn(r);
-    when(sf.getBulkLoadTimestamp()).thenReturn(OptionalLong.empty());
-    when(r.getMaxTimestamp()).thenReturn(TimeRange.INITIAL_MAX_TIMESTAMP);
+    when(sf.createReader(anyBoolean())).thenReturn(r);
+    when(sf.createReader()).thenReturn(r);
+    when(sf.cloneForReader()).thenReturn(sf);
     return sf;
   }
 
-  private static HStoreFile createFile() throws Exception {
+  private static StoreFile createFile() throws Exception {
     return createFile(0);
   }
 
-  private static void setFileStripe(HStoreFile sf, byte[] startKey, byte[] endKey) {
+  private static void setFileStripe(StoreFile sf, byte[] startKey, byte[] endKey) {
     when(sf.getMetadataValue(StripeStoreFileManager.STRIPE_START_KEY)).thenReturn(startKey);
     when(sf.getMetadataValue(StripeStoreFileManager.STRIPE_END_KEY)).thenReturn(endKey);
   }
 
   private StripeCompactor createCompactor() throws Exception {
-    ColumnFamilyDescriptor familyDescriptor =
-      ColumnFamilyDescriptorBuilder.of(Bytes.toBytes("foo"));
+    HColumnDescriptor col = new HColumnDescriptor(Bytes.toBytes("foo"));
     StoreFileWritersCapture writers = new StoreFileWritersCapture();
-    HStore store = mock(HStore.class);
-    RegionInfo info = mock(RegionInfo.class);
+    Store store = mock(Store.class);
+    HRegionInfo info = mock(HRegionInfo.class);
     when(info.getRegionNameAsString()).thenReturn("testRegion");
-    when(store.getColumnFamilyDescriptor()).thenReturn(familyDescriptor);
+    when(store.getFamily()).thenReturn(col);
     when(store.getRegionInfo()).thenReturn(info);
     when(
-      store.createWriterInTmp(anyLong(), any(), anyBoolean(),
-        anyBoolean(), anyBoolean(), anyBoolean())).thenAnswer(writers);
-    when(
-      store.createWriterInTmp(anyLong(), any(), anyBoolean(),
-        anyBoolean(), anyBoolean(), anyBoolean(), anyLong(), anyString())).thenAnswer(writers);
+      store.createWriterInTmp(anyLong(), any(Compression.Algorithm.class), anyBoolean(),
+        anyBoolean(), anyBoolean(), anyBoolean(), anyLong())).thenAnswer(writers);
 
     Configuration conf = HBaseConfiguration.create();
     conf.setBoolean("hbase.regionserver.compaction.private.readers", usePrivateReaders);
     final Scanner scanner = new Scanner();
     return new StripeCompactor(conf, store) {
       @Override
-      protected InternalScanner createScanner(HStore store, ScanInfo scanInfo,
-          List<StoreFileScanner> scanners, long smallestReadPoint, long earliestPutTs,
-          byte[] dropDeletesFromRow, byte[] dropDeletesToRow) throws IOException {
+      protected InternalScanner createScanner(Store store, List<StoreFileScanner> scanners,
+          long smallestReadPoint, long earliestPutTs, byte[] dropDeletesFromRow,
+          byte[] dropDeletesToRow) throws IOException {
         return scanner;
       }
 
       @Override
-      protected InternalScanner createScanner(HStore store, ScanInfo scanInfo,
-          List<StoreFileScanner> scanners, ScanType scanType, long smallestReadPoint,
-          long earliestPutTs) throws IOException {
+      protected InternalScanner createScanner(Store store, List<StoreFileScanner> scanners,
+          ScanType scanType, long smallestReadPoint, long earliestPutTs) throws IOException {
         return scanner;
       }
     };
@@ -859,17 +790,20 @@ public class TestStripeCompactionPolicy {
     private final ArrayList<KeyValue> kvs;
 
     public Scanner(KeyValue... kvs) {
-      this.kvs = new ArrayList<>(Arrays.asList(kvs));
+      this.kvs = new ArrayList<KeyValue>(Arrays.asList(kvs));
+    }
+
+    @Override
+    public boolean next(List<Cell> results) throws IOException {
+      if (kvs.isEmpty()) return false;
+      results.add(kvs.remove(0));
+      return !kvs.isEmpty();
     }
 
     @Override
     public boolean next(List<Cell> result, ScannerContext scannerContext)
         throws IOException {
-      if (kvs.isEmpty()) {
-        return false;
-      }
-      result.add(kvs.remove(0));
-      return !kvs.isEmpty();
+      return next(result);
     }
 
     @Override

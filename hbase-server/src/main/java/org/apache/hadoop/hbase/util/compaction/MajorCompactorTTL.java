@@ -20,31 +20,31 @@ package org.apache.hadoop.hbase.util.compaction;
 
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
+import org.apache.commons.cli.BasicParser;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.util.ToolRunner;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLineParser;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.DefaultParser;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.Option;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.Options;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.ParseException;
 
 /**
  * This tool compacts a table's regions that are beyond it's TTL. It helps to save disk space and
@@ -55,10 +55,10 @@ public class MajorCompactorTTL extends MajorCompactor {
 
   private static final Logger LOG = LoggerFactory.getLogger(MajorCompactorTTL .class);
 
-  private TableDescriptor htd;
+  private HTableDescriptor htd;
 
   @InterfaceAudience.Private
-  public MajorCompactorTTL(Configuration conf, TableDescriptor htd, int concurrency,
+  public MajorCompactorTTL(Configuration conf, HTableDescriptor htd, int concurrency,
       long sleepForMs) throws IOException {
     this.connection = ConnectionFactory.createConnection(conf);
     this.htd = htd;
@@ -74,7 +74,7 @@ public class MajorCompactorTTL extends MajorCompactor {
   }
 
   @Override
-  protected Optional<MajorCompactionRequest> getMajorCompactionRequest(RegionInfo hri)
+  protected Optional<MajorCompactionRequest> getMajorCompactionRequest(HRegionInfo hri)
       throws IOException {
     return MajorCompactionTTLRequest.newRequest(connection.getConfiguration(), hri, htd);
   }
@@ -92,7 +92,7 @@ public class MajorCompactorTTL extends MajorCompactor {
     Connection conn = ConnectionFactory.createConnection(conf);
     TableName tableName = TableName.valueOf(table);
 
-    TableDescriptor htd = conn.getAdmin().getDescriptor(tableName);
+    HTableDescriptor htd = conn.getAdmin().getTableDescriptor(tableName);
     if (!doesAnyColFamilyHaveTTL(htd)) {
       LOG.info("No TTL present for CF of table: " + tableName + ", skipping compaction");
       return 0;
@@ -112,8 +112,8 @@ public class MajorCompactorTTL extends MajorCompactor {
     return ERRORS.size();
   }
 
-  private boolean doesAnyColFamilyHaveTTL(TableDescriptor htd) {
-    for (ColumnFamilyDescriptor descriptor : htd.getColumnFamilies()) {
+  private boolean doesAnyColFamilyHaveTTL(HTableDescriptor htd) {
+    for (HColumnDescriptor descriptor : htd.getColumnFamilies()) {
       if (descriptor.getTimeToLive() != HConstants.FOREVER) {
         return true;
       }
@@ -124,13 +124,9 @@ public class MajorCompactorTTL extends MajorCompactor {
   private Options getOptions() {
     Options options = getCommonOptions();
 
-    options.addOption(
-        Option.builder("table")
-            .required()
-            .desc("table name")
-            .hasArg()
-            .build()
-    );
+    Option tableOption = new Option("table", true, "Table to be compacted");
+    tableOption.setRequired(true);
+    options.addOption(tableOption);
 
     return options;
   }
@@ -139,28 +135,22 @@ public class MajorCompactorTTL extends MajorCompactor {
   public int run(String[] args) throws Exception {
     Options options = getOptions();
 
-    final CommandLineParser cmdLineParser = new DefaultParser();
+    final CommandLineParser cmdLineParser =  new BasicParser();
     CommandLine commandLine;
     try {
       commandLine = cmdLineParser.parse(options, args);
     } catch (ParseException parseException) {
-      System.out.println(
-          "ERROR: Unable to parse command-line arguments " + Arrays.toString(args) + " due to: "
-              + parseException);
+      System.err.println("ERROR: Unable to parse command-line arguments " + Arrays.toString(args)
+          + " due to: " + parseException);
       printUsage(options);
-      return -1;
-    }
-    if (commandLine == null) {
-      System.out.println("ERROR: Failed parse, empty commandLine; " + Arrays.toString(args));
-      printUsage(options);
-      return -1;
+      throw parseException;
     }
 
     String table = commandLine.getOptionValue("table");
     int numServers = Integer.parseInt(commandLine.getOptionValue("numservers", "-1"));
     int numRegions = Integer.parseInt(commandLine.getOptionValue("numregions", "-1"));
     int concurrency = Integer.parseInt(commandLine.getOptionValue("servers", "1"));
-    long sleep = Long.parseLong(commandLine.getOptionValue("sleep", Long.toString(30000)));
+    long sleep = Long.parseLong(commandLine.getOptionValue("sleep", "30000"));
     boolean dryRun = commandLine.hasOption("dryRun");
     boolean skipWait = commandLine.hasOption("skipWait");
 

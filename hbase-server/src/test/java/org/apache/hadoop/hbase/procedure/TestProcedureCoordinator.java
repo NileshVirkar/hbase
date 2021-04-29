@@ -40,12 +40,10 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
-import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
-import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
+import org.apache.hadoop.hbase.errorhandling.ForeignException;
+import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
 import org.junit.After;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.mockito.InOrder;
@@ -60,13 +58,8 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
  * This only works correctly when we do <i>class level parallelization</i> of tests. If we do method
  * level serialization this class will likely throw all kinds of errors.
  */
-@Category({MasterTests.class, SmallTests.class})
+@Category(SmallTests.class)
 public class TestProcedureCoordinator {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestProcedureCoordinator.class);
-
   // general test constants
   private static final long WAKE_FREQUENCY = 1000;
   private static final long TIMEOUT = 100000;
@@ -111,7 +104,7 @@ public class TestProcedureCoordinator {
     Procedure proc2 = new Procedure(coordinator,  monitor,
         WAKE_FREQUENCY, TIMEOUT, procName +"2", procData, expected);
     Procedure procSpy2 = spy(proc2);
-    when(coordinator.createProcedure(any(), eq(procName), eq(procData), anyListOf(String.class)))
+    when(coordinator.createProcedure(any(ForeignExceptionDispatcher.class), eq(procName), eq(procData), anyListOf(String.class)))
     .thenReturn(procSpy, procSpy2);
 
     coordinator.startProcedure(procSpy.getErrorMonitor(), procName, procData, expected);
@@ -123,7 +116,7 @@ public class TestProcedureCoordinator {
   /**
    * Check handling a connection failure correctly if we get it during the acquiring phase
    */
-  @Test
+  @Test(timeout = 60000)
   public void testUnreachableControllerDuringPrepare() throws Exception {
     coordinator = buildNewCoordinator();
     // setup the proc
@@ -132,7 +125,7 @@ public class TestProcedureCoordinator {
         TIMEOUT, procName, procData, expected);
     final Procedure procSpy = spy(proc);
 
-    when(coordinator.createProcedure(any(), eq(procName), eq(procData), anyListOf(String.class)))
+    when(coordinator.createProcedure(any(ForeignExceptionDispatcher.class), eq(procName), eq(procData), anyListOf(String.class)))
         .thenReturn(procSpy);
 
     // use the passed controller responses
@@ -144,17 +137,17 @@ public class TestProcedureCoordinator {
     proc = coordinator.startProcedure(proc.getErrorMonitor(), procName, procData, expected);
     // and wait for it to finish
     while(!proc.completedLatch.await(WAKE_FREQUENCY, TimeUnit.MILLISECONDS));
-    verify(procSpy, atLeastOnce()).receive(any());
+    verify(procSpy, atLeastOnce()).receive(any(ForeignException.class));
     verify(coordinator, times(1)).rpcConnectionFailure(anyString(), eq(cause));
     verify(controller, times(1)).sendGlobalBarrierAcquire(procSpy, procData, expected);
-    verify(controller, never()).sendGlobalBarrierReached(any(),
+    verify(controller, never()).sendGlobalBarrierReached(any(Procedure.class),
         anyListOf(String.class));
   }
 
   /**
    * Check handling a connection failure correctly if we get it during the barrier phase
    */
-  @Test
+  @Test(timeout = 60000)
   public void testUnreachableControllerDuringCommit() throws Exception {
     coordinator = buildNewCoordinator();
 
@@ -163,7 +156,7 @@ public class TestProcedureCoordinator {
     final Procedure spy = spy(new Procedure(coordinator,
         WAKE_FREQUENCY, TIMEOUT, procName, procData, expected));
 
-    when(coordinator.createProcedure(any(), eq(procName), eq(procData), anyListOf(String.class)))
+    when(coordinator.createProcedure(any(ForeignExceptionDispatcher.class), eq(procName), eq(procData), anyListOf(String.class)))
     .thenReturn(spy);
 
     // use the passed controller responses
@@ -176,25 +169,25 @@ public class TestProcedureCoordinator {
     Procedure task = coordinator.startProcedure(spy.getErrorMonitor(), procName, procData, expected);
     // and wait for it to finish
     while(!task.completedLatch.await(WAKE_FREQUENCY, TimeUnit.MILLISECONDS));
-    verify(spy, atLeastOnce()).receive(any());
+    verify(spy, atLeastOnce()).receive(any(ForeignException.class));
     verify(coordinator, times(1)).rpcConnectionFailure(anyString(), eq(cause));
     verify(controller, times(1)).sendGlobalBarrierAcquire(eq(spy),
         eq(procData), anyListOf(String.class));
-    verify(controller, times(1)).sendGlobalBarrierReached(any(),
+    verify(controller, times(1)).sendGlobalBarrierReached(any(Procedure.class),
         anyListOf(String.class));
   }
 
-  @Test
+  @Test(timeout = 60000)
   public void testNoCohort() throws Exception {
     runSimpleProcedure();
   }
 
-  @Test
+  @Test(timeout = 60000)
   public void testSingleCohortOrchestration() throws Exception {
     runSimpleProcedure("one");
   }
 
-  @Test
+  @Test(timeout = 60000)
   public void testMultipleCohortOrchestration() throws Exception {
     runSimpleProcedure("one", "two", "three", "four");
   }
@@ -210,7 +203,7 @@ public class TestProcedureCoordinator {
   /**
    * Test that if nodes join the barrier early we still correctly handle the progress
    */
-  @Test
+  @Test(timeout = 60000)
   public void testEarlyJoiningBarrier() throws Exception {
     final String[] cohort = new String[] { "one", "two", "three", "four" };
     coordinator = buildNewCoordinator();
@@ -220,7 +213,6 @@ public class TestProcedureCoordinator {
     final Procedure spy = spy(task);
 
     AcquireBarrierAnswer prepare = new AcquireBarrierAnswer(procName, cohort) {
-      @Override
       public void doWork() {
         // then do some fun where we commit before all nodes have prepared
         // "one" commits before anyone else is done
@@ -273,7 +265,7 @@ public class TestProcedureCoordinator {
   public void runCoordinatedOperation(Procedure spy, AcquireBarrierAnswer prepareOperation,
       BarrierAnswer commitOperation, String... cohort) throws Exception {
     List<String> expected = Arrays.asList(cohort);
-    when(coordinator.createProcedure(any(), eq(procName), eq(procData), anyListOf(String.class)))
+    when(coordinator.createProcedure(any(ForeignExceptionDispatcher.class), eq(procName), eq(procData), anyListOf(String.class)))
       .thenReturn(spy);
 
     // use the passed controller responses
@@ -296,7 +288,7 @@ public class TestProcedureCoordinator {
     inorder.verify(controller).sendGlobalBarrierReached(eq(task), anyListOf(String.class));
   }
 
-  private static abstract class OperationAnswer implements Answer<Void> {
+  private abstract class OperationAnswer implements Answer<Void> {
     private boolean ran = false;
 
     public void ensureRan() {

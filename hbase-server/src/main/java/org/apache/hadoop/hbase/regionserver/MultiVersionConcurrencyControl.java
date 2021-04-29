@@ -20,14 +20,13 @@ package org.apache.hadoop.hbase.regionserver;
 
 import java.util.LinkedList;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ClassSize;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.base.MoreObjects;
-import org.apache.hbase.thirdparty.com.google.common.base.MoreObjects.ToStringHelper;
 
 /**
  * Manages the read/write consistency. This provides an interface for readers to determine what
@@ -36,7 +35,8 @@ import org.apache.hbase.thirdparty.com.google.common.base.MoreObjects.ToStringHe
  */
 @InterfaceAudience.Private
 public class MultiVersionConcurrencyControl {
-  private static final Logger LOG = LoggerFactory.getLogger(MultiVersionConcurrencyControl.class);
+  private static final Log LOG = LogFactory.getLog(MultiVersionConcurrencyControl.class);
+  static final long NO_WRITE_NUMBER = 0;
   private static final long READPOINT_ADVANCE_WAIT_TIME = 10L;
 
   final String regionName;
@@ -54,7 +54,7 @@ public class MultiVersionConcurrencyControl {
   // reduce the number of allocations on the write path?
   // This could be equal to the number of handlers + a small number.
   // TODO: St.Ack 20150903 Sounds good to me.
-  private final LinkedList<WriteEntry> writeQueue = new LinkedList<>();
+  private final LinkedList<WriteEntry> writeQueue = new LinkedList<WriteEntry>();
 
   public MultiVersionConcurrencyControl() {
     this(null);
@@ -79,12 +79,8 @@ public class MultiVersionConcurrencyControl {
   public void advanceTo(long newStartPoint) {
     while (true) {
       long seqId = this.getWritePoint();
-      if (seqId >= newStartPoint) {
-        break;
-      }
-      if (this.tryAdvanceTo(newStartPoint, seqId)) {
-        break;
-      }
+      if (seqId >= newStartPoint) break;
+      if (this.tryAdvanceTo(newStartPoint, seqId)) break;
     }
   }
 
@@ -122,7 +118,11 @@ public class MultiVersionConcurrencyControl {
    * Call {@link #begin(Runnable)} with an empty {@link Runnable}.
    */
   public WriteEntry begin() {
-    return begin(() -> {});
+    return begin(new Runnable() {
+      @Override public void run() {
+
+      }
+    });
   }
 
   /**
@@ -186,6 +186,7 @@ public class MultiVersionConcurrencyControl {
   public boolean complete(WriteEntry writeEntry) {
     synchronized (writeQueue) {
       writeEntry.markCompleted();
+
       long nextReadValue = NONE;
       boolean ranOnce = false;
       while (!writeQueue.isEmpty()) {
@@ -250,7 +251,7 @@ public class MultiVersionConcurrencyControl {
 
   @Override
   public String toString() {
-    ToStringHelper helper = MoreObjects.toStringHelper(this).add("readPoint", readPoint)
+    MoreObjects.ToStringHelper helper = MoreObjects.toStringHelper(this).add("readPoint", readPoint)
         .add("writePoint", writePoint);
     if (this.regionName != null) {
       helper.add("regionName", this.regionName);

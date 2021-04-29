@@ -29,7 +29,6 @@ import org.apache.hadoop.hbase.util.LoadTestTool;
 import org.apache.hadoop.hbase.util.MultiThreadedUpdater;
 import org.apache.hadoop.hbase.util.MultiThreadedWriter;
 import org.apache.hadoop.hbase.util.ServerRegionReplicaUtil;
-import org.apache.hadoop.hbase.util.TableDescriptorChecker;
 import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.hbase.util.test.LoadTestDataGenerator;
 import org.apache.hadoop.util.StringUtils;
@@ -51,12 +50,11 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
  * with the replication of the edits before read_delay_ms to the given region replica id so that
  * the read and verify will not fail.
  *
- * The job will run for <b>at least</b> given runtime (default 10min) by running a concurrent
+ * The job will run for <b>at least<b> given runtime (default 10min) by running a concurrent
  * writer and reader workload followed by a concurrent updater and reader workload for
  * num_keys_per_server.
- * <p>
+ *<p>
  * Example usage:
- * </p>
  * <pre>
  * hbase org.apache.hadoop.hbase.IntegrationTestRegionReplicaReplication
  * -DIntegrationTestRegionReplicaReplication.num_keys_per_server=10000
@@ -95,10 +93,11 @@ public class IntegrationTestRegionReplicaReplication extends IntegrationTestInge
       String.format("%s.%s", TEST_NAME, LoadTestTool.OPT_COLUMN_FAMILIES),
       StringUtils.join(",", DEFAULT_COLUMN_FAMILIES));
 
-    conf.setBoolean(TableDescriptorChecker.TABLE_SANITY_CHECKS, true);
+    conf.setBoolean("hbase.table.sanity.checks", true);
 
     // enable async wal replication to region replicas for unit tests
     conf.setBoolean(ServerRegionReplicaUtil.REGION_REPLICA_REPLICATION_CONF_KEY, true);
+    conf.setBoolean(HConstants.REPLICATION_ENABLE_KEY, true);
 
     conf.setLong(HConstants.HREGION_MEMSTORE_FLUSH_SIZE, 1024L * 1024 * 4); // flush every 4 MB
     conf.setInt("hbase.hstore.blockingStoreFiles", 100);
@@ -127,7 +126,7 @@ public class IntegrationTestRegionReplicaReplication extends IntegrationTestInge
     protected BlockingQueue<Long> createWriteKeysQueue(Configuration conf) {
       this.delayMs = conf.getLong(String.format("%s.%s",
         IntegrationTestRegionReplicaReplication.class.getSimpleName(), OPT_READ_DELAY_MS), 5000);
-      return new ConstantDelayQueue<>(TimeUnit.MILLISECONDS, delayMs);
+      return new ConstantDelayQueue<Long>(TimeUnit.MILLISECONDS, delayMs);
     }
   }
 
@@ -146,7 +145,7 @@ public class IntegrationTestRegionReplicaReplication extends IntegrationTestInge
     protected BlockingQueue<Long> createWriteKeysQueue(Configuration conf) {
       this.delayMs = conf.getLong(String.format("%s.%s",
         IntegrationTestRegionReplicaReplication.class.getSimpleName(), OPT_READ_DELAY_MS), 5000);
-      return new ConstantDelayQueue<>(TimeUnit.MILLISECONDS, delayMs);
+      return new ConstantDelayQueue<Long>(TimeUnit.MILLISECONDS, delayMs);
     }
   }
 
@@ -155,8 +154,7 @@ public class IntegrationTestRegionReplicaReplication extends IntegrationTestInge
       int recordSize, int writeThreads, int readThreads) throws Exception {
 
     LOG.info("Running ingest");
-    LOG.info("Cluster size:" + util.getHBaseClusterInterface()
-      .getClusterMetrics().getLiveServerMetrics().size());
+    LOG.info("Cluster size:" + util.getHBaseClusterInterface().getClusterStatus().getServersSize());
 
     // sleep for some time so that the cache for disabled tables does not interfere.
     Threads.sleep(

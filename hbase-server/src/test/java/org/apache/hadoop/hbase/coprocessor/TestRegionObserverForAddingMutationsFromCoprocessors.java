@@ -15,59 +15,51 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.hadoop.hbase.coprocessor;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.*;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HColumnDescriptor;
+import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.MiniBatchOperationInProgress;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.wal.WALEdit;
 import org.apache.hadoop.hbase.wal.WALKey;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 @Category(MediumTests.class)
 public class TestRegionObserverForAddingMutationsFromCoprocessors {
 
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestRegionObserverForAddingMutationsFromCoprocessors.class);
-
-  private static final Logger LOG
-    = LoggerFactory.getLogger(TestRegionObserverForAddingMutationsFromCoprocessors.class);
+  private static final Log LOG
+    = LogFactory.getLog(TestRegionObserverForAddingMutationsFromCoprocessors.class);
 
   private static HBaseTestingUtility util;
   private static final byte[] dummy = Bytes.toBytes("dummy");
@@ -99,14 +91,16 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
   }
 
   private void createTable(String coprocessor) throws IOException {
-    TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(tableName)
-      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(dummy))
-      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(test)).setCoprocessor(coprocessor).build();
-    util.getAdmin().createTable(tableDescriptor);
+    HTableDescriptor htd = new HTableDescriptor(tableName)
+        .addFamily(new HColumnDescriptor(dummy))
+        .addFamily(new HColumnDescriptor(test))
+        .addCoprocessor(coprocessor);
+    util.getHBaseAdmin().createTable(htd);
   }
 
   /**
    * Test various multiput operations.
+   * @throws Exception
    */
   @Test
   public void testMulti() throws Exception {
@@ -212,12 +206,7 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
     }
   }
 
-  public static class TestPutWithTTLCoprocessor implements RegionCoprocessor, RegionObserver {
-    @Override
-    public Optional<RegionObserver> getRegionObserver() {
-      return Optional.of(this);
-    }
-
+  public static class TestPutWithTTLCoprocessor extends BaseRegionObserver  {
     @Override
     public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c,
         MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {
@@ -232,12 +221,7 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
     }
   }
 
-  public static class TestMultiMutationCoprocessor implements RegionCoprocessor, RegionObserver {
-    @Override
-    public Optional<RegionObserver> getRegionObserver() {
-      return Optional.of(this);
-    }
-
+  public static class TestMultiMutationCoprocessor extends BaseRegionObserver {
     @Override
     public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c,
         MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {
@@ -254,12 +238,7 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
     }
   }
 
-  public static class TestDeleteCellCoprocessor implements RegionCoprocessor, RegionObserver {
-    @Override
-    public Optional<RegionObserver> getRegionObserver() {
-      return Optional.of(this);
-    }
-
+  public static class TestDeleteCellCoprocessor extends BaseRegionObserver {
     @Override
     public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c,
         MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {
@@ -278,12 +257,7 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
     }
   }
 
-  public static class TestDeleteFamilyCoprocessor implements RegionCoprocessor, RegionObserver {
-    @Override
-    public Optional<RegionObserver> getRegionObserver() {
-      return Optional.of(this);
-    }
-
+  public static class TestDeleteFamilyCoprocessor extends BaseRegionObserver {
     @Override
     public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c,
         MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {
@@ -302,12 +276,7 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
     }
   }
 
-  public static class TestDeleteRowCoprocessor implements RegionCoprocessor, RegionObserver {
-    @Override
-    public Optional<RegionObserver> getRegionObserver() {
-      return Optional.of(this);
-    }
-
+  public static class TestDeleteRowCoprocessor extends BaseRegionObserver {
     @Override
     public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c,
         MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {
@@ -326,20 +295,15 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
     }
   }
 
-  public static class TestWALObserver implements WALCoprocessor, WALObserver {
+  public static class TestWALObserver extends BaseWALObserver {
     static WALEdit savedEdit = null;
-
-    @Override
-    public Optional<WALObserver> getWALObserver() {
-      return Optional.of(this);
-    }
-
     @Override
     public void postWALWrite(ObserverContext<? extends WALCoprocessorEnvironment> ctx,
-                             RegionInfo info, WALKey logKey, WALEdit logEdit) throws IOException {
+        HRegionInfo info, WALKey logKey, WALEdit logEdit) throws IOException {
       if (info.getTable().equals(TableName.valueOf("testCPMutationsAreWrittenToWALEdit"))) {
         savedEdit = logEdit;
       }
+      super.postWALWrite(ctx, info, logKey, logEdit);
     }
   }
 }

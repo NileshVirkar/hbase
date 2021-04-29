@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.hadoop.hbase.test;
 
 import java.io.DataInput;
@@ -34,6 +35,13 @@ import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.GnuParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
@@ -43,8 +51,10 @@ import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.IntegrationTestBase;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
 import org.apache.hadoop.hbase.MasterNotRunningException;
@@ -52,35 +62,33 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.BufferedMutator;
 import org.apache.hadoop.hbase.client.BufferedMutatorParams;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionConfiguration;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Get;
+import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.ScannerCallable;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.fs.HFileSystem;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
 import org.apache.hadoop.hbase.mapreduce.TableMapper;
 import org.apache.hadoop.hbase.mapreduce.TableRecordReaderImpl;
 import org.apache.hadoop.hbase.mapreduce.WALPlayer;
-import org.apache.hadoop.hbase.regionserver.FlushAllLargeStoresPolicy;
+import org.apache.hadoop.hbase.regionserver.FlushLargeStoresPolicy;
 import org.apache.hadoop.hbase.regionserver.FlushPolicyFactory;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.testclassification.IntegrationTests;
 import org.apache.hadoop.hbase.util.AbstractHBaseTool;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.Random64;
 import org.apache.hadoop.hbase.util.RegionSplitter;
-import org.apache.hadoop.hbase.wal.WALEdit;
 import org.apache.hadoop.hbase.wal.WALKey;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.NullWritable;
@@ -111,16 +119,9 @@ import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.GnuParser;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.HelpFormatter;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.Options;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.ParseException;
 
 /**
  * <p>
@@ -283,7 +284,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
    */
   static class Generator extends Configured implements Tool {
 
-    private static final Logger LOG = LoggerFactory.getLogger(Generator.class);
+    private static final Log LOG = LogFactory.getLog(Generator.class);
 
     /**
      * Set this configuration if you want to test single-column family flush works. If set, we will
@@ -391,7 +392,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       public List<InputSplit> getSplits(JobContext job) throws IOException, InterruptedException {
         int numMappers = job.getConfiguration().getInt(GENERATOR_NUM_MAPPERS_KEY, 1);
 
-        ArrayList<InputSplit> splits = new ArrayList<>(numMappers);
+        ArrayList<InputSplit> splits = new ArrayList<InputSplit>(numMappers);
 
         for (int i = 0; i < numMappers; i++) {
           splits.add(new GeneratorInputSplit());
@@ -463,7 +464,8 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       @Override
       protected void setup(Context context) throws IOException, InterruptedException {
         id = Bytes.toBytes("Job: "+context.getJobID() + " Task: " + context.getTaskAttemptID());
-        this.connection = ConnectionFactory.createConnection(context.getConfiguration());
+        Configuration conf = context.getConfiguration();
+        connection = ConnectionFactory.createConnection(conf);
         instantiateHTable();
         this.width = context.getConfiguration().getInt(GENERATOR_WIDTH_KEY, WIDTH_DEFAULT);
         current = new byte[this.width][];
@@ -528,8 +530,9 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
         current[i] = new byte[key.getLength()];
         System.arraycopy(key.getBytes(), 0, current[i], 0, key.getLength());
         if (++i == current.length) {
-          LOG.debug("Persisting current.length={}, count={}, id={}, current={}, i=",
-            current.length, count, Bytes.toStringBinary(id), Bytes.toStringBinary(current[0]), i);
+          LOG.debug("Persisting current.length=" + current.length + ", count=" + count +
+            ", id=" + Bytes.toStringBinary(id) + ", current=" + Bytes.toStringBinary(current[0]) +
+            ", i=" + i);
           persist(output, count, prev, current, id);
           i = 0;
 
@@ -757,25 +760,16 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       try (Connection conn = ConnectionFactory.createConnection(conf);
           Admin admin = conn.getAdmin()) {
         if (!admin.tableExists(tableName)) {
-          TableDescriptor tableDescriptor = TableDescriptorBuilder
-            .newBuilder(getTableName(getConf()))
-            // if -DuseMob=true force all data through mob path.
-            .setColumnFamily(
-              setMobProperties(conf, ColumnFamilyDescriptorBuilder.newBuilder(FAMILY_NAME)).build())
-            // Always add these families. Just skip writing to them when we do not test per CF
-            // flush.
-            .setColumnFamily(
-              setMobProperties(conf, ColumnFamilyDescriptorBuilder.newBuilder(BIG_FAMILY_NAME))
-                .build())
-            .setColumnFamily(
-              setMobProperties(conf, ColumnFamilyDescriptorBuilder.newBuilder(TINY_FAMILY_NAME))
-                .build())
-            .build();
+          HTableDescriptor htd = new HTableDescriptor(getTableName(getConf()));
+          htd.addFamily(new HColumnDescriptor(FAMILY_NAME));
+          // Always add these families. Just skip writing to them when we do not test per CF flush.
+          htd.addFamily(new HColumnDescriptor(BIG_FAMILY_NAME));
+          htd.addFamily(new HColumnDescriptor(TINY_FAMILY_NAME));
 
           // If we want to pre-split compute how many splits.
           if (conf.getBoolean(HBaseTestingUtility.PRESPLIT_TEST_TABLE_KEY,
               HBaseTestingUtility.PRESPLIT_TEST_TABLE)) {
-            int numberOfServers = admin.getRegionServers().size();
+            int numberOfServers = admin.getClusterStatus().getServers().size();
             if (numberOfServers == 0) {
               throw new IllegalStateException("No live regionservers");
             }
@@ -789,12 +783,12 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
 
             byte[][] splits = new RegionSplitter.UniformSplit().split(totalNumberOfRegions);
 
-            admin.createTable(tableDescriptor, splits);
+            admin.createTable(htd, splits);
           } else {
             // Looks like we're just letting things play out.
             // Create a table with on region by default.
             // This will make the splitting work hard.
-            admin.createTable(tableDescriptor);
+            admin.createTable(htd);
           }
         }
       } catch (MasterNotRunningException e) {
@@ -856,7 +850,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       job.getConfiguration().setBoolean("mapreduce.map.speculative", false);
       TableMapReduceUtil.addDependencyJars(job);
       TableMapReduceUtil.addDependencyJarsForClasses(job.getConfiguration(),
-                                                     AbstractHBaseTool.class);
+          AbstractHBaseTool.class);
       TableMapReduceUtil.initCredentials(job);
 
       boolean success = jobCompletion(job);
@@ -911,15 +905,6 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
     }
   }
 
-  private static ColumnFamilyDescriptorBuilder setMobProperties(final Configuration conf,
-    final ColumnFamilyDescriptorBuilder builder) {
-    if (conf.getBoolean("useMob", false)) {
-      builder.setMobEnabled(true);
-      builder.setMobThreshold(4);
-    }
-    return builder;
-  }
-
   /**
    * Tool to search missing rows in WALs and hfiles.
    * Pass in file or dir of keys to search for. Key file must have been written by Verify step
@@ -927,7 +912,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
    * WALs and oldWALs dirs (Some of this is TODO).
    */
   static class Search extends Configured implements Tool {
-    private static final Logger LOG = LoggerFactory.getLogger(Search.class);
+    private static final Log LOG = LogFactory.getLog(Search.class);
     protected Job job;
 
     private static void printUsage(final String error) {
@@ -987,7 +972,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
             try {
               LOG.info("Found cell=" + cell + " , walKey=" + context.getCurrentKey());
             } catch (IOException|InterruptedException e) {
-              LOG.warn(e.toString(), e);
+              LOG.warn(e);
             }
             if (rows.addAndGet(1) < MISSING_ROWS_TO_LOG) {
               context.getCounter(FOUND_GROUP_KEY, keyStr).increment(1);
@@ -1019,27 +1004,22 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       if (keys.isEmpty()) throw new RuntimeException("No keys to find");
       LOG.info("Count of keys to find: " + keys.size());
       for(byte [] key: keys)  LOG.info("Key: " + Bytes.toStringBinary(key));
+      Path hbaseDir = new Path(getConf().get(HConstants.HBASE_DIR));
       // Now read all WALs. In two dirs. Presumes certain layout.
-      Path walsDir = new Path(
-          CommonFSUtils.getWALRootDir(getConf()), HConstants.HREGION_LOGDIR_NAME);
-      Path oldWalsDir = new Path(
-          CommonFSUtils.getWALRootDir(getConf()), HConstants.HREGION_OLDLOGDIR_NAME);
+      Path walsDir = new Path(hbaseDir, HConstants.HREGION_LOGDIR_NAME);
+      Path oldWalsDir = new Path(hbaseDir, HConstants.HREGION_OLDLOGDIR_NAME);
       LOG.info("Running Search with keys inputDir=" + inputDir +", numMappers=" + numMappers +
         " against " + getConf().get(HConstants.HBASE_DIR));
-      int ret = ToolRunner.run(getConf(), new WALSearcher(getConf()),
-          new String [] {walsDir.toString(), ""});
-      if (ret != 0) {
-        return ret;
-      }
-      return ToolRunner.run(getConf(), new WALSearcher(getConf()),
-          new String [] {oldWalsDir.toString(), ""});
+      int ret = ToolRunner.run(new WALSearcher(getConf()), new String [] {walsDir.toString(), ""});
+      if (ret != 0) return ret;
+      return ToolRunner.run(new WALSearcher(getConf()), new String [] {oldWalsDir.toString(), ""});
     }
 
     static SortedSet<byte []> readKeysToSearch(final Configuration conf)
     throws IOException, InterruptedException {
       Path keysInputDir = new Path(conf.get(SEARCHER_INPUTDIR_KEY));
       FileSystem fs = FileSystem.get(conf);
-      SortedSet<byte []> result = new TreeSet<>(Bytes.BYTES_COMPARATOR);
+      SortedSet<byte []> result = new TreeSet<byte []>(Bytes.BYTES_COMPARATOR);
       if (!fs.exists(keysInputDir)) {
         throw new FileNotFoundException(keysInputDir.toString());
       }
@@ -1060,7 +1040,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
     private static SortedSet<byte[]> readFileToSearch(final Configuration conf,
         final FileSystem fs, final LocatedFileStatus keyFileStatus) throws IOException,
         InterruptedException {
-      SortedSet<byte []> result = new TreeSet<>(Bytes.BYTES_COMPARATOR);
+      SortedSet<byte []> result = new TreeSet<byte []>(Bytes.BYTES_COMPARATOR);
       // Return entries that are flagged Counts.UNDEFINED in the value. Return the row. This is
       // what is missing.
       TaskAttemptContext context = new TaskAttemptContextImpl(conf, new TaskAttemptID());
@@ -1090,7 +1070,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
    */
   static class Verify extends Configured implements Tool {
 
-    private static final Logger LOG = LoggerFactory.getLogger(Verify.class);
+    private static final Log LOG = LogFactory.getLog(Verify.class);
     protected static final BytesWritable DEF = new BytesWritable(new byte[] { 0 });
     protected static final BytesWritable DEF_LOST_FAMILIES = new BytesWritable(new byte[] { 1 });
 
@@ -1147,7 +1127,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
      */
     public static class VerifyReducer extends
         Reducer<BytesWritable, BytesWritable, BytesWritable, BytesWritable> {
-      private ArrayList<byte[]> refs = new ArrayList<>();
+      private ArrayList<byte[]> refs = new ArrayList<byte[]>();
       private final BytesWritable UNREF = new BytesWritable(addPrefixFlag(
         Counts.UNREFERENCED.ordinal(), new byte[] {}));
       private final BytesWritable LOSTFAM = new BytesWritable(addPrefixFlag(
@@ -1268,7 +1248,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
             String keyString = Bytes.toStringBinary(key.getBytes(), 0, key.getLength());
             context.getCounter("undef", keyString).increment(1);
           }
-        } else if (defCount > 0 && refs.isEmpty()) {
+        } else if (defCount > 0 && refs.size() == 0) {
           // node is defined but not referenced
           context.write(key, UNREF);
           context.getCounter(Counts.UNREFERENCED).increment(1);
@@ -1386,7 +1366,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       TableMapReduceUtil.initTableMapperJob(getTableName(getConf()).getName(), scan,
           VerifyMapper.class, BytesWritable.class, BytesWritable.class, job);
       TableMapReduceUtil.addDependencyJarsForClasses(job.getConfiguration(),
-                                                     AbstractHBaseTool.class);
+          AbstractHBaseTool.class);
 
       job.getConfiguration().setBoolean("mapreduce.map.speculative", false);
 
@@ -1532,7 +1512,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
    */
   static class Loop extends Configured implements Tool {
 
-    private static final Logger LOG = LoggerFactory.getLogger(Loop.class);
+    private static final Log LOG = LogFactory.getLog(Loop.class);
     private static final String USAGE = "Usage: Loop <num iterations> <num mappers> " +
         "<num nodes per mapper> <output dir> <num reducers> [<width> <wrap multiplier>" +
         " <num walker threads>] \n" +
@@ -1560,7 +1540,6 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
           throw new RuntimeException("Generator.verify failed");
         }
       }
-      LOG.info("Generator finished with success. Total nodes=" + numNodes);
     }
 
     protected void runVerify(String outputDir,
@@ -1645,18 +1624,16 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
         System.exit(-1);
       }
 
-      Connection connection = ConnectionFactory.createConnection(getConf());
-      Table table = connection.getTable(getTableName(getConf()));
+      Table table = new HTable(getConf(), getTableName(getConf()));
 
       Scan scan = new Scan();
       scan.setBatch(10000);
 
       if (cmd.hasOption("s"))
-        scan.withStartRow(Bytes.toBytesBinary(cmd.getOptionValue("s")));
+        scan.setStartRow(Bytes.toBytesBinary(cmd.getOptionValue("s")));
 
-      if (cmd.hasOption("e")) {
-        scan.withStopRow(Bytes.toBytesBinary(cmd.getOptionValue("e")));
-      }
+      if (cmd.hasOption("e"))
+        scan.setStopRow(Bytes.toBytesBinary(cmd.getOptionValue("e")));
 
       int limit = 0;
       if (cmd.hasOption("l"))
@@ -1677,7 +1654,6 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       }
       scanner.close();
       table.close();
-      connection.close();
 
       return 0;
     }
@@ -1698,10 +1674,9 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       org.apache.hadoop.hbase.client.Delete delete
         = new org.apache.hadoop.hbase.client.Delete(val);
 
-      try (Connection connection = ConnectionFactory.createConnection(getConf());
-          Table table = connection.getTable(getTableName(getConf()))) {
-        table.delete(delete);
-      }
+      Table table = new HTable(getConf(), getTableName(getConf()));
+      table.delete(delete);
+      table.close();
 
       System.out.println("Delete successful");
       return 0;
@@ -1711,7 +1686,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
   abstract static class WalkerBase extends Configured{
     protected static CINode findStartNode(Table table, byte[] startKey) throws IOException {
       Scan scan = new Scan();
-      scan.withStartRow(startKey);
+      scan.setStartRow(startKey);
       scan.setBatch(1);
       scan.addColumn(FAMILY_NAME, COLUMN_PREV);
 
@@ -1779,8 +1754,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
       byte[] startKey = isSpecificStart ? Bytes.toBytesBinary(cmd.getOptionValue('s')) : null;
       int logEvery = cmd.hasOption('l') ? Integer.parseInt(cmd.getOptionValue('l')) : 1;
 
-      Connection connection = ConnectionFactory.createConnection(getConf());
-      Table table = connection.getTable(getTableName(getConf()));
+      Table table = new HTable(getConf(), getTableName(getConf()));
       long numQueries = 0;
       // If isSpecificStart is set, only walk one list from that particular node.
       // Note that in case of circular (or P-shaped) list it will walk forever, as is
@@ -1813,7 +1787,6 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
         }
       }
       table.close();
-      connection.close();
       return 0;
     }
   }
@@ -1900,7 +1873,7 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
     Configuration conf = getTestingUtil(getConf()).getConfiguration();
     if (isMultiUnevenColumnFamilies(getConf())) {
       // make sure per CF flush is on
-      conf.set(FlushPolicyFactory.HBASE_FLUSH_POLICY_KEY, FlushAllLargeStoresPolicy.class.getName());
+      conf.set(FlushPolicyFactory.HBASE_FLUSH_POLICY_KEY, FlushLargeStoresPolicy.class.getName());
     }
     int ret =
         ToolRunner.run(conf, new Loop(), new String[] { "1", "1", "2000000",
@@ -1927,19 +1900,6 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
     System.err.println(" loop       Program to Loop through Generator and Verify steps");
     System.err.println(" clean      Program to clean all left over detritus.");
     System.err.println(" search     Search for missing keys.");
-    System.err.println("");
-    System.err.println("General options:");
-    System.err.println(" -D"+ TABLE_NAME_KEY+ "=<tableName>");
-    System.err.println("    Run using the <tableName> as the tablename.  Defaults to "
-        + DEFAULT_TABLE_NAME);
-    System.err.println(" -D"+ HBaseTestingUtility.REGIONS_PER_SERVER_KEY+ "=<# regions>");
-    System.err.println("    Create table with presplit regions per server.  Defaults to "
-        + HBaseTestingUtility.DEFAULT_REGIONS_PER_SERVER);
-
-    System.err.println(" -DuseMob=<true|false>");
-    System.err.println("    Create table so that the mob read/write path is forced.  " +
-        "Defaults to false");
-
     System.err.flush();
   }
 
@@ -2020,6 +1980,8 @@ public class IntegrationTestBigLinkedList extends IntegrationTestBase {
   }
 
   public static void setJobScannerConf(Job job) {
+    // Make sure scanners log something useful to make debugging possible.
+    job.getConfiguration().setBoolean(ScannerCallable.LOG_SCANNER_ACTIVITY, true);
     job.getConfiguration().setInt(TableRecordReaderImpl.LOG_PER_ROW_COUNT, 100000);
   }
 

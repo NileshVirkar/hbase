@@ -17,13 +17,7 @@
  */
 package org.apache.hadoop.hbase;
 
-import static org.apache.hadoop.hbase.AcidGuaranteesTestTool.FAMILY_A;
-import static org.apache.hadoop.hbase.AcidGuaranteesTestTool.FAMILY_B;
-import static org.apache.hadoop.hbase.AcidGuaranteesTestTool.FAMILY_C;
-import static org.apache.hadoop.hbase.AcidGuaranteesTestTool.TABLE_NAME;
-
 import java.util.Set;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
 import org.apache.hadoop.hbase.testclassification.IntegrationTests;
@@ -38,9 +32,9 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
  * This Integration Test verifies acid guarantees across column families by frequently writing
  * values to rows with multiple column families and concurrently reading entire rows that expect all
  * column families.
+ *
  * <p>
  * Sample usage:
- *
  * <pre>
  * hbase org.apache.hadoop.hbase.IntegrationTestAcidGuarantees -Dmillis=10000 -DnumWriters=50
  * -DnumGetters=2 -DnumScanners=2 -DnumUniqueRows=5
@@ -51,11 +45,18 @@ public class IntegrationTestAcidGuarantees extends IntegrationTestBase {
   private static final int SERVER_COUNT = 1; // number of slaves for the smallest cluster
 
   // The unit test version.
-  AcidGuaranteesTestTool tool;
+  TestAcidGuarantees tag;
 
   @Override
   public int runTestFromCommandLine() throws Exception {
-    return tool.run(new String[0]);
+    Configuration c = getConf();
+    int millis = c.getInt("millis", 5000);
+    int numWriters = c.getInt("numWriters", 50);
+    int numGetters = c.getInt("numGetters", 2);
+    int numScanners = c.getInt("numScanners", 2);
+    int numUniqueRows = c.getInt("numUniqueRows", 3);
+    tag.runTestAtomicity(millis, numWriters, numGetters, numScanners, numUniqueRows, true);
+    return 0;
   }
 
   @Override
@@ -64,50 +65,50 @@ public class IntegrationTestAcidGuarantees extends IntegrationTestBase {
     util = getTestingUtil(getConf());
     util.initializeCluster(SERVER_COUNT);
     conf = getConf();
-    conf.set(HConstants.HREGION_MEMSTORE_FLUSH_SIZE, String.valueOf(128 * 1024));
+    conf.set(HConstants.HREGION_MEMSTORE_FLUSH_SIZE, String.valueOf(128*1024));
     // prevent aggressive region split
     conf.set(HConstants.HBASE_REGION_SPLIT_POLICY_KEY,
-      ConstantSizeRegionSplitPolicy.class.getName());
+            ConstantSizeRegionSplitPolicy.class.getName());
+    this.setConf(util.getConfiguration());
 
-    tool = new AcidGuaranteesTestTool();
-    tool.setConf(getConf());
+    // replace the HBaseTestingUtility in the unit test with the integration test's
+    // IntegrationTestingUtility
+    tag = new TestAcidGuarantees();
+    tag.setHBaseTestingUtil(util);
   }
 
   @Override
   public TableName getTablename() {
-    return TABLE_NAME;
+    return TestAcidGuarantees.TABLE_NAME;
   }
 
   @Override
   protected Set<String> getColumnFamilies() {
-    return Sets.newHashSet(Bytes.toString(FAMILY_A), Bytes.toString(FAMILY_B),
-      Bytes.toString(FAMILY_C));
-  }
-
-  private void runTestAtomicity(long millisToRun, int numWriters, int numGetters, int numScanners,
-      int numUniqueRows) throws Exception {
-    tool.run(new String[] { "-millis", String.valueOf(millisToRun), "-numWriters",
-        String.valueOf(numWriters), "-numGetters", String.valueOf(numGetters), "-numScanners",
-        String.valueOf(numScanners), "-numUniqueRows", String.valueOf(numUniqueRows) });
+    return Sets.newHashSet(Bytes.toString(TestAcidGuarantees.FAMILY_A),
+            Bytes.toString(TestAcidGuarantees.FAMILY_B),
+            Bytes.toString(TestAcidGuarantees.FAMILY_C));
   }
 
   // ***** Actual integration tests
+
   @Test
   public void testGetAtomicity() throws Exception {
-    runTestAtomicity(20000, 4, 4, 0, 3);
+    tag.runTestAtomicity(20000, 4, 4, 0, 3);
   }
 
   @Test
   public void testScanAtomicity() throws Exception {
-    runTestAtomicity(20000, 3, 0, 2, 3);
+    tag.runTestAtomicity(20000, 3, 0, 2, 3);
   }
 
   @Test
   public void testMixedAtomicity() throws Exception {
-    runTestAtomicity(20000, 4, 2, 2, 3);
+    tag.runTestAtomicity(20000, 4, 2, 2, 3);
   }
 
+
   // **** Command line hook
+
   public static void main(String[] args) throws Exception {
     Configuration conf = HBaseConfiguration.create();
     IntegrationTestingUtility.setUseDistributedCluster(conf);

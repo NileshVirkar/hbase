@@ -19,8 +19,8 @@ package org.apache.hadoop.hbase.net;
 
 import java.net.InetSocketAddress;
 
-import org.apache.commons.lang3.StringUtils;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 
 import org.apache.hbase.thirdparty.com.google.common.net.HostAndPort;
 
@@ -33,6 +33,7 @@ import org.apache.hbase.thirdparty.com.google.common.net.HostAndPort;
  * We cannot have Guava classes in our API hence this Type.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class Address implements Comparable<Address> {
   private final HostAndPort hostAndPort;
 
@@ -68,7 +69,7 @@ public class Address implements Comparable<Address> {
   }
 
   public String getHostName() {
-    return this.hostAndPort.getHost();
+    return this.hostAndPort.getHostText();
   }
 
   /**
@@ -86,24 +87,6 @@ public class Address implements Comparable<Address> {
   @Override
   public String toString() {
     return this.hostAndPort.toString();
-  }
-
-  /**
-   * If hostname is a.b.c and the port is 123, return a:123 instead of a.b.c:123.
-   * @return if host looks like it is resolved -- not an IP -- then strip the domain portion
-   *    otherwise returns same as {@link #toString()}}
-   */
-  public String toStringWithoutDomain() {
-    String hostname = getHostName();
-    String [] parts = hostname.split("\\.");
-    if (parts.length > 1) {
-      for (String part: parts) {
-        if (!StringUtils.isNumeric(part)) {
-          return Address.fromParts(parts[0], getPort()).toString();
-        }
-      }
-    }
-    return toString();
   }
 
   @Override

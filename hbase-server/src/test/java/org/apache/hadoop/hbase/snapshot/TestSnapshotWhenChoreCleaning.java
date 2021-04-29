@@ -21,47 +21,41 @@ package org.apache.hadoop.hbase.snapshot;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.TableNameTestRule;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotHFileCleaner;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.FSVisitor;
+import org.apache.hadoop.hbase.util.FSVisitor.StoreFileVisitor;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Test Case for HBASE-21387
  */
-@Category({ MediumTests.class })
+@Category({ LargeTests.class })
 public class TestSnapshotWhenChoreCleaning {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestSnapshotWhenChoreCleaning.class);
 
   private static final HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
   private static final Configuration CONF = TEST_UTIL.getConfiguration();
@@ -72,9 +66,6 @@ public class TestSnapshotWhenChoreCleaning {
   private static final byte[] QUALIFIER = Bytes.toBytes("qualifier");
   private static final byte[] VALUE = Bytes.toBytes("value");
   private static Table TABLE;
-
-  @Rule
-  public TableNameTestRule testTable = new TableNameTestRule();
 
   @BeforeClass
   public static void setUp() throws Exception {
@@ -117,15 +108,19 @@ public class TestSnapshotWhenChoreCleaning {
   private static List<Path> listHFileNames(final FileSystem fs, final Path tableDir)
       throws IOException {
     final List<Path> hfiles = new ArrayList<>();
-    FSVisitor.visitTableStoreFiles(fs, tableDir, (region, family, hfileName) -> {
-      hfiles.add(new Path(new Path(new Path(tableDir, region), family), hfileName));
+    FSVisitor.visitTableStoreFiles(fs, tableDir, new StoreFileVisitor() {
+
+      @Override
+      public void storeFile(String region, String family, String hfileName) throws IOException {
+        hfiles.add(new Path(new Path(new Path(tableDir, region), family), hfileName));
+      }
     });
     Collections.sort(hfiles);
     return hfiles;
   }
 
   private static boolean isAnySnapshots(FileSystem fs) throws IOException {
-    Path snapshotDir = SnapshotDescriptionUtils.getSnapshotsDir(CommonFSUtils.getRootDir(CONF));
+    Path snapshotDir = SnapshotDescriptionUtils.getSnapshotsDir(FSUtils.getRootDir(CONF));
     FileStatus[] snapFiles = fs.listStatus(snapshotDir);
     if (snapFiles.length == 0) {
       return false;
@@ -144,55 +139,63 @@ public class TestSnapshotWhenChoreCleaning {
     // Load data and flush to generate huge number of HFiles.
     loadDataAndFlush();
 
-    SnapshotHFileCleaner cleaner = new SnapshotHFileCleaner();
-    cleaner.init(ImmutableMap.of(HMaster.MASTER, TEST_UTIL.getHBaseCluster().getMaster()));
+    final SnapshotHFileCleaner cleaner = new SnapshotHFileCleaner();
+    Map<String, Object> params = new HashMap<String, Object>();
+    params.put(HMaster.MASTER, TEST_UTIL.getHBaseCluster().getMaster());
+    cleaner.init(params);
     cleaner.setConf(CONF);
 
-    FileSystem fs = CommonFSUtils.getCurrentFileSystem(CONF);
+    final FileSystem fs = FSUtils.getCurrentFileSystem(CONF);
     List<Path> fileNames =
-        listHFileNames(fs, CommonFSUtils.getTableDir(CommonFSUtils.getRootDir(CONF), TABLE_NAME));
-    List<FileStatus> files = new ArrayList<>();
+        listHFileNames(fs, FSUtils.getTableDir(FSUtils.getRootDir(CONF), TABLE_NAME));
+    final List<FileStatus> files = new ArrayList<>();
     for (Path fileName : fileNames) {
       files.add(fs.getFileStatus(fileName));
     }
 
-    TEST_UTIL.getAdmin().snapshot("snapshotName_prev", TABLE_NAME);
+    TEST_UTIL.getHBaseAdmin().snapshot("snapshotName_prev", TABLE_NAME);
     Assert.assertEquals(Lists.newArrayList(cleaner.getDeletableFiles(files)).size(), 0);
-    TEST_UTIL.getAdmin().deleteSnapshot("snapshotName_prev");
+    TEST_UTIL.getHBaseAdmin().deleteSnapshot("snapshotName_prev");
     cleaner.getFileCacheForTesting().triggerCacheRefreshForTesting();
     Assert.assertEquals(Lists.newArrayList(cleaner.getDeletableFiles(files)).size(), 100);
 
-    Runnable snapshotRunnable = () -> {
-      try {
-        // The thread will be busy on taking snapshot;
-        for (int k = 0; k < 5; k++) {
-          TEST_UTIL.getAdmin().snapshot("snapshotName_" + k, TABLE_NAME);
+    Runnable snapshotRunnable = new Runnable() {
+      @Override
+      public void run() {
+        try {
+          // The thread will be busy on taking snapshot;
+          for (int k = 0; k < 5; k++) {
+            TEST_UTIL.getHBaseAdmin().snapshot("snapshotName_" + k, TABLE_NAME);
+          }
+        } catch (Exception e) {
+          LOG.error("Snapshot failed: ", e);
         }
-      } catch (Exception e) {
-        LOG.error("Snapshot failed: ", e);
       }
     };
     final AtomicBoolean success = new AtomicBoolean(true);
-    Runnable cleanerRunnable = () -> {
-      try {
-        while (!isAnySnapshots(fs)) {
-          LOG.info("Not found any snapshot, sleep 100ms");
-          Thread.sleep(100);
-        }
-        for (int k = 0; k < 5; k++) {
-          cleaner.getFileCacheForTesting().triggerCacheRefreshForTesting();
-          Iterable<FileStatus> toDeleteFiles = cleaner.getDeletableFiles(files);
-          List<FileStatus> deletableFiles = Lists.newArrayList(toDeleteFiles);
-          LOG.info("Size of deletableFiles is: " + deletableFiles.size());
-          for (int i = 0; i < deletableFiles.size(); i++) {
-            LOG.debug("toDeleteFiles[{}] is: {}", i, deletableFiles.get(i));
+    Runnable cleanerRunnable = new Runnable() {
+      @Override
+      public void run() {
+        try {
+          while (!isAnySnapshots(fs)) {
+            LOG.info("Not found any snapshot, sleep 100ms");
+            Thread.sleep(100);
           }
-          if (deletableFiles.size() > 0) {
-            success.set(false);
+          for (int k = 0; k < 5; k++) {
+            cleaner.getFileCacheForTesting().triggerCacheRefreshForTesting();
+            Iterable<FileStatus> toDeleteFiles = cleaner.getDeletableFiles(files);
+            List<FileStatus> deletableFiles = Lists.newArrayList(toDeleteFiles);
+            LOG.info("Size of deletableFiles is: " + deletableFiles.size());
+            for (int i = 0; i < deletableFiles.size(); i++) {
+              LOG.debug("toDeleteFiles[{}] is: {}", i, deletableFiles.get(i));
+            }
+            if (deletableFiles.size() > 0) {
+              success.set(false);
+            }
           }
+        } catch (Exception e) {
+          LOG.error("Chore cleaning failed: ", e);
         }
-      } catch (Exception e) {
-        LOG.error("Chore cleaning failed: ", e);
       }
     };
     Thread t1 = new Thread(snapshotRunnable);

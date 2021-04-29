@@ -26,27 +26,21 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.security.User;
-import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.junit.AfterClass;
 import org.junit.Assert;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 
-@Category({MiscTests.class, SmallTests.class})
+@Category(SmallTests.class)
 public class TestHBaseConfiguration {
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestHBaseConfiguration.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestHBaseConfiguration.class);
+  private static final Log LOG = LogFactory.getLog(TestHBaseConfiguration.class);
 
   private static HBaseCommonTestingUtility UTIL = new HBaseCommonTestingUtility();
 
@@ -114,23 +108,6 @@ public class TestHBaseConfiguration {
 
     conf.set("hbase.security.authentication", "KERBeros");
     Assert.assertTrue(User.isHBaseSecurityEnabled(conf));
-  }
-
-  @Test
-  public void testGetConfigOfShortcircuitRead() throws Exception {
-    Configuration conf = HBaseConfiguration.create();
-    Configuration.addDefaultResource("hdfs-scr-disabled.xml");
-    assertEquals("hdfs-scr-disabled.xml",
-            conf.getPropertySources("dfs.client.read.shortcircuit")[0]);
-    assertEquals("false", conf.get("dfs.client.read.shortcircuit"));
-    assertNull(conf.get("dfs.domain.socket.path"));
-    Configuration.addDefaultResource("hdfs-scr-enabled.xml");
-    assertEquals("hdfs-scr-enabled.xml",
-            conf.getPropertySources("dfs.client.read.shortcircuit")[0]);
-    assertEquals("hdfs-scr-enabled.xml",
-            conf.getPropertySources("dfs.domain.socket.path")[0]);
-    assertEquals("true", conf.get("dfs.client.read.shortcircuit"));
-    assertEquals("/var/lib/hadoop-hdfs/dn_socket", conf.get("dfs.domain.socket.path"));
   }
 
   private static class ReflectiveCredentialProviderClient {

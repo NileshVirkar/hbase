@@ -18,19 +18,23 @@
 package org.apache.hadoop.hbase.client;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.MultithreadedTestUtil;
+import org.apache.hadoop.hbase.RegionLocations;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.Waiter;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.MetaRegionLocationCache;
 import org.apache.hadoop.hbase.master.RegionState;
@@ -39,45 +43,74 @@ import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.JVMClusterUtil;
 import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
-import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
-import org.apache.hadoop.hbase.zookeeper.ZNodePaths;
+import org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
-import org.apache.hbase.thirdparty.com.google.common.io.Closeables;
+import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
 @Category({SmallTests.class, MasterTests.class })
 public class TestMetaRegionLocationCache {
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestMetaRegionLocationCache.class);
+
+  private static final Log LOG = LogFactory.getLog(TestMetaRegionLocationCache.class.getName());
 
   private static final HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
   private static ConnectionRegistry REGISTRY;
 
+  // waits for all replicas to have region location
+  static void waitUntilAllMetaReplicasHavingRegionLocation(Configuration conf,
+                                                           final ConnectionRegistry registry, final int regionReplication) throws IOException {
+    Waiter.waitFor(conf, conf.getLong(
+        "hbase.client.sync.wait.timeout.msec", 60000), 200, true,
+        new Waiter.ExplainingPredicate<IOException>() {
+          @Override
+          public String explainFailure() throws IOException {
+            return "Not all meta replicas get assigned";
+          }
+
+          @Override
+          public boolean evaluate() throws IOException {
+            try {
+              RegionLocations locs = registry.getMetaRegionLocations();
+              if (locs == null || locs.size() < regionReplication) {
+                return false;
+              }
+              for (int i = 0; i < regionReplication; i++) {
+                if (locs.getRegionLocation(i) == null) {
+                  return false;
+                }
+              }
+              return true;
+            } catch (Exception e) {
+              LOG.warn("Failed to get meta region locations", e);
+              return false;
+            }
+          }
+        });
+  }
+
   @BeforeClass
   public static void setUp() throws Exception {
+    TEST_UTIL.getConfiguration().setInt(HConstants.META_REPLICAS_NUM, 3);
     TEST_UTIL.startMiniCluster(3);
-    HBaseTestingUtility.setReplicas(TEST_UTIL.getAdmin(), TableName.META_TABLE_NAME, 3);
-    REGISTRY = ConnectionRegistryFactory.getRegistry(TEST_UTIL.getConfiguration());
-    RegionReplicaTestHelper.waitUntilAllMetaReplicasAreReady(TEST_UTIL, REGISTRY);
-    TEST_UTIL.getAdmin().balancerSwitch(false, true);
+    REGISTRY = ConnectionRegistryFactory.getRegistry(TEST_UTIL.getConnection());
+    waitUntilAllMetaReplicasHavingRegionLocation(
+        TEST_UTIL.getConfiguration(), REGISTRY, 3);
+    TEST_UTIL.getConnection().getAdmin().setBalancerRunning(false, true);
   }
 
   @AfterClass
   public static void cleanUp() throws Exception {
-    Closeables.close(REGISTRY, true);
     TEST_UTIL.shutdownMiniCluster();
   }
 
-  private List<HRegionLocation> getCurrentMetaLocations(ZKWatcher zk) throws Exception {
+  private List<HRegionLocation> getCurrentMetaLocations(ZooKeeperWatcher zk) throws Exception {
     List<HRegionLocation> result = new ArrayList<>();
     for (String znode: zk.getMetaReplicaNodes()) {
-      String path = ZNodePaths.joinZNode(zk.getZNodePaths().baseZNode, znode);
-      int replicaId = zk.getZNodePaths().getMetaReplicaIdFromPath(path);
+      String path = ZKUtil.joinZNode(zk.baseZNode, znode);
+      int replicaId = zk.getMetaReplicaIdFromPath(path);
       RegionState state = MetaTableLocator.getMetaRegionState(zk, replicaId);
       result.add(new HRegionLocation(state.getRegion(), state.getServerName()));
     }
@@ -85,30 +118,19 @@ public class TestMetaRegionLocationCache {
   }
 
   // Verifies that the cached meta locations in the given master are in sync with what is in ZK.
-  private void verifyCachedMetaLocations(HMaster master) throws Exception {
+  private void verifyCachedMetaLocations(final HMaster master) throws Exception {
     // Wait until initial meta locations are loaded.
-    int retries = 0;
-    while (!master.getMetaRegionLocationCache().getMetaRegionLocations().isPresent()) {
-      Thread.sleep(1000);
-      if (++retries == 10) {
-        break;
+    ZooKeeperWatcher zk = master.getZooKeeper();
+    final List<String> metaZnodes = zk.getMetaReplicaNodes();
+    assertEquals(3, metaZnodes.size());
+    TEST_UTIL.waitFor(10000, new Waiter.Predicate<Exception>() {
+      @Override
+      public boolean evaluate() throws Exception {
+        return master.getMetaRegionLocationCache().getMetaRegionLocations().size()
+            == metaZnodes.size();
       }
-    }
-    List<HRegionLocation> metaHRLs =
-        master.getMetaRegionLocationCache().getMetaRegionLocations().get();
-    assertFalse(metaHRLs.isEmpty());
-    ZKWatcher zk = master.getZooKeeper();
-    List<String> metaZnodes = zk.getMetaReplicaNodes();
-    // Wait till all replicas available.
-    retries = 0;
-    while (master.getMetaRegionLocationCache().getMetaRegionLocations().get().size() !=
-        metaZnodes.size()) {
-      Thread.sleep(1000);
-      if (++retries == 10) {
-        break;
-      }
-    }
-    assertEquals(metaZnodes.size(), metaHRLs.size());
+    });
+    List<HRegionLocation> metaHRLs = master.getMetaRegionLocationCache().getMetaRegionLocations();
     List<HRegionLocation> actualHRLs = getCurrentMetaLocations(zk);
     Collections.sort(metaHRLs);
     Collections.sort(actualHRLs);
@@ -121,8 +143,20 @@ public class TestMetaRegionLocationCache {
 
   @Test public void testStandByMetaLocations() throws Exception {
     HMaster standBy = TEST_UTIL.getMiniHBaseCluster().startMaster().getMaster();
-    standBy.isInitialized();
     verifyCachedMetaLocations(standBy);
+  }
+
+  private static ServerName getOtherRS(List<ServerName> allServers, ServerName except) {
+    Preconditions.checkArgument(allServers.size() > 0);
+    allServers.remove(except);
+    ServerName ret;
+    try {
+      Collections.shuffle(allServers);
+      ret = allServers.get(0);
+    } finally {
+      allServers.add(except);
+    }
+    return ret;
   }
 
   /*
@@ -131,11 +165,18 @@ public class TestMetaRegionLocationCache {
   @Test public void testMetaLocationsChange() throws Exception {
     List<HRegionLocation> currentMetaLocs =
         getCurrentMetaLocations(TEST_UTIL.getMiniHBaseCluster().getMaster().getZooKeeper());
+    List<ServerName> allServers = new ArrayList<>();
+    for (JVMClusterUtil.RegionServerThread rs:
+        TEST_UTIL.getMiniHBaseCluster().getRegionServerThreads()) {
+      allServers.add(rs.getRegionServer().getServerName());
+    }
     // Move these replicas to random servers.
     for (HRegionLocation location: currentMetaLocs) {
-      RegionReplicaTestHelper.moveRegion(TEST_UTIL, location);
+      TEST_UTIL.moveRegionAndWait(
+          location.getRegionInfo(), getOtherRS(allServers, location.getServerName()));
     }
-    RegionReplicaTestHelper.waitUntilAllMetaReplicasAreReady(TEST_UTIL, REGISTRY);
+    waitUntilAllMetaReplicasHavingRegionLocation(
+        TEST_UTIL.getConfiguration(), REGISTRY, 3);
     for (JVMClusterUtil.MasterThread masterThread:
         TEST_UTIL.getMiniHBaseCluster().getMasterThreads()) {
       verifyCachedMetaLocations(masterThread.getMaster());
@@ -151,7 +192,7 @@ public class TestMetaRegionLocationCache {
     Configuration conf = new Configuration(TEST_UTIL.getConfiguration());
     conf.set(HConstants.ZOOKEEPER_ZNODE_PARENT, parentZnodeName);
     ServerName sn = ServerName.valueOf("localhost", 1234, 5678);
-    try (ZKWatcher zkWatcher = new ZKWatcher(conf, null, null, true)) {
+    try (ZooKeeperWatcher zkWatcher = new ZooKeeperWatcher(conf, null, null, true)) {
       // A thread that repeatedly creates and drops an unrelated child znode. This is to simulate
       // some ZK activity in the background.
       MultithreadedTestUtil.TestContext ctx = new MultithreadedTestUtil.TestContext(conf);
@@ -166,7 +207,7 @@ public class TestMetaRegionLocationCache {
       try {
         MetaRegionLocationCache metaCache = new MetaRegionLocationCache(zkWatcher);
         // meta znodes do not exist at this point, cache should be empty.
-        assertFalse(metaCache.getMetaRegionLocations().isPresent());
+        assertTrue(metaCache.getMetaRegionLocations().isEmpty());
         // Set the meta locations for a random meta replicas, simulating an active hmaster meta
         // assignment.
         for (int i = 0; i < 3; i++) {
@@ -176,13 +217,13 @@ public class TestMetaRegionLocationCache {
         // Wait until the meta cache is populated.
         int iters = 0;
         while (iters++ < 10) {
-          if (metaCache.getMetaRegionLocations().isPresent()
-            && metaCache.getMetaRegionLocations().get().size() == 3) {
+          if (metaCache.getMetaRegionLocations().size() == 3) {
             break;
           }
           Thread.sleep(1000);
         }
-        List<HRegionLocation> metaLocations = metaCache.getMetaRegionLocations().get();
+        List<HRegionLocation> metaLocations = metaCache.getMetaRegionLocations();
+        assertNotNull(metaLocations);
         assertEquals(3, metaLocations.size());
         for (HRegionLocation location : metaLocations) {
           assertEquals(sn, location.getServerName());

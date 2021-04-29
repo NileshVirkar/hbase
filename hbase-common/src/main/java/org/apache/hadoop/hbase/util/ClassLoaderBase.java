@@ -19,16 +19,24 @@ package org.apache.hadoop.hbase.util;
 
 import java.net.URL;
 import java.net.URLClassLoader;
-
-import org.apache.yetus.audience.InterfaceAudience;
+import java.util.concurrent.ConcurrentHashMap;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
 /**
- * Base class loader that defines couple shared constants used by sub-classes.
+ * Base class loader that defines couple shared constants used
+ * by sub-classes. It also defined method getClassLoadingLock for parallel
+ * class loading and JDK 1.6 support. This method (getClassLoadingLock)
+ * is similar to the same method in the base class Java ClassLoader
+ * introduced in JDK 1.7, but not in JDK 1.6.
  */
 @InterfaceAudience.Private
 public class ClassLoaderBase extends URLClassLoader {
+
+  // Maps class name to the corresponding lock object
+  private final ConcurrentHashMap<String, Object> parallelLockMap
+    = new ConcurrentHashMap<String, Object>();
 
   protected static final String DEFAULT_LOCAL_DIR = "/tmp/hbase-local-dir";
   protected static final String LOCAL_DIR_KEY = "hbase.local.dir";
@@ -50,4 +58,21 @@ public class ClassLoaderBase extends URLClassLoader {
     this.parent = parent;
   }
 
+  /**
+   * Returns the lock object for class loading operations.
+   */
+  @Override
+  protected Object getClassLoadingLock(String className) {
+    Object lock = parallelLockMap.get(className);
+    if (lock != null) {
+      return lock;
+    }
+
+    Object newLock = new Object();
+    lock = parallelLockMap.putIfAbsent(className, newLock);
+    if (lock == null) {
+      lock = newLock;
+    }
+    return lock;
+  }
 }

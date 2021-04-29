@@ -29,14 +29,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.hbtop.terminal.KeyPress;
 import org.apache.hadoop.hbase.util.Threads;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
-
 
 /**
  * This generates {@link KeyPress} objects from the given input stream and offers them to the
@@ -45,7 +44,7 @@ import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFacto
 @InterfaceAudience.Private
 public class KeyPressGenerator {
 
-  private static final Logger LOGGER = LoggerFactory.getLogger(KeyPressGenerator.class);
+  private static final Log LOG = LogFactory.getLog(KeyPressGenerator.class);
 
   private enum ParseState {
     START, ESCAPE, ESCAPE_SEQUENCE_PARAM1, ESCAPE_SEQUENCE_PARAM2
@@ -75,8 +74,18 @@ public class KeyPressGenerator {
   }
 
   public void start() {
-    executorService.execute(this::readerThread);
-    executorService.execute(this::generatorThread);
+    executorService.execute(new Runnable() {
+      @Override
+      public void run() {
+        readerThread();
+      }
+    });
+    executorService.execute(new Runnable() {
+      @Override
+      public void run() {
+        generatorThread();
+      }
+    });
   }
 
   private void initState() {
@@ -112,7 +121,7 @@ public class KeyPressGenerator {
         }
       } catch (InterruptedException ignored) {
       } catch (IOException e) {
-        LOGGER.error("Caught an exception", e);
+        LOG.error("Caught an exception", e);
         done = true;
       }
     }
@@ -483,10 +492,10 @@ public class KeyPressGenerator {
     executorService.shutdown();
     try {
       while (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
-        LOGGER.warn("Waiting for thread-pool to terminate");
+        LOG.warn("Waiting for thread-pool to terminate");
       }
     } catch (InterruptedException e) {
-      LOGGER.warn("Interrupted while waiting for thread-pool termination", e);
+      LOG.warn("Interrupted while waiting for thread-pool termination", e);
     }
   }
 }

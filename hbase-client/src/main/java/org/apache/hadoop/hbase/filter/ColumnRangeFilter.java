@@ -21,18 +21,16 @@ package org.apache.hadoop.hbase.filter;
 
 import static org.apache.hadoop.hbase.util.Bytes.len;
 
-import java.io.IOException;
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.ArrayList;
 import java.util.Objects;
-
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.PrivateCellUtil;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.KeyValueUtil;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
@@ -50,6 +48,7 @@ import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
  * or not.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class ColumnRangeFilter extends FilterBase {
   protected byte[] minColumn = null;
   protected boolean minColumnInclusive = true;
@@ -117,17 +116,16 @@ public class ColumnRangeFilter extends FilterBase {
   }
 
   @Override
-  public boolean filterRowKey(Cell cell) throws IOException {
-    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
-    return false;
-  }
-
-  @Override
-  public ReturnCode filterCell(final Cell c) {
+  public ReturnCode filterKeyValue(Cell kv) {
+    // TODO have a column compare method in Cell
+    byte[] buffer = kv.getQualifierArray();
+    int qualifierOffset = kv.getQualifierOffset();
+    int qualifierLength = kv.getQualifierLength();
     int cmpMin = 1;
 
     if (this.minColumn != null) {
-      cmpMin = CellUtil.compareQualifiers(c, this.minColumn, 0, this.minColumn.length);
+      cmpMin = Bytes.compareTo(buffer, qualifierOffset, qualifierLength,
+          this.minColumn, 0, this.minColumn.length);
     }
 
     if (cmpMin < 0) {
@@ -142,13 +140,22 @@ public class ColumnRangeFilter extends FilterBase {
       return ReturnCode.INCLUDE;
     }
 
-    int cmpMax = CellUtil.compareQualifiers(c, this.maxColumn, 0, this.maxColumn.length);
+    int cmpMax = Bytes.compareTo(buffer, qualifierOffset, qualifierLength,
+        this.maxColumn, 0, this.maxColumn.length);
 
-    if ((this.maxColumnInclusive && cmpMax <= 0) || (!this.maxColumnInclusive && cmpMax < 0)) {
+    if ((this.maxColumnInclusive && cmpMax <= 0) ||
+        (!this.maxColumnInclusive && cmpMax < 0)) {
       return ReturnCode.INCLUDE;
     }
 
     return ReturnCode.NEXT_ROW;
+  }
+
+  // Override here explicitly as the method in super class FilterBase might do a KeyValue recreate.
+  // See HBASE-12068
+  @Override
+  public Cell transformCell(Cell v) {
+    return v;
   }
 
   public static Filter createFilterFromArguments(ArrayList<byte []> filterArguments) {
@@ -174,11 +181,9 @@ public class ColumnRangeFilter extends FilterBase {
   public byte [] toByteArray() {
     FilterProtos.ColumnRangeFilter.Builder builder =
       FilterProtos.ColumnRangeFilter.newBuilder();
-    if (this.minColumn != null) builder.setMinColumn(
-        UnsafeByteOperations.unsafeWrap(this.minColumn));
+    if (this.minColumn != null) builder.setMinColumn(ByteStringer.wrap(this.minColumn));
     builder.setMinColumnInclusive(this.minColumnInclusive);
-    if (this.maxColumn != null) builder.setMaxColumn(
-        UnsafeByteOperations.unsafeWrap(this.maxColumn));
+    if (this.maxColumn != null) builder.setMaxColumn(ByteStringer.wrap(this.maxColumn));
     builder.setMaxColumnInclusive(this.maxColumnInclusive);
     return builder.build().toByteArray();
   }
@@ -223,8 +228,11 @@ public class ColumnRangeFilter extends FilterBase {
   }
 
   @Override
-  public Cell getNextCellHint(Cell cell) {
-    return PrivateCellUtil.createFirstOnRowCol(cell, this.minColumn, 0, len(this.minColumn));
+  public Cell getNextCellHint(Cell kv) {
+    return KeyValueUtil.createFirstOnRow(kv.getRowArray(), kv.getRowOffset(), kv
+        .getRowLength(), kv.getFamilyArray(), kv.getFamilyOffset(), kv
+        .getFamilyLength(), this.minColumn, 0, len(this.minColumn));
+
   }
 
   @Override

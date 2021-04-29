@@ -23,13 +23,13 @@ import java.util.NavigableMap;
 import java.util.NavigableSet;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ConcurrentSkipListSet;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.metrics.impl.FastLongHistogram;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.GsonUtil;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.gson.Gson;
 import org.apache.hbase.thirdparty.com.google.gson.TypeAdapter;
@@ -43,7 +43,7 @@ import org.apache.hbase.thirdparty.com.google.gson.stream.JsonWriter;
 @InterfaceAudience.Private
 public class BlockCacheUtil {
 
-  private static final Logger LOG = LoggerFactory.getLogger(BlockCacheUtil.class);
+  private static final Log LOG = LogFactory.getLog(BlockCacheUtil.class);
 
   public static final long NANOS_PER_SECOND = 1000000000;
 
@@ -121,10 +121,10 @@ public class BlockCacheUtil {
   /**
    * @return A JSON String of <code>filename</code> and counts of <code>blocks</code>
    */
-  public static String toJSON(String filename, NavigableSet<CachedBlock> blocks)
+  public static String toJSON(final String filename, final NavigableSet<CachedBlock> blocks)
       throws IOException {
     CachedBlockCountsPerFile counts = new CachedBlockCountsPerFile(filename);
-    for (CachedBlock cb : blocks) {
+    for (CachedBlock cb: blocks) {
       counts.count++;
       counts.size += cb.getSize();
       BlockType bt = cb.getBlockType();
@@ -139,14 +139,14 @@ public class BlockCacheUtil {
   /**
    * @return JSON string of <code>cbsf</code> aggregated
    */
-  public static String toJSON(CachedBlocksByFile cbsbf) throws IOException {
+  public static String toJSON(final CachedBlocksByFile cbsbf) throws IOException {
     return GSON.toJson(cbsbf);
   }
 
   /**
    * @return JSON string of <code>bc</code> content.
    */
-  public static String toJSON(BlockCache bc) throws IOException {
+  public static String toJSON(final BlockCache bc) throws IOException {
     return GSON.toJson(bc);
   }
 
@@ -179,31 +179,30 @@ public class BlockCacheUtil {
   }
 
   private static int compareCacheBlock(Cacheable left, Cacheable right,
-                                       boolean includeNextBlockMetadata) {
+                                       boolean includeNextBlockOnDiskSize) {
     ByteBuffer l = ByteBuffer.allocate(left.getSerializedLength());
-    left.serialize(l, includeNextBlockMetadata);
+    left.serialize(l, includeNextBlockOnDiskSize);
     ByteBuffer r = ByteBuffer.allocate(right.getSerializedLength());
-    right.serialize(r, includeNextBlockMetadata);
+    right.serialize(r, includeNextBlockOnDiskSize);
     return Bytes.compareTo(l.array(), l.arrayOffset(), l.limit(),
-	      r.array(), r.arrayOffset(), r.limit());
+             r.array(), r.arrayOffset(), r.limit());
   }
 
   /**
    * Validate that the existing and newBlock are the same without including the nextBlockMetadata,
-   * if not, throw an exception. If they are the same without the nextBlockMetadata,
-   * return the comparison.
-   *
+   * if not, throw an exception. If they are the same without the nextBlockMetadata, return the
+   * comparison.
    * @param existing block that is existing in the cache.
    * @param newBlock block that is trying to be cached.
    * @param cacheKey the cache key of the blocks.
    * @return comparison of the existing block to the newBlock.
    */
   public static int validateBlockAddition(Cacheable existing, Cacheable newBlock,
-                                          BlockCacheKey cacheKey) {
+      BlockCacheKey cacheKey) {
     int comparison = compareCacheBlock(existing, newBlock, false);
     if (comparison != 0) {
-      throw new RuntimeException("Cached block contents differ, which should not have happened."
-                                 + "cacheKey:" + cacheKey);
+      throw new RuntimeException(
+          "Cached block contents differ, which should not have happened." + "cacheKey:" + cacheKey);
     }
     if ((existing instanceof HFileBlock) && (newBlock instanceof HFileBlock)) {
       comparison = ((HFileBlock) existing).getNextBlockOnDiskSize()
@@ -228,30 +227,23 @@ public class BlockCacheUtil {
    */
   public static boolean shouldReplaceExistingCacheBlock(BlockCache blockCache,
       BlockCacheKey cacheKey, Cacheable newBlock) {
-    // NOTICE: The getBlock has retained the existingBlock inside.
     Cacheable existingBlock = blockCache.getBlock(cacheKey, false, false, false);
     if (existingBlock == null) {
       return true;
     }
-    try {
-      int comparison = BlockCacheUtil.validateBlockAddition(existingBlock, newBlock, cacheKey);
-      if (comparison < 0) {
-        LOG.warn("Cached block contents differ by nextBlockOnDiskSize, the new block has "
-            + "nextBlockOnDiskSize set. Caching new block.");
-        return true;
-      } else if (comparison > 0) {
-        LOG.warn("Cached block contents differ by nextBlockOnDiskSize, the existing block has "
-            + "nextBlockOnDiskSize set, Keeping cached block.");
-        return false;
-      } else {
-        LOG.warn("Caching an already cached block: {}. This is harmless and can happen in rare "
-            + "cases (see HBASE-8547)",
-          cacheKey);
-        return false;
-      }
-    } finally {
-      // Release this block to decrement the reference count.
-      existingBlock.release();
+    int comparison = BlockCacheUtil.validateBlockAddition(existingBlock, newBlock, cacheKey);
+    if (comparison < 0) {
+      LOG.warn("Cached block contents differ by nextBlockOnDiskSize, the new block has "
+          + "nextBlockOnDiskSize set. Caching new block.");
+      return true;
+    } else if (comparison > 0) {
+      LOG.warn("Cached block contents differ by nextBlockOnDiskSize, the existing block has "
+          + "nextBlockOnDiskSize set, Keeping cached block.");
+      return false;
+    } else {
+      LOG.warn("Caching an already cached block: " + cacheKey
+          + ". This is harmless and can happen in rare " + "cases (see HBASE-8547)");
+      return false;
     }
   }
 
@@ -288,7 +280,7 @@ public class BlockCacheUtil {
      * Map by filename. use concurent utils because we want our Map and contained blocks sorted.
      */
     private transient NavigableMap<String, NavigableSet<CachedBlock>> cachedBlockByFile =
-      new ConcurrentSkipListMap<>();
+      new ConcurrentSkipListMap<String, NavigableSet<CachedBlock>>();
     FastLongHistogram hist = new FastLongHistogram();
 
     /**
@@ -299,7 +291,7 @@ public class BlockCacheUtil {
       if (isFull()) return true;
       NavigableSet<CachedBlock> set = this.cachedBlockByFile.get(cb.getFilename());
       if (set == null) {
-        set = new ConcurrentSkipListSet<>();
+        set = new ConcurrentSkipListSet<CachedBlock>();
         this.cachedBlockByFile.put(cb.getFilename(), set);
       }
       set.add(cb);

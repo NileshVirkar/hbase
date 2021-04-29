@@ -19,16 +19,15 @@
 
 package org.apache.hadoop.hbase.filter;
 
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.ArrayList;
-
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.CellComparator;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.ByteStringer;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
@@ -39,6 +38,7 @@ import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
  * Use this filter to include the stop row, eg: [A,Z].
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class InclusiveStopFilter extends FilterBase {
   private byte [] stopRowKey;
   private boolean done = false;
@@ -52,17 +52,32 @@ public class InclusiveStopFilter extends FilterBase {
   }
 
   @Override
-  public ReturnCode filterCell(final Cell c) {
+  public ReturnCode filterKeyValue(Cell v) {
     if (done) return ReturnCode.NEXT_ROW;
     return ReturnCode.INCLUDE;
   }
 
+  // Override here explicitly as the method in super class FilterBase might do a KeyValue recreate.
+  // See HBASE-12068
   @Override
-  public boolean filterRowKey(Cell firstRowCell) {
+  public Cell transformCell(Cell v) {
+    return v;
+  }
+
+  @Override
+  public boolean filterRowKey(byte[] buffer, int offset, int length) {
+    if (buffer == null) {
+      //noinspection RedundantIfStatement
+      if (this.stopRowKey == null) {
+        return true; //filter...
+      }
+      return false;
+    }
     // if stopRowKey is <= buffer, then true, filter row.
-    if (filterAllRemaining()) return true;
-    int cmp = CellComparator.getInstance().compareRows(firstRowCell, stopRowKey, 0, stopRowKey.length);
-    done = reversed ? cmp < 0 : cmp > 0;
+    int cmp = Bytes.compareTo(stopRowKey, 0, stopRowKey.length,
+      buffer, offset, length);
+
+    done = reversed ? cmp > 0 : cmp < 0;
     return done;
   }
 
@@ -85,8 +100,7 @@ public class InclusiveStopFilter extends FilterBase {
   public byte [] toByteArray() {
     FilterProtos.InclusiveStopFilter.Builder builder =
       FilterProtos.InclusiveStopFilter.newBuilder();
-    if (this.stopRowKey != null) builder.setStopRowKey(
-        UnsafeByteOperations.unsafeWrap(this.stopRowKey));
+    if (this.stopRowKey != null) builder.setStopRowKey(ByteStringer.wrap(this.stopRowKey));
     return builder.build().toByteArray();
   }
 
@@ -108,7 +122,7 @@ public class InclusiveStopFilter extends FilterBase {
   }
 
   /**
-   * @param o the other filter to compare with
+   * @param other
    * @return true if and only if the fields of the filter that are serialized
    * are equal to the corresponding fields in other.  Used for testing.
    */

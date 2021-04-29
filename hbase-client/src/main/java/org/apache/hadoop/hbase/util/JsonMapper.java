@@ -1,4 +1,5 @@
-/**
+/*
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,7 +20,8 @@ package org.apache.hadoop.hbase.util;
 
 import java.io.IOException;
 import java.util.Map;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 
 import org.apache.hbase.thirdparty.com.google.gson.Gson;
 
@@ -27,6 +29,7 @@ import org.apache.hbase.thirdparty.com.google.gson.Gson;
  * Utility class for converting objects to JSON
  */
 @InterfaceAudience.Public
+@InterfaceStability.Evolving
 public final class JsonMapper {
   private JsonMapper() {
   }

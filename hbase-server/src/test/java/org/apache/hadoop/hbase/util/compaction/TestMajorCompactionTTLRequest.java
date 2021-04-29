@@ -20,6 +20,8 @@ package org.apache.hadoop.hbase.util.compaction;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+
+import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.isA;
 import static org.mockito.Mockito.doReturn;
@@ -29,34 +31,36 @@ import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.Optional;
-
+import org.apache.commons.lang.RandomStringUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
 @Category({SmallTests.class})
-public class TestMajorCompactionTTLRequest extends TestMajorCompactionRequest {
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestMajorCompactionTTLRequest.class);
+public class TestMajorCompactionTTLRequest {
+
+  private static final HBaseTestingUtility UTILITY = new HBaseTestingUtility();
+  private static final String FAMILY = "a";
+  private Path regionStoreDir;
 
   @Before
-  @Override
   public void setUp() throws Exception {
-    rootRegionDir = UTILITY.getDataTestDirOnTestFS("TestMajorCompactionTTLRequest");
+    Path rootRegionDir = UTILITY.getDataTestDirOnTestFS("TestMajorCompactionTTLRequest");
     regionStoreDir = new Path(rootRegionDir, FAMILY);
   }
 
@@ -87,7 +91,7 @@ public class TestMajorCompactionTTLRequest extends TestMajorCompactionRequest {
   private MajorCompactionTTLRequest makeMockRequest(List<StoreFileInfo> storeFiles)
       throws IOException {
     Configuration configuration = mock(Configuration.class);
-    RegionInfo regionInfo = mock(RegionInfo.class);
+    HRegionInfo regionInfo = mock(HRegionInfo.class);
     when(regionInfo.getEncodedName()).thenReturn("HBase");
     when(regionInfo.getTable()).thenReturn(TableName.valueOf("foo"));
     MajorCompactionTTLRequest request = new MajorCompactionTTLRequest(configuration, regionInfo);
@@ -96,5 +100,48 @@ public class TestMajorCompactionTTLRequest extends TestMajorCompactionRequest {
     doReturn(fileSystem).when(spy).getFileSystem(isA(Connection.class));
     doReturn(mock(Connection.class)).when(spy).getConnection(eq(configuration));
     return spy;
+  }
+
+  private HRegionFileSystem mockFileSystem(HRegionInfo info, boolean hasReferenceFiles,
+      List<StoreFileInfo> storeFiles) throws IOException {
+    Optional<StoreFileInfo> found = Optional.absent();
+    for (StoreFileInfo storeFile : storeFiles) {
+      found = Optional.of(storeFile);
+      break;
+    }
+    long timestamp = found.get().getModificationTime();
+    return mockFileSystem(info, hasReferenceFiles, storeFiles, timestamp);
+  }
+
+  private List<StoreFileInfo> mockStoreFiles(Path regionStoreDir, int howMany, long timestamp)
+      throws IOException {
+    List<StoreFileInfo> infos = Lists.newArrayList();
+    int i = 0;
+    while (i < howMany) {
+      StoreFileInfo storeFileInfo = mock(StoreFileInfo.class);
+      doReturn(timestamp).doReturn(timestamp).when(storeFileInfo).getModificationTime();
+      doReturn(new Path(regionStoreDir, RandomStringUtils.randomAlphabetic(10))).when(storeFileInfo)
+          .getPath();
+      infos.add(storeFileInfo);
+      i++;
+    }
+    return infos;
+  }
+
+  private HRegionFileSystem mockFileSystem(HRegionInfo info, boolean hasReferenceFiles,
+      List<StoreFileInfo> storeFiles, long referenceFileTimestamp) throws IOException {
+    FileSystem fileSystem = mock(FileSystem.class);
+    if (hasReferenceFiles) {
+      FileStatus fileStatus = mock(FileStatus.class);
+      doReturn(referenceFileTimestamp).when(fileStatus).getModificationTime();
+      doReturn(fileStatus).when(fileSystem).getFileLinkStatus(isA(Path.class));
+    }
+    HRegionFileSystem mockSystem = mock(HRegionFileSystem.class);
+    doReturn(info).when(mockSystem).getRegionInfo();
+    doReturn(regionStoreDir).when(mockSystem).getStoreDir(FAMILY);
+    doReturn(hasReferenceFiles).when(mockSystem).hasReferences(anyString());
+    doReturn(storeFiles).when(mockSystem).getStoreFiles(anyString());
+    doReturn(fileSystem).when(mockSystem).getFileSystem();
+    return mockSystem;
   }
 }

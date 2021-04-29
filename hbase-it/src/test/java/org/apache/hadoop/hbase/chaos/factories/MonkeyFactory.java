@@ -21,21 +21,20 @@ package org.apache.hadoop.hbase.chaos.factories;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.chaos.monkies.ChaosMonkey;
+import org.apache.hadoop.hbase.util.ReflectionUtils;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
-import org.apache.hadoop.hbase.util.ReflectionUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Base class of the factory that will create a ChaosMonkey.
  */
 public abstract class MonkeyFactory {
-  private static final Logger LOG = LoggerFactory.getLogger(MonkeyFactory.class);
+  private static final Log LOG = LogFactory.getLog(MonkeyFactory.class);
 
   protected TableName tableName;
   protected Set<String> columnFamilies;
@@ -74,25 +73,17 @@ public abstract class MonkeyFactory {
   public static final String STRESS_AM = "stressAM";
   public static final String NO_KILL = "noKill";
   public static final String MASTER_KILLING = "masterKilling";
-  public static final String MOB_NO_KILL = "mobNoKill";
-  public static final String MOB_SLOW_DETERMINISTIC = "mobSlowDeterministic";
   public static final String SERVER_AND_DEPENDENCIES_KILLING = "serverAndDependenciesKilling";
-  public static final String DISTRIBUTED_ISSUES = "distributedIssues";
-  public static final String DATA_ISSUES = "dataIssues";
 
   public static Map<String, MonkeyFactory> FACTORIES = ImmutableMap.<String,MonkeyFactory>builder()
     .put(CALM, new CalmMonkeyFactory())
     .put(SLOW_DETERMINISTIC, new SlowDeterministicMonkeyFactory())
     .put(UNBALANCE, new UnbalanceMonkeyFactory())
     .put(SERVER_KILLING, new ServerKillingMonkeyFactory())
+    .put(SERVER_AND_DEPENDENCIES_KILLING, new ServerAndDependenciesKillingMonkeyFactory())
     .put(STRESS_AM, new StressAssignmentManagerMonkeyFactory())
     .put(NO_KILL, new NoKillMonkeyFactory())
     .put(MASTER_KILLING, new MasterKillingMonkeyFactory())
-    .put(MOB_NO_KILL, new MobNoKillMonkeyFactory())
-    .put(MOB_SLOW_DETERMINISTIC, new MobNoKillMonkeyFactory())
-    .put(SERVER_AND_DEPENDENCIES_KILLING, new ServerAndDependenciesKillingMonkeyFactory())
-    .put(DISTRIBUTED_ISSUES, new DistributedIssuesMonkeyFactory())
-    .put(DATA_ISSUES, new DataIssuesMonkeyFactory())
     .build();
 
   public static MonkeyFactory getFactory(String factoryName) {
@@ -102,7 +93,7 @@ public abstract class MonkeyFactory {
       try {
         klass = Class.forName(factoryName);
         if (klass != null) {
-          LOG.info("Instantiating {}", klass.getName());
+          LOG.info(String.format("Instantiating %s", klass.getName()));
           fact = (MonkeyFactory) ReflectionUtils.newInstance(klass);
         }
       } catch (Exception e) {

@@ -22,11 +22,10 @@ import java.util.AbstractMap;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Stream;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.hbtop.field.Field;
 import org.apache.hadoop.hbase.hbtop.field.FieldValue;
 import org.apache.hadoop.hbase.hbtop.field.FieldValueType;
-import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 
@@ -90,11 +89,19 @@ public final class Record implements Map<Field, FieldValue> {
   }
 
   public static Record ofEntries(Entry... entries) {
-    return ofEntries(Stream.of(entries));
+    Builder builder = builder();
+    for (Entry entry : entries) {
+      builder.put(entry.getKey(), entry.getValue());
+    }
+    return builder.build();
   }
 
-  public static Record ofEntries(Stream<Entry> entries) {
-    return entries.collect(Record::builder, Builder::put, (r1, r2) -> {}).build();
+  public static Record ofEntries(Iterable<Entry> entries) {
+    Builder builder = builder();
+    for (Entry entry : entries) {
+      builder.put(entry.getKey(), entry.getValue());
+    }
+    return builder.build();
   }
 
   private Record(ImmutableMap<Field, FieldValue> values) {
@@ -165,12 +172,14 @@ public final class Record implements Map<Field, FieldValue> {
   }
 
   public Record combine(Record o) {
-    return ofEntries(values.keySet().stream()
-      .map(k -> {
-        if (k.getFieldValueType() == FieldValueType.STRING) {
-          return entry(k, values.get(k));
-        }
-        return entry(k, values.get(k).plus(o.values.get(k)));
-      }));
+    Builder builder = builder();
+    for (Field k : values.keySet()) {
+      if (k.getFieldValueType() == FieldValueType.STRING) {
+        builder.put(k, values.get(k));
+      } else {
+        builder.put(k, values.get(k).plus(o.values.get(k)));
+      }
+    }
+    return builder.build();
   }
 }

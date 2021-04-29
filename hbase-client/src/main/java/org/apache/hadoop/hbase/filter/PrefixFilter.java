@@ -19,24 +19,23 @@
 
 package org.apache.hadoop.hbase.filter;
 
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.ArrayList;
-
-import org.apache.hadoop.hbase.ByteBufferExtendedCell;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
-import org.apache.hadoop.hbase.util.ByteBufferUtils;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.ByteStringer;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
 
 /**
  * Pass results that have same row prefix.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class PrefixFilter extends FilterBase {
   protected byte [] prefix = null;
   protected boolean passedPrefix = false;
@@ -51,24 +50,16 @@ public class PrefixFilter extends FilterBase {
   }
 
   @Override
-  public boolean filterRowKey(Cell firstRowCell) {
-    if (firstRowCell == null || this.prefix == null)
+  public boolean filterRowKey(byte[] buffer, int offset, int length) {
+    if (buffer == null || this.prefix == null)
       return true;
-    if (filterAllRemaining()) return true;
-    int length = firstRowCell.getRowLength();
-    if (length < prefix.length) return true;
+    if (length < prefix.length)
+      return true;
     // if they are equal, return false => pass row
     // else return true, filter row
     // if we are passed the prefix, set flag
-    int cmp;
-    if (firstRowCell instanceof ByteBufferExtendedCell) {
-      cmp = ByteBufferUtils.compareTo(((ByteBufferExtendedCell) firstRowCell).getRowByteBuffer(),
-          ((ByteBufferExtendedCell) firstRowCell).getRowPosition(), this.prefix.length,
-          this.prefix, 0, this.prefix.length);
-    } else {
-      cmp = Bytes.compareTo(firstRowCell.getRowArray(), firstRowCell.getRowOffset(),
-          this.prefix.length, this.prefix, 0, this.prefix.length);
-    }
+    int cmp = Bytes.compareTo(buffer, offset, this.prefix.length, this.prefix, 0,
+        this.prefix.length);
     if ((!isReversed() && cmp > 0) || (isReversed() && cmp < 0)) {
       passedPrefix = true;
     }
@@ -77,9 +68,16 @@ public class PrefixFilter extends FilterBase {
   }
 
   @Override
-  public ReturnCode filterCell(final Cell c) {
+  public ReturnCode filterKeyValue(Cell v) {
     if (filterRow) return ReturnCode.NEXT_ROW;
     return ReturnCode.INCLUDE;
+  }
+
+  // Override here explicitly as the method in super class FilterBase might do a KeyValue recreate.
+  // See HBASE-12068
+  @Override
+  public Cell transformCell(Cell v) {
+    return v;
   }
 
   @Override
@@ -111,7 +109,7 @@ public class PrefixFilter extends FilterBase {
   public byte [] toByteArray() {
     FilterProtos.PrefixFilter.Builder builder =
       FilterProtos.PrefixFilter.newBuilder();
-    if (this.prefix != null) builder.setPrefix(UnsafeByteOperations.unsafeWrap(this.prefix));
+    if (this.prefix != null) builder.setPrefix(ByteStringer.wrap(this.prefix));
     return builder.build().toByteArray();
   }
 
@@ -133,7 +131,7 @@ public class PrefixFilter extends FilterBase {
   }
 
   /**
-   * @param o the other filter to compare with
+   * @param other
    * @return true if and only if the fields of the filter that are serialized
    * are equal to the corresponding fields in other.  Used for testing.
    */

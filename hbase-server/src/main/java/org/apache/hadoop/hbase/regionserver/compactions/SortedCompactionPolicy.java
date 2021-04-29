@@ -14,17 +14,18 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.OptionalInt;
 import java.util.Random;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.regionserver.HStoreFile;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.regionserver.StoreConfigInformation;
+import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.regionserver.StoreUtils;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hbase.thirdparty.com.google.common.base.Predicate;
+import org.apache.hbase.thirdparty.com.google.common.collect.Collections2;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
@@ -33,15 +34,15 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 @InterfaceAudience.Private
 public abstract class SortedCompactionPolicy extends CompactionPolicy {
 
-  private static final Logger LOG = LoggerFactory.getLogger(SortedCompactionPolicy.class);
+  private static final Log LOG = LogFactory.getLog(SortedCompactionPolicy.class);
 
   public SortedCompactionPolicy(Configuration conf, StoreConfigInformation storeConfigInfo) {
     super(conf, storeConfigInfo);
   }
 
-  public List<HStoreFile> preSelectCompactionForCoprocessor(Collection<HStoreFile> candidates,
-      List<HStoreFile> filesCompacting) {
-    return getCurrentEligibleFiles(new ArrayList<>(candidates), filesCompacting);
+  public List<StoreFile> preSelectCompactionForCoprocessor(final Collection<StoreFile> candidates,
+      final List<StoreFile> filesCompacting) {
+    return getCurrentEligibleFiles(new ArrayList<StoreFile>(candidates), filesCompacting);
   }
 
   /**
@@ -50,11 +51,11 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
    *   on seqId for data consistency.
    * @return subset copy of candidate list that meets compaction criteria
    */
-  public CompactionRequestImpl selectCompaction(Collection<HStoreFile> candidateFiles,
-      List<HStoreFile> filesCompacting, boolean isUserCompaction, boolean mayUseOffPeak,
-      boolean forceMajor) throws IOException {
+  public CompactionRequest selectCompaction(Collection<StoreFile> candidateFiles,
+      final List<StoreFile> filesCompacting, final boolean isUserCompaction,
+      final boolean mayUseOffPeak, final boolean forceMajor) throws IOException {
     // Preliminary compaction subject to filters
-    ArrayList<HStoreFile> candidateSelection = new ArrayList<>(candidateFiles);
+    ArrayList<StoreFile> candidateSelection = new ArrayList<StoreFile>(candidateFiles);
     // Stuck and not compacting enough (estimate). It is not guaranteed that we will be
     // able to compact more if stuck and compacting, because ratio policy excludes some
     // non-compacting files from consideration during compaction (see getCurrentEligibleFiles).
@@ -82,11 +83,11 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
     // Or, if there are any references among the candidates.
     boolean isAfterSplit = StoreUtils.hasReferences(candidateSelection);
 
-    CompactionRequestImpl result = createCompactionRequest(candidateSelection,
+    CompactionRequest result = createCompactionRequest(candidateSelection,
       isTryingMajor || isAfterSplit, mayUseOffPeak, mayBeStuck);
     result.setAfterSplit(isAfterSplit);
 
-    ArrayList<HStoreFile> filesToCompact = Lists.newArrayList(result.getFiles());
+    ArrayList<StoreFile> filesToCompact = Lists.newArrayList(result.getFiles());
     removeExcessFiles(filesToCompact, isUserCompaction, isTryingMajor);
     result.updateFiles(filesToCompact);
 
@@ -97,17 +98,17 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
     return result;
   }
 
-  protected abstract CompactionRequestImpl createCompactionRequest(
-      ArrayList<HStoreFile> candidateSelection, boolean tryingMajor, boolean mayUseOffPeak,
-      boolean mayBeStuck) throws IOException;
+  protected abstract CompactionRequest createCompactionRequest(ArrayList<StoreFile>
+    candidateSelection, boolean tryingMajor, boolean mayUseOffPeak, boolean mayBeStuck)
+    throws IOException;
 
-  /**
+  /*
    * @param filesToCompact Files to compact. Can be null.
    * @return True if we should run a major compaction.
    */
   @Override
-  public abstract boolean shouldPerformMajorCompaction(Collection<HStoreFile> filesToCompact)
-      throws IOException;
+  public abstract boolean shouldPerformMajorCompaction(final Collection<StoreFile> filesToCompact)
+    throws IOException;
 
   /**
    * Used calculation jitter
@@ -118,36 +119,30 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
    * @param filesToCompact
    * @return When to run next major compaction
    */
-  public long getNextMajorCompactTime(Collection<HStoreFile> filesToCompact) {
-    /** Default to {@link org.apache.hadoop.hbase.HConstants#DEFAULT_MAJOR_COMPACTION_PERIOD}. */
-    long period = comConf.getMajorCompactionPeriod();
-    if (period <= 0) {
-      return period;
-    }
-
-    /**
-     * Default to {@link org.apache.hadoop.hbase.HConstants#DEFAULT_MAJOR_COMPACTION_JITTER},
-     * that is, +/- 3.5 days (7 days * 0.5).
-     */
-    double jitterPct = comConf.getMajorCompactionJitter();
-    if (jitterPct <= 0) {
-      return period;
-    }
-
-    // deterministic jitter avoids a major compaction storm on restart
-    OptionalInt seed = StoreUtils.getDeterministicRandomSeed(filesToCompact);
-    if (seed.isPresent()) {
-      // Synchronized to ensure one user of random instance at a time.
-      double rnd;
-      synchronized (this) {
-        this.random.setSeed(seed.getAsInt());
-        rnd = this.random.nextDouble();
+  public long getNextMajorCompactTime(final Collection<StoreFile> filesToCompact) {
+    // default = 7days
+    long ret = comConf.getMajorCompactionPeriod();
+    if (ret > 0) {
+      // default = 20% = +/- 4.8 hrs
+      double jitterPct = comConf.getMajorCompactionJitter();
+      if (jitterPct > 0) {
+        long jitter = Math.round(ret * jitterPct);
+        // deterministic jitter avoids a major compaction storm on restart
+        Integer seed = StoreUtils.getDeterministicRandomSeed(filesToCompact);
+        if (seed != null) {
+          // Synchronized to ensure one user of random instance at a time.
+          double rnd = -1;
+          synchronized (this) {
+            this.random.setSeed(seed);
+            rnd = this.random.nextDouble();
+          }
+          ret += jitter - Math.round(2L * jitter * rnd);
+        } else {
+          ret = 0; // If seed is null, then no storefiles == no major compaction
+        }
       }
-      long jitter = Math.round(period * jitterPct);
-      return period + jitter - Math.round(2L * jitter * rnd);
-    } else {
-      return 0L;
     }
+    return ret;
   }
 
   /**
@@ -159,16 +154,16 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
     return compactionSize > comConf.getThrottlePoint();
   }
 
-  public abstract boolean needsCompaction(Collection<HStoreFile> storeFiles,
-      List<HStoreFile> filesCompacting);
+  public abstract boolean needsCompaction(final Collection<StoreFile> storeFiles,
+    final List<StoreFile> filesCompacting);
 
-  protected ArrayList<HStoreFile> getCurrentEligibleFiles(ArrayList<HStoreFile> candidateFiles,
-      final List<HStoreFile> filesCompacting) {
+  protected ArrayList<StoreFile> getCurrentEligibleFiles(ArrayList<StoreFile> candidateFiles,
+      final List<StoreFile> filesCompacting) {
     // candidates = all storefiles not already in compaction queue
     if (!filesCompacting.isEmpty()) {
       // exclude all files older than the newest file we're currently
       // compacting. this allows us to preserve contiguity (HBASE-2856)
-      HStoreFile last = filesCompacting.get(filesCompacting.size() - 1);
+      StoreFile last = filesCompacting.get(filesCompacting.size() - 1);
       int idx = candidateFiles.indexOf(last);
       Preconditions.checkArgument(idx != -1);
       candidateFiles.subList(0, idx + 1).clear();
@@ -181,7 +176,7 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
    * @return filtered subset exclude all files above maxCompactSize
    *   Also save all references. We MUST compact them
    */
-  protected ArrayList<HStoreFile> skipLargeFiles(ArrayList<HStoreFile> candidates,
+  protected ArrayList<StoreFile> skipLargeFiles(ArrayList<StoreFile> candidates,
     boolean mayUseOffpeak) {
     int pos = 0;
     while (pos < candidates.size() && !candidates.get(pos).isReference()
@@ -198,15 +193,25 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
 
   /**
    * @param candidates pre-filtrate
+   * @return filtered subset exclude all bulk load files if configured
    */
-  protected void filterBulk(ArrayList<HStoreFile> candidates) {
-    candidates.removeIf(HStoreFile::excludeFromMinorCompaction);
+  protected ArrayList<StoreFile> filterBulk(ArrayList<StoreFile> candidates) {
+    candidates.removeAll(Collections2.filter(candidates, new Predicate<StoreFile>() {
+      @Override
+      public boolean apply(StoreFile input) {
+        return input.excludeFromMinorCompaction();
+      }
+      public boolean test(StoreFile input) {
+        return apply(input);
+      }
+    }));
+    return candidates;
   }
 
   /**
    * @param candidates pre-filtrate
    */
-  protected void removeExcessFiles(ArrayList<HStoreFile> candidates,
+  protected void removeExcessFiles(ArrayList<StoreFile> candidates,
       boolean isUserCompaction, boolean isMajorCompaction) {
     int excess = candidates.size() - comConf.getMaxFilesToCompact();
     if (excess > 0) {
@@ -225,12 +230,12 @@ public abstract class SortedCompactionPolicy extends CompactionPolicy {
    * @param candidates pre-filtrate
    * @return filtered subset forget the compactionSelection if we don't have enough files
    */
-  protected ArrayList<HStoreFile> checkMinFilesCriteria(ArrayList<HStoreFile> candidates,
-      int minFiles) {
+  protected ArrayList<StoreFile> checkMinFilesCriteria(ArrayList<StoreFile> candidates,
+    int minFiles) {
     if (candidates.size() < minFiles) {
       if (LOG.isDebugEnabled()) {
-        LOG.debug("Not compacting files because we only have " + candidates.size() +
-            " files ready for compaction. Need " + minFiles + " to initiate.");
+        LOG.debug("Not compacting files because we only have " + candidates.size()
+            + " files ready for compaction. Need " + minFiles + " to initiate.");
       }
       candidates.clear();
     }

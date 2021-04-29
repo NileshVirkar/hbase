@@ -19,20 +19,20 @@
 
 package org.apache.hadoop.hbase.client;
 
+import com.google.protobuf.Descriptors.MethodDescriptor;
+import com.google.protobuf.Message;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Objects;
-import org.apache.hbase.thirdparty.com.google.protobuf.Descriptors.MethodDescriptor;
-import org.apache.hbase.thirdparty.com.google.protobuf.Message;
 
 
 /**
  * Represents a coprocessor service method execution against a single region.  While coprocessor
  * service calls are performed against a region, this class implements {@link Row} in order to
- * make use of the AsyncProcess framework for batching multi-region calls per region server.
+ * make use of the {@link AsyncProcess} framework for batching multi-region calls per region server.
  *
- * <p><b>Note:</b> This class should not be instantiated directly.  Use
+ * <p><b>Note:</b> This class should not be instantiated directly.  Use 
  * HTable#batchCoprocessorService instead.</p>
  */
 @InterfaceAudience.Private
@@ -72,8 +72,9 @@ public class RegionCoprocessorServiceExec implements Row {
     return request;
   }
 
+  @Override
   public int compareTo(Row o) {
-    int res = Row.COMPARATOR.compare(this, o);
+    int res = Bytes.compareTo(this.getRow(), o.getRow());
     if ((o instanceof RegionCoprocessorServiceExec) && res == 0) {
       RegionCoprocessorServiceExec exec = (RegionCoprocessorServiceExec) o;
       res = method.getFullName().compareTo(exec.getMethod().getFullName());
@@ -97,7 +98,8 @@ public class RegionCoprocessorServiceExec implements Row {
     if (obj == null || getClass() != obj.getClass()) {
       return false;
     }
-    return compareTo((RegionCoprocessorServiceExec) obj) == 0;
+    Row other = (Row) obj;
+    return compareTo(other) == 0;
   }
 
   @Override

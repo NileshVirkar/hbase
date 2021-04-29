@@ -21,72 +21,62 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.RegionInfoBuilder;
+import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.regionserver.CompactingMemStore;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.generated.WALProtos.CompactionDescriptor;
 import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionServerServices;
+import org.apache.hadoop.hbase.regionserver.Store;
+import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.regionserver.wal.WALUtil;
 import org.apache.hadoop.hbase.security.User;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
-import org.apache.hadoop.hbase.testclassification.MiscTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.JVMClusterUtil.RegionServerThread;
 import org.apache.hadoop.hbase.wal.WAL;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos.CompactionDescriptor;
-
 /**
- * Test for the case where a regionserver going down has enough cycles to do damage to regions that
- * have actually been assigned elsehwere.
- * <p>
- * If we happen to assign a region before it fully done with in its old location -- i.e. it is on
- * two servers at the same time -- all can work fine until the case where the region on the dying
- * server decides to compact or otherwise change the region file set. The region in its new location
- * will then get a surprise when it tries to do something w/ a file removed by the region in its old
- * location on dying server.
- * <p>
- * Making a test for this case is a little tough in that even if a file is deleted up on the
- * namenode, if the file was opened before the delete, it will continue to let reads happen until
- * something changes the state of cached blocks in the dfsclient that was already open (a block from
- * the deleted file is cleaned from the datanode by NN).
- * <p>
- * What we will do below is do an explicit check for existence on the files listed in the region
- * that has had some files removed because of a compaction. This sort of hurry's along and makes
- * certain what is a chance occurance.
+ * Test for the case where a regionserver going down has enough cycles to do damage to regions
+ * that have actually been assigned elsehwere.
+ *
+ * <p>If we happen to assign a region before it fully done with in its old location -- i.e. it is on two servers at the
+ * same time -- all can work fine until the case where the region on the dying server decides to compact or otherwise
+ * change the region file set.  The region in its new location will then get a surprise when it tries to do something
+ * w/ a file removed by the region in its old location on dying server.
+ *
+ * <p>Making a test for this case is a little tough in that even if a file is deleted up on the namenode,
+ * if the file was opened before the delete, it will continue to let reads happen until something changes the
+ * state of cached blocks in the dfsclient that was already open (a block from the deleted file is cleaned
+ * from the datanode by NN).
+ *
+ * <p>What we will do below is do an explicit check for existence on the files listed in the region that
+ * has had some files removed because of a compaction.  This sort of hurry's along and makes certain what is a chance
+ * occurance.
  */
-@Category({MiscTests.class, LargeTests.class})
+@Category(MediumTests.class)
 public class TestIOFencing {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestIOFencing.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestIOFencing.class);
+  private static final Log LOG = LogFactory.getLog(TestIOFencing.class);
   static {
     // Uncomment the following lines if more verbosity is needed for
     // debugging (see HBASE-12285 for details).
@@ -99,14 +89,14 @@ public class TestIOFencing {
   }
 
   public abstract static class CompactionBlockerRegion extends HRegion {
-    AtomicInteger compactCount = new AtomicInteger();
-    volatile CountDownLatch compactionsBlocked = new CountDownLatch(0);
-    volatile CountDownLatch compactionsWaiting = new CountDownLatch(0);
+    AtomicInteger compactCount = new AtomicInteger(0);
+    CountDownLatch compactionsBlocked = new CountDownLatch(0);
+    CountDownLatch compactionsWaiting = new CountDownLatch(0);
 
     @SuppressWarnings("deprecation")
     public CompactionBlockerRegion(Path tableDir, WAL log,
-        FileSystem fs, Configuration confParam, RegionInfo info,
-        TableDescriptor htd, RegionServerServices rsServices) {
+        FileSystem fs, Configuration confParam, HRegionInfo info,
+        HTableDescriptor htd, RegionServerServices rsServices) {
       super(tableDir, log, fs, confParam, info, htd, rsServices);
     }
 
@@ -130,28 +120,28 @@ public class TestIOFencing {
     }
 
     @Override
-    public boolean compact(CompactionContext compaction, HStore store,
+    public boolean compact(CompactionContext compaction, Store store,
         ThroughputController throughputController) throws IOException {
       try {
         return super.compact(compaction, store, throughputController);
       } finally {
-        compactCount.getAndIncrement();
+        compactCount.incrementAndGet();
       }
     }
 
     @Override
-    public boolean compact(CompactionContext compaction, HStore store,
+    public boolean compact(CompactionContext compaction, Store store,
         ThroughputController throughputController, User user) throws IOException {
       try {
         return super.compact(compaction, store, throughputController, user);
       } finally {
-        compactCount.getAndIncrement();
+        compactCount.incrementAndGet();
       }
     }
 
     public int countStoreFiles() {
       int count = 0;
-      for (HStore store : stores.values()) {
+      for (Store store : stores.values()) {
         count += store.getStorefilesCount();
       }
       return count;
@@ -165,8 +155,8 @@ public class TestIOFencing {
   public static class BlockCompactionsInPrepRegion extends CompactionBlockerRegion {
 
     public BlockCompactionsInPrepRegion(Path tableDir, WAL log,
-        FileSystem fs, Configuration confParam, RegionInfo info,
-        TableDescriptor htd, RegionServerServices rsServices) {
+        FileSystem fs, Configuration confParam, HRegionInfo info,
+        HTableDescriptor htd, RegionServerServices rsServices) {
       super(tableDir, log, fs, confParam, info, htd, rsServices);
     }
     @Override
@@ -188,35 +178,33 @@ public class TestIOFencing {
    */
   public static class BlockCompactionsInCompletionRegion extends CompactionBlockerRegion {
     public BlockCompactionsInCompletionRegion(Path tableDir, WAL log,
-        FileSystem fs, Configuration confParam, RegionInfo info,
-        TableDescriptor htd, RegionServerServices rsServices) {
+        FileSystem fs, Configuration confParam, HRegionInfo info,
+        HTableDescriptor htd, RegionServerServices rsServices) {
       super(tableDir, log, fs, confParam, info, htd, rsServices);
     }
-
     @Override
-    protected HStore instantiateHStore(final ColumnFamilyDescriptor family, boolean warmup)
-        throws IOException {
-      return new BlockCompactionsInCompletionHStore(this, family, this.conf, warmup);
+    protected HStore instantiateHStore(final HColumnDescriptor family) throws IOException {
+      return new BlockCompactionsInCompletionHStore(this, family, this.conf);
     }
   }
 
   public static class BlockCompactionsInCompletionHStore extends HStore {
     CompactionBlockerRegion r;
-    protected BlockCompactionsInCompletionHStore(HRegion region, ColumnFamilyDescriptor family,
-        Configuration confParam, boolean warmup) throws IOException {
-      super(region, family, confParam, warmup);
+    protected BlockCompactionsInCompletionHStore(HRegion region, HColumnDescriptor family,
+        Configuration confParam) throws IOException {
+      super(region, family, confParam);
       r = (CompactionBlockerRegion) region;
     }
 
     @Override
-    protected void refreshStoreSizeAndTotalBytes() throws IOException {
+    protected void completeCompaction(Collection<StoreFile> compactedFiles) throws IOException {
       try {
         r.compactionsWaiting.countDown();
         r.compactionsBlocked.await();
       } catch (InterruptedException ex) {
         throw new IOException(ex);
       }
-      super.refreshStoreSizeAndTotalBytes();
+      super.completeCompaction(compactedFiles);
     }
   }
 
@@ -235,9 +223,7 @@ public class TestIOFencing {
    */
   @Test
   public void testFencingAroundCompaction() throws Exception {
-    for(MemoryCompactionPolicy policy : MemoryCompactionPolicy.values()) {
-      doTest(BlockCompactionsInPrepRegion.class, policy);
-    }
+    doTest(BlockCompactionsInPrepRegion.class);
   }
 
   /**
@@ -248,25 +234,22 @@ public class TestIOFencing {
    */
   @Test
   public void testFencingAroundCompactionAfterWALSync() throws Exception {
-    for(MemoryCompactionPolicy policy : MemoryCompactionPolicy.values()) {
-      doTest(BlockCompactionsInCompletionRegion.class, policy);
-    }
+    doTest(BlockCompactionsInCompletionRegion.class);
   }
 
-  public void doTest(Class<?> regionClass, MemoryCompactionPolicy policy) throws Exception {
+  public void doTest(Class<?> regionClass) throws Exception {
     Configuration c = TEST_UTIL.getConfiguration();
     // Insert our custom region
     c.setClass(HConstants.REGION_IMPL, regionClass, HRegion.class);
+    c.setBoolean("dfs.support.append", true);
     // Encourage plenty of flushes
-    c.setLong("hbase.hregion.memstore.flush.size", 25000);
+    c.setLong("hbase.hregion.memstore.flush.size", 200000);
     c.set(HConstants.HBASE_REGION_SPLIT_POLICY_KEY, ConstantSizeRegionSplitPolicy.class.getName());
     // Only run compaction when we tell it to
-    c.setInt("hbase.hstore.compaction.min",1);
     c.setInt("hbase.hstore.compactionThreshold", 1000);
     c.setLong("hbase.hstore.blockingStoreFiles", 1000);
     // Compact quickly after we tell it to!
     c.setInt("hbase.regionserver.thread.splitcompactcheckfrequency", 1000);
-    c.set(CompactingMemStore.COMPACTING_MEMSTORE_TYPE_KEY, String.valueOf(policy));
     LOG.info("Starting mini cluster");
     TEST_UTIL.startMiniCluster(1);
     CompactionBlockerRegion compactingRegion = null;
@@ -290,12 +273,12 @@ public class TestIOFencing {
 
       // add a compaction from an older (non-existing) region to see whether we successfully skip
       // those entries
-      RegionInfo oldHri = RegionInfoBuilder.newBuilder(table.getName()).build();
+      HRegionInfo oldHri = new HRegionInfo(table.getName(),
+        HConstants.EMPTY_START_ROW, HConstants.EMPTY_END_ROW);
       CompactionDescriptor compactionDescriptor = ProtobufUtil.toCompactionDescriptor(oldHri,
         FAMILY, Lists.newArrayList(new Path("/a")), Lists.newArrayList(new Path("/b")),
         new Path("store_dir"));
-      WALUtil.writeCompactionMarker(compactingRegion.getWAL(),
-          ((HRegion)compactingRegion).getReplicationScope(),
+      WALUtil.writeCompactionMarker(compactingRegion.getWAL(), table.getTableDescriptor(),
         oldHri, compactionDescriptor, compactingRegion.getMVCC());
 
       // Wait till flush has happened, otherwise there won't be multiple store files
@@ -305,14 +288,13 @@ public class TestIOFencing {
         LOG.info("Waiting for the region to flush " +
           compactingRegion.getRegionInfo().getRegionNameAsString());
         Thread.sleep(1000);
-        admin.flush(table.getName());
         assertTrue("Timed out waiting for the region to flush",
           System.currentTimeMillis() - startWaitTime < 30000);
       }
       assertTrue(compactingRegion.countStoreFiles() > 1);
       final byte REGION_NAME[] = compactingRegion.getRegionInfo().getRegionName();
       LOG.info("Asking for compaction");
-      admin.majorCompact(TABLE_NAME);
+      ((HBaseAdmin)admin).majorCompact(TABLE_NAME.getName());
       LOG.info("Waiting for compaction to be about to start");
       compactingRegion.waitForCompactionToBlock();
       LOG.info("Starting a new server");
@@ -329,7 +311,7 @@ public class TestIOFencing {
         @Override
         public boolean evaluate() throws Exception {
           Region newRegion = newServer.getOnlineRegion(REGION_NAME);
-          return newRegion != null;
+          return newRegion != null && !newRegion.isRecovering();
         }
       });
 
@@ -346,44 +328,27 @@ public class TestIOFencing {
       while (compactingRegion.compactCount.get() == 0) {
         Thread.sleep(1000);
       }
-      // The server we killed stays up until the compaction that was started before it was killed
-      // completes. In logs you should see the old regionserver now going down.
+      // The server we killed stays up until the compaction that was started before it was killed completes.  In logs
+      // you should see the old regionserver now going down.
       LOG.info("Compaction finished");
 
       // If we survive the split keep going...
       // Now we make sure that the region isn't totally confused.  Load up more rows.
-      TEST_UTIL.loadNumericRows(table, FAMILY, FIRST_BATCH_COUNT,
-        FIRST_BATCH_COUNT + SECOND_BATCH_COUNT);
-      admin.majorCompact(TABLE_NAME);
+      TEST_UTIL.loadNumericRows(table, FAMILY, FIRST_BATCH_COUNT, FIRST_BATCH_COUNT + SECOND_BATCH_COUNT);
+      ((HBaseAdmin)admin).majorCompact(TABLE_NAME.getName());
       startWaitTime = System.currentTimeMillis();
       while (newRegion.compactCount.get() == 0) {
         Thread.sleep(1000);
-        assertTrue("New region never compacted",
-          System.currentTimeMillis() - startWaitTime < 180000);
+        assertTrue("New region never compacted", System.currentTimeMillis() - startWaitTime < 180000);
       }
-      int count;
-      for (int i = 0;; i++) {
-        try {
-          count = HBaseTestingUtility.countRows(table);
-          break;
-        } catch (DoNotRetryIOException e) {
-          // wait up to 30s
-          if (i >= 30 || !e.getMessage().contains("File does not exist")) {
-            throw e;
-          }
-          Thread.sleep(1000);
-        }
-      }
-      if (policy == MemoryCompactionPolicy.EAGER || policy == MemoryCompactionPolicy.ADAPTIVE) {
-        assertTrue(FIRST_BATCH_COUNT + SECOND_BATCH_COUNT >= count);
-      } else {
-        assertEquals(FIRST_BATCH_COUNT + SECOND_BATCH_COUNT, count);
-      }
+      assertEquals(FIRST_BATCH_COUNT + SECOND_BATCH_COUNT, TEST_UTIL.countRows(table));
     } finally {
       if (compactingRegion != null) {
         compactingRegion.allowCompactions();
       }
-      admin.close();
+      if (admin != null) {
+        admin.close();
+      }
       TEST_UTIL.shutdownMiniCluster();
     }
   }

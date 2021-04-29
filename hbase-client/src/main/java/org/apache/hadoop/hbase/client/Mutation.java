@@ -18,54 +18,44 @@
 
 package org.apache.hadoop.hbase.client;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
-import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
-import java.util.stream.Collectors;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.CellBuilder;
-import org.apache.hadoop.hbase.CellBuilderFactory;
-import org.apache.hadoop.hbase.CellBuilderType;
 import org.apache.hadoop.hbase.CellScannable;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.ExtendedCell;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.IndividualBytesFieldCell;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.PrivateCellUtil;
+import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.io.HeapSize;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.security.access.AccessControlConstants;
-import org.apache.hadoop.hbase.security.access.AccessControlUtil;
 import org.apache.hadoop.hbase.security.access.Permission;
 import org.apache.hadoop.hbase.security.visibility.CellVisibility;
 import org.apache.hadoop.hbase.security.visibility.VisibilityConstants;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ClassSize;
-import org.apache.yetus.audience.InterfaceAudience;
 
-import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.ArrayListMultimap;
 import org.apache.hbase.thirdparty.com.google.common.collect.ListMultimap;
+import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.io.ByteArrayDataInput;
 import org.apache.hbase.thirdparty.com.google.common.io.ByteArrayDataOutput;
 import org.apache.hbase.thirdparty.com.google.common.io.ByteStreams;
 
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
-
 @InterfaceAudience.Public
+@InterfaceStability.Evolving
 public abstract class Mutation extends OperationWithAttributes implements Row, CellScannable,
     HeapSize {
   public static final long MUTATION_OVERHEAD = ClassSize.align(
@@ -95,49 +85,19 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    */
   private static final String OP_ATTRIBUTE_TTL = "_ttl";
 
-  private static final String RETURN_RESULTS = "_rr_";
+  /**
+   * @deprecated this field is private as of HBase 2.0.
+   */
+  @Deprecated
+  protected static final String RETURN_RESULTS = "_rr_";
 
-  // TODO: row should be final
   protected byte [] row = null;
   protected long ts = HConstants.LATEST_TIMESTAMP;
   protected Durability durability = Durability.USE_DEFAULT;
 
-  // TODO: familyMap should be final
   // A Map sorted by column family.
-  protected NavigableMap<byte [], List<Cell>> familyMap;
-
-  /**
-   * empty construction.
-   * We need this empty construction to keep binary compatibility.
-   */
-  protected Mutation() {
-    this.familyMap = new TreeMap<>(Bytes.BYTES_COMPARATOR);
-  }
-
-  protected Mutation(Mutation clone) {
-    super(clone);
-    this.row = clone.getRow();
-    this.ts = clone.getTimestamp();
-    this.familyMap = clone.getFamilyCellMap().entrySet().stream().
-      collect(Collectors.toMap(e -> e.getKey(), e -> new ArrayList<>(e.getValue()), (k, v) -> {
-        throw new RuntimeException("collisions!!!");
-      }, () -> new TreeMap<>(Bytes.BYTES_COMPARATOR)));
-  }
-
-  /**
-   * Construct the mutation with user defined data.
-   * @param row row. CAN'T be null
-   * @param ts timestamp
-   * @param familyMap the map to collect all cells internally. CAN'T be null
-   */
-  protected Mutation(byte[] row, long ts, NavigableMap<byte [], List<Cell>> familyMap) {
-    this.row = Preconditions.checkNotNull(row);
-    if (row.length == 0) {
-      throw new IllegalArgumentException("Row can't be empty");
-    }
-    this.ts = ts;
-    this.familyMap = Preconditions.checkNotNull(familyMap);
-  }
+  protected NavigableMap<byte [], List<Cell>> familyMap =
+    new TreeMap<byte [], List<Cell>>(Bytes.BYTES_COMPARATOR);
 
   @Override
   public CellScanner cellScanner() {
@@ -152,10 +112,10 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    * @return a list of Cell objects, returns an empty list if one doesn't exist.
    */
   List<Cell> getCellList(byte[] family) {
-    List<Cell> list = getFamilyCellMap().get(family);
+    List<Cell> list = this.familyMap.get(family);
     if (list == null) {
-      list = new ArrayList<>();
-      getFamilyCellMap().put(family, list);
+      list = new ArrayList<Cell>();
+      this.familyMap.put(family, list);
     }
     return list;
   }
@@ -175,7 +135,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    * @param qualifier
    * @param ts
    * @param value
-   * @param tags - Specify the Tags as an Array
+   * @param tags - Specify the Tags as an Array {@link KeyValue.Tag}
    * @return a KeyValue with this objects row key and the Put identifier.
    */
   KeyValue createPutKeyValue(byte[] family, byte[] qualifier, long ts, byte[] value, Tag[] tags) {
@@ -189,7 +149,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    * @return a KeyValue with this objects row key and the Put identifier.
    */
   KeyValue createPutKeyValue(byte[] family, ByteBuffer qualifier, long ts, ByteBuffer value,
-      Tag[] tags) {
+                             Tag[] tags) {
     return new KeyValue(this.row, 0, this.row == null ? 0 : this.row.length,
         family, 0, family == null ? 0 : family.length,
         qualifier, ts, KeyValue.Type.Put, value, tags != null ? Arrays.asList(tags) : null);
@@ -203,12 +163,12 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    */
   @Override
   public Map<String, Object> getFingerprint() {
-    Map<String, Object> map = new HashMap<>();
-    List<String> families = new ArrayList<>(getFamilyCellMap().entrySet().size());
+    Map<String, Object> map = new HashMap<String, Object>();
+    List<String> families = new ArrayList<String>();
     // ideally, we would also include table information, but that information
     // is not stored in each Operation instance.
     map.put("families", families);
-    for (Map.Entry<byte [], List<Cell>> entry : getFamilyCellMap().entrySet()) {
+    for (Map.Entry<byte [], List<Cell>> entry : this.familyMap.entrySet()) {
       families.add(Bytes.toStringBinary(entry.getKey()));
     }
     return map;
@@ -227,14 +187,15 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
     Map<String, Object> map = getFingerprint();
     // replace the fingerprint's simple list of families with a
     // map from column families to lists of qualifiers and kv details
-    Map<String, List<Map<String, Object>>> columns = new HashMap<>();
+    Map<String, List<Map<String, Object>>> columns =
+      new HashMap<String, List<Map<String, Object>>>();
     map.put("families", columns);
     map.put("row", Bytes.toStringBinary(this.row));
     int colCount = 0;
     // iterate through all column families affected
-    for (Map.Entry<byte [], List<Cell>> entry : getFamilyCellMap().entrySet()) {
+    for (Map.Entry<byte [], List<Cell>> entry : this.familyMap.entrySet()) {
       // map from this family to details for each cell affected within the family
-      List<Map<String, Object>> qualifierDetails = new ArrayList<>();
+      List<Map<String, Object>> qualifierDetails = new ArrayList<Map<String, Object>>();
       columns.put(Bytes.toStringBinary(entry.getKey()), qualifierDetails);
       colCount += entry.getValue().size();
       if (maxCols <= 0) {
@@ -242,7 +203,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
       }
       // add details for each cell
       for (Cell cell: entry.getValue()) {
-        if (--maxCols <= 0) {
+        if (--maxCols <= 0 ) {
           continue;
         }
         Map<String, Object> cellMap = cellToStringMap(cell);
@@ -260,26 +221,46 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
     if (getTTL() != Long.MAX_VALUE) {
       map.put("ttl", getTTL());
     }
-    map.put("ts", this.ts);
     return map;
   }
 
   private static Map<String, Object> cellToStringMap(Cell c) {
-    Map<String, Object> stringMap = new HashMap<>();
+    Map<String, Object> stringMap = new HashMap<String, Object>();
     stringMap.put("qualifier", Bytes.toStringBinary(c.getQualifierArray(), c.getQualifierOffset(),
                 c.getQualifierLength()));
     stringMap.put("timestamp", c.getTimestamp());
     stringMap.put("vlen", c.getValueLength());
-    List<Tag> tags = PrivateCellUtil.getTags(c);
+    List<Tag> tags = Tag.asList(c.getTagsArray(), c.getTagsOffset(), c.getTagsLength());
     if (tags != null) {
-      List<String> tagsString = new ArrayList<>(tags.size());
+      List<String> tagsString = new ArrayList<String>();
       for (Tag t : tags) {
-        tagsString
-            .add((t.getType()) + ":" + Bytes.toStringBinary(Tag.cloneValue(t)));
+        tagsString.add((t.getType()) + ":" + Bytes.toStringBinary(t.getValue()));
       }
       stringMap.put("tag", tagsString);
     }
     return stringMap;
+  }
+
+  /**
+   * @deprecated Use {@link #getDurability()} instead.
+   * @return true if edits should be applied to WAL, false if not
+   */
+  @Deprecated
+  public boolean getWriteToWAL() {
+    return this.durability != Durability.SKIP_WAL;
+  }
+
+  /**
+   * Set whether this Delete should be written to the WAL or not.
+   * Not writing the WAL means you may lose edits on server crash.
+   * This method will reset any changes made via {@link #setDurability(Durability)}
+   * @param write true if edits should be written to WAL, false if not
+   * @deprecated Use {@link #setDurability(Durability)} instead.
+   */
+  @Deprecated
+  public Mutation setWriteToWAL(boolean write) {
+    setDurability(write ? Durability.USE_DEFAULT : Durability.SKIP_WAL);
+    return this;
   }
 
   /**
@@ -305,11 +286,54 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
   }
 
   /**
+   * Method for setting the put's familyMap
+   */
+  public Mutation setFamilyCellMap(NavigableMap<byte [], List<Cell>> map) {
+    // TODO: Shut this down or move it up to be a Constructor.  Get new object rather than change
+    // this internal data member.
+    this.familyMap = map;
+    return this;
+  }
+
+  /**
+   * Method for retrieving the put's familyMap that is deprecated and inefficient.
+   * @return the map
+   * @deprecated use {@link #getFamilyCellMap()} instead.
+   */
+  @Deprecated
+  public NavigableMap<byte [], List<KeyValue>> getFamilyMap() {
+    TreeMap<byte[], List<KeyValue>> fm =
+        new TreeMap<byte[], List<KeyValue>>(Bytes.BYTES_COMPARATOR);
+    for (Map.Entry<byte[], List<Cell>> e : familyMap.entrySet()) {
+      List<KeyValue> kvl = new ArrayList<KeyValue>(e.getValue().size());
+      for (Cell c : e.getValue()) {
+        kvl.add(KeyValueUtil.ensureKeyValue(c));
+      }
+      fm.put(e.getKey(), kvl);
+    }
+    return fm;
+  }
+
+  /**
+   * Method for setting the put's familyMap that is deprecated and inefficient.
+   * @deprecated use {@link #setFamilyCellMap(NavigableMap)} instead.
+   */
+  @Deprecated
+  public Mutation setFamilyMap(NavigableMap<byte [], List<KeyValue>> map) {
+    TreeMap<byte[], List<Cell>> fm = new TreeMap<byte[], List<Cell>>(Bytes.BYTES_COMPARATOR);
+    for (Map.Entry<byte[], List<KeyValue>> e : map.entrySet()) {
+      fm.put(e.getKey(), Lists.<Cell>newArrayList(e.getValue()));
+    }
+    this.familyMap = fm;
+    return this;
+  }
+
+  /**
    * Method to check if the familyMap is empty
    * @return true if empty, false otherwise
    */
   public boolean isEmpty() {
-    return getFamilyCellMap().isEmpty();
+    return familyMap.isEmpty();
   }
 
   /**
@@ -321,12 +345,16 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
     return this.row;
   }
 
+  @Override
+  public int compareTo(final Row d) {
+    return Bytes.compareTo(this.getRow(), d.getRow());
+  }
+
   /**
-   * Method for retrieving the timestamp.
-   *
+   * Method for retrieving the timestamp
    * @return timestamp
    */
-  public long getTimestamp() {
+  public long getTimeStamp() {
     return this.ts;
   }
 
@@ -349,7 +377,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    * @return the set of clusterIds that have consumed the mutation
    */
   public List<UUID> getClusterIds() {
-    List<UUID> clusterIds = new ArrayList<>();
+    List<UUID> clusterIds = new ArrayList<UUID>();
     byte[] bytes = getAttribute(CONSUMED_CLUSTER_IDS);
     if(bytes != null) {
       ByteArrayDataInput in = ByteStreams.newDataInput(bytes);
@@ -366,8 +394,8 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    * @param expression
    */
   public Mutation setCellVisibility(CellVisibility expression) {
-    this.setAttribute(VisibilityConstants.VISIBILITY_LABELS_ATTR_KEY,
-        toCellVisibility(expression).toByteArray());
+    this.setAttribute(VisibilityConstants.VISIBILITY_LABELS_ATTR_KEY, ProtobufUtil
+        .toCellVisibility(expression).toByteArray());
     return this;
   }
 
@@ -378,50 +406,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
   public CellVisibility getCellVisibility() throws DeserializationException {
     byte[] cellVisibilityBytes = this.getAttribute(VisibilityConstants.VISIBILITY_LABELS_ATTR_KEY);
     if (cellVisibilityBytes == null) return null;
-    return toCellVisibility(cellVisibilityBytes);
-  }
-
-  /**
-   * Create a protocol buffer CellVisibility based on a client CellVisibility.
-   *
-   * @param cellVisibility
-   * @return a protocol buffer CellVisibility
-   */
-  static ClientProtos.CellVisibility toCellVisibility(CellVisibility cellVisibility) {
-    ClientProtos.CellVisibility.Builder builder = ClientProtos.CellVisibility.newBuilder();
-    builder.setExpression(cellVisibility.getExpression());
-    return builder.build();
-  }
-
-  /**
-   * Convert a protocol buffer CellVisibility to a client CellVisibility
-   *
-   * @param proto
-   * @return the converted client CellVisibility
-   */
-  private static CellVisibility toCellVisibility(ClientProtos.CellVisibility proto) {
-    if (proto == null) return null;
-    return new CellVisibility(proto.getExpression());
-  }
-
-  /**
-   * Convert a protocol buffer CellVisibility bytes to a client CellVisibility
-   *
-   * @param protoBytes
-   * @return the converted client CellVisibility
-   * @throws DeserializationException
-   */
-  private static CellVisibility toCellVisibility(byte[] protoBytes) throws DeserializationException {
-    if (protoBytes == null) return null;
-    ClientProtos.CellVisibility.Builder builder = ClientProtos.CellVisibility.newBuilder();
-    ClientProtos.CellVisibility proto = null;
-    try {
-      ProtobufUtil.mergeFrom(builder, protoBytes);
-      proto = builder.build();
-    } catch (IOException e) {
-      throw new DeserializationException(e);
-    }
-    return toCellVisibility(proto);
+    return ProtobufUtil.toCellVisibility(cellVisibilityBytes);
   }
 
   /**
@@ -430,7 +415,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    */
   public int size() {
     int size = 0;
-    for (List<Cell> cells : getFamilyCellMap().values()) {
+    for (List<Cell> cells : this.familyMap.values()) {
       size += cells.size();
     }
     return size;
@@ -440,7 +425,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    * @return the number of different families
    */
   public int numFamilies() {
-    return getFamilyCellMap().size();
+    return familyMap.size();
   }
 
   /**
@@ -454,8 +439,8 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
 
     // Adding map overhead
     heapsize +=
-      ClassSize.align(getFamilyCellMap().size() * ClassSize.MAP_ENTRY);
-    for(Map.Entry<byte [], List<Cell>> entry : getFamilyCellMap().entrySet()) {
+      ClassSize.align(this.familyMap.size() * ClassSize.MAP_ENTRY);
+    for(Map.Entry<byte [], List<Cell>> entry : this.familyMap.entrySet()) {
       //Adding key overhead
       heapsize +=
         ClassSize.align(ClassSize.ARRAY + entry.getKey().length);
@@ -468,8 +453,8 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
       heapsize += ClassSize.align(ClassSize.ARRAY +
           size * ClassSize.REFERENCE);
 
-      for (Cell cell : entry.getValue()) {
-        heapsize += cell.heapSize();
+      for(Cell cell : entry.getValue()) {
+        heapsize += CellUtil.estimatedHeapSizeOf(cell);
       }
     }
     heapsize += getAttributeSize();
@@ -490,7 +475,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
    */
   public Mutation setACL(String user, Permission perms) {
     setAttribute(AccessControlConstants.OP_ATTRIBUTE_ACL,
-      AccessControlUtil.toUsersAndPermissions(user, perms).toByteArray());
+      ProtobufUtil.toUsersAndPermissions(user, perms).toByteArray());
     return this;
   }
 
@@ -503,7 +488,7 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
       permMap.put(entry.getKey(), entry.getValue());
     }
     setAttribute(AccessControlConstants.OP_ATTRIBUTE_ACL,
-      AccessControlUtil.toUsersAndPermissions(permMap).toByteArray());
+      ProtobufUtil.toUsersAndPermissions(permMap).toByteArray());
     return this;
   }
 
@@ -555,153 +540,6 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
     return 0L;
   }
 
-  /**
-   * Set the timestamp of the delete.
-   */
-  public Mutation setTimestamp(long timestamp) {
-    if (timestamp < 0) {
-      throw new IllegalArgumentException("Timestamp cannot be negative. ts=" + timestamp);
-    }
-    this.ts = timestamp;
-    return this;
-  }
-
-  /**
-   * A convenience method to determine if this object's familyMap contains
-   * a value assigned to the given family &amp; qualifier.
-   * Both given arguments must match the KeyValue object to return true.
-   *
-   * @param family column family
-   * @param qualifier column qualifier
-   * @return returns true if the given family and qualifier already has an
-   * existing KeyValue object in the family map.
-   */
-  public boolean has(byte [] family, byte [] qualifier) {
-    return has(family, qualifier, this.ts, HConstants.EMPTY_BYTE_ARRAY, true, true);
-  }
-
-  /**
-   * A convenience method to determine if this object's familyMap contains
-   * a value assigned to the given family, qualifier and timestamp.
-   * All 3 given arguments must match the KeyValue object to return true.
-   *
-   * @param family column family
-   * @param qualifier column qualifier
-   * @param ts timestamp
-   * @return returns true if the given family, qualifier and timestamp already has an
-   * existing KeyValue object in the family map.
-   */
-  public boolean has(byte [] family, byte [] qualifier, long ts) {
-    return has(family, qualifier, ts, HConstants.EMPTY_BYTE_ARRAY, false, true);
-  }
-
-  /**
-   * A convenience method to determine if this object's familyMap contains
-   * a value assigned to the given family, qualifier and timestamp.
-   * All 3 given arguments must match the KeyValue object to return true.
-   *
-   * @param family column family
-   * @param qualifier column qualifier
-   * @param value value to check
-   * @return returns true if the given family, qualifier and value already has an
-   * existing KeyValue object in the family map.
-   */
-  public boolean has(byte [] family, byte [] qualifier, byte [] value) {
-    return has(family, qualifier, this.ts, value, true, false);
-  }
-
-  /**
-   * A convenience method to determine if this object's familyMap contains
-   * the given value assigned to the given family, qualifier and timestamp.
-   * All 4 given arguments must match the KeyValue object to return true.
-   *
-   * @param family column family
-   * @param qualifier column qualifier
-   * @param ts timestamp
-   * @param value value to check
-   * @return returns true if the given family, qualifier timestamp and value
-   *   already has an existing KeyValue object in the family map.
-   */
-  public boolean has(byte [] family, byte [] qualifier, long ts, byte [] value) {
-    return has(family, qualifier, ts, value, false, false);
-  }
-
-  /**
-   * Returns a list of all KeyValue objects with matching column family and qualifier.
-   *
-   * @param family column family
-   * @param qualifier column qualifier
-   * @return a list of KeyValue objects with the matching family and qualifier,
-   *   returns an empty list if one doesn't exist for the given family.
-   */
-  public List<Cell> get(byte[] family, byte[] qualifier) {
-    List<Cell> filteredList = new ArrayList<>();
-    for (Cell cell: getCellList(family)) {
-      if (CellUtil.matchingQualifier(cell, qualifier)) {
-        filteredList.add(cell);
-      }
-    }
-    return filteredList;
-  }
-
-  /*
-   * Private method to determine if this object's familyMap contains
-   * the given value assigned to the given family, qualifier and timestamp
-   * respecting the 2 boolean arguments
-   *
-   * @param family
-   * @param qualifier
-   * @param ts
-   * @param value
-   * @param ignoreTS
-   * @param ignoreValue
-   * @return returns true if the given family, qualifier timestamp and value
-   * already has an existing KeyValue object in the family map.
-   */
-  protected boolean has(byte[] family, byte[] qualifier, long ts, byte[] value,
-      boolean ignoreTS, boolean ignoreValue) {
-    List<Cell> list = getCellList(family);
-    if (list.isEmpty()) {
-      return false;
-    }
-    // Boolean analysis of ignoreTS/ignoreValue.
-    // T T => 2
-    // T F => 3 (first is always true)
-    // F T => 2
-    // F F => 1
-    if (!ignoreTS && !ignoreValue) {
-      for (Cell cell : list) {
-        if (CellUtil.matchingFamily(cell, family) &&
-            CellUtil.matchingQualifier(cell, qualifier)  &&
-            CellUtil.matchingValue(cell, value) &&
-            cell.getTimestamp() == ts) {
-          return true;
-        }
-      }
-    } else if (ignoreValue && !ignoreTS) {
-      for (Cell cell : list) {
-        if (CellUtil.matchingFamily(cell, family) && CellUtil.matchingQualifier(cell, qualifier)
-            && cell.getTimestamp() == ts) {
-          return true;
-        }
-      }
-    } else if (!ignoreValue && ignoreTS) {
-      for (Cell cell : list) {
-        if (CellUtil.matchingFamily(cell, family) && CellUtil.matchingQualifier(cell, qualifier)
-            && CellUtil.matchingValue(cell, value)) {
-          return true;
-        }
-      }
-    } else {
-      for (Cell cell : list) {
-        if (CellUtil.matchingFamily(cell, family) &&
-            CellUtil.matchingQualifier(cell, qualifier)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
 
   /**
    * @param row Row to check
@@ -745,290 +583,6 @@ public abstract class Mutation extends OperationWithAttributes implements Row, C
     if (row.remaining() > HConstants.MAX_ROW_LENGTH) {
       throw new IllegalArgumentException("Row length " + row.remaining() + " is > " +
           HConstants.MAX_ROW_LENGTH);
-    }
-  }
-
-  Mutation add(Cell cell) throws IOException {
-    //Checking that the row of the kv is the same as the mutation
-    // TODO: It is fraught with risk if user pass the wrong row.
-    // Throwing the IllegalArgumentException is more suitable I'd say.
-    if (!CellUtil.matchingRows(cell, this.row)) {
-      throw new WrongRowIOException("The row in " + cell.toString() +
-        " doesn't match the original one " +  Bytes.toStringBinary(this.row));
-    }
-
-    byte[] family;
-
-    if (cell instanceof IndividualBytesFieldCell) {
-      family = cell.getFamilyArray();
-    } else {
-      family = CellUtil.cloneFamily(cell);
-    }
-
-    if (family == null || family.length == 0) {
-      throw new IllegalArgumentException("Family cannot be null");
-    }
-
-    if (cell instanceof ExtendedCell) {
-      getCellList(family).add(cell);
-    } else {
-      getCellList(family).add(new CellWrapper(cell));
-    }
-    return this;
-  }
-
-  /**
-   * get a CellBuilder instance that already has relevant Type and Row set.
-   * @param cellBuilderType e.g CellBuilderType.SHALLOW_COPY
-   * @return CellBuilder which already has relevant Type and Row set.
-   */
-  public abstract CellBuilder getCellBuilder(CellBuilderType cellBuilderType);
-
-  /**
-   * get a CellBuilder instance that already has relevant Type and Row set.
-   * the default CellBuilderType is CellBuilderType.SHALLOW_COPY
-   * @return CellBuilder which already has relevant Type and Row set.
-   */
-  public CellBuilder getCellBuilder() {
-    return getCellBuilder(CellBuilderType.SHALLOW_COPY);
-  }
-
-  /**
-   * get a CellBuilder instance that already has relevant Type and Row set.
-   * @param cellBuilderType e.g CellBuilderType.SHALLOW_COPY
-   * @param cellType e.g Cell.Type.Put
-   * @return CellBuilder which already has relevant Type and Row set.
-     */
-  protected CellBuilder getCellBuilder(CellBuilderType cellBuilderType, Cell.Type cellType) {
-    CellBuilder builder = CellBuilderFactory.create(cellBuilderType).setRow(row).setType(cellType);
-    return new CellBuilder() {
-      @Override
-      public CellBuilder setRow(byte[] row) {
-        return this;
-      }
-
-      @Override
-      public CellBuilder setType(Cell.Type type) {
-        return this;
-      }
-
-      @Override
-      public CellBuilder setRow(byte[] row, int rOffset, int rLength) {
-        return this;
-      }
-
-      @Override
-      public CellBuilder setFamily(byte[] family) {
-        builder.setFamily(family);
-        return this;
-      }
-
-      @Override
-      public CellBuilder setFamily(byte[] family, int fOffset, int fLength) {
-        builder.setFamily(family, fOffset, fLength);
-        return this;
-      }
-
-      @Override
-      public CellBuilder setQualifier(byte[] qualifier) {
-        builder.setQualifier(qualifier);
-        return this;
-      }
-
-      @Override
-      public CellBuilder setQualifier(byte[] qualifier, int qOffset, int qLength) {
-        builder.setQualifier(qualifier, qOffset, qLength);
-        return this;
-      }
-
-      @Override
-      public CellBuilder setTimestamp(long timestamp) {
-        builder.setTimestamp(timestamp);
-        return this;
-      }
-
-      @Override
-      public CellBuilder setValue(byte[] value) {
-        builder.setValue(value);
-        return this;
-      }
-
-      @Override
-      public CellBuilder setValue(byte[] value, int vOffset, int vLength) {
-        builder.setValue(value, vOffset, vLength);
-        return this;
-      }
-
-      @Override
-      public Cell build() {
-        return builder.build();
-      }
-
-      @Override
-      public CellBuilder clear() {
-        builder.clear();
-        // reset the row and type
-        builder.setRow(row);
-        builder.setType(cellType);
-        return this;
-      }
-    };
-  }
-
-  private static final class CellWrapper implements ExtendedCell {
-    private static final long FIXED_OVERHEAD = ClassSize.align(
-      ClassSize.OBJECT              // object header
-        + KeyValue.TIMESTAMP_SIZE       // timestamp
-        + Bytes.SIZEOF_LONG             // sequence id
-        + 1 * ClassSize.REFERENCE);     // references to cell
-    private final Cell cell;
-    private long sequenceId;
-    private long timestamp;
-
-    CellWrapper(Cell cell) {
-      assert !(cell instanceof ExtendedCell);
-      this.cell = cell;
-      this.sequenceId = cell.getSequenceId();
-      this.timestamp = cell.getTimestamp();
-    }
-
-    @Override
-    public void setSequenceId(long seqId) {
-      sequenceId = seqId;
-    }
-
-    @Override
-    public void setTimestamp(long ts) {
-      timestamp = ts;
-    }
-
-    @Override
-    public void setTimestamp(byte[] ts) {
-      timestamp = Bytes.toLong(ts);
-    }
-
-    @Override
-    public long getSequenceId() {
-      return sequenceId;
-    }
-
-    @Override
-    public byte[] getValueArray() {
-      return cell.getValueArray();
-    }
-
-    @Override
-    public int getValueOffset() {
-      return cell.getValueOffset();
-    }
-
-    @Override
-    public int getValueLength() {
-      return cell.getValueLength();
-    }
-
-    @Override
-    public byte[] getTagsArray() {
-      return cell.getTagsArray();
-    }
-
-    @Override
-    public int getTagsOffset() {
-      return cell.getTagsOffset();
-    }
-
-    @Override
-    public int getTagsLength() {
-      return cell.getTagsLength();
-    }
-
-    @Override
-    public byte[] getRowArray() {
-      return cell.getRowArray();
-    }
-
-    @Override
-    public int getRowOffset() {
-      return cell.getRowOffset();
-    }
-
-    @Override
-    public short getRowLength() {
-      return cell.getRowLength();
-    }
-
-    @Override
-    public byte[] getFamilyArray() {
-      return cell.getFamilyArray();
-    }
-
-    @Override
-    public int getFamilyOffset() {
-      return cell.getFamilyOffset();
-    }
-
-    @Override
-    public byte getFamilyLength() {
-      return cell.getFamilyLength();
-    }
-
-    @Override
-    public byte[] getQualifierArray() {
-      return cell.getQualifierArray();
-    }
-
-    @Override
-    public int getQualifierOffset() {
-      return cell.getQualifierOffset();
-    }
-
-    @Override
-    public int getQualifierLength() {
-      return cell.getQualifierLength();
-    }
-
-    @Override
-    public long getTimestamp() {
-      return timestamp;
-    }
-
-    @Override
-    public byte getTypeByte() {
-      return cell.getTypeByte();
-    }
-
-    @Override
-    public Optional<Tag> getTag(byte type) {
-      return PrivateCellUtil.getTag(cell, type);
-    }
-
-    @Override
-    public Iterator<Tag> getTags() {
-      return PrivateCellUtil.tagsIterator(cell);
-    }
-
-    @Override
-    public byte[] cloneTags() {
-      return PrivateCellUtil.cloneTags(cell);
-    }
-
-    private long heapOverhead() {
-      return FIXED_OVERHEAD
-        + ClassSize.ARRAY // row
-        + getFamilyLength() == 0 ? 0 : ClassSize.ARRAY
-        + getQualifierLength() == 0 ? 0 : ClassSize.ARRAY
-        + getValueLength() == 0 ? 0 : ClassSize.ARRAY
-        + getTagsLength() == 0 ? 0 : ClassSize.ARRAY;
-    }
-
-    @Override
-    public long heapSize() {
-      return heapOverhead()
-        + ClassSize.align(getRowLength())
-        + ClassSize.align(getFamilyLength())
-        + ClassSize.align(getQualifierLength())
-        + ClassSize.align(getValueLength())
-        + ClassSize.align(getTagsLength());
     }
   }
 }

@@ -1,4 +1,5 @@
-/**
+/*
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,30 +23,22 @@ import static org.junit.Assert.*;
 import java.io.IOException;
 import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
-import org.apache.commons.lang3.SystemUtils;
+import org.apache.commons.lang.SystemUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.hadoop.hbase.testclassification.SecurityTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableSet;
 
-@Category({SecurityTests.class, SmallTests.class})
+@Category(SmallTests.class)
 public class TestUser {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestUser.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestUser.class);
+  private static final Log LOG = LogFactory.getLog(TestUser.class);
 
   @Test
   public void testCreateUserForTestingGroupCache() throws Exception {
@@ -126,7 +119,6 @@ public class TestUser {
     Configuration conf = HBaseConfiguration.create();
     final User user = User.createUserForTesting(conf, "testuser", new String[]{"foo"});
     final PrivilegedExceptionAction<String> action = new PrivilegedExceptionAction<String>(){
-      @Override
       public String run() throws IOException {
           User u = User.getCurrent();
           return u.getName();
@@ -145,7 +137,6 @@ public class TestUser {
 
     // check the exception version
     username = user.runAs(new PrivilegedExceptionAction<String>(){
-      @Override
       public String run() throws Exception {
         return User.getCurrent().getName();
       }
@@ -154,7 +145,6 @@ public class TestUser {
 
     // verify that nested contexts work
     user2.runAs(new PrivilegedExceptionAction<Object>(){
-      @Override
       public Object run() throws IOException, InterruptedException{
         String nestedName = user.runAs(action);
         assertEquals("Nest name should match nested user", "testuser", nestedName);
@@ -238,7 +228,7 @@ public class TestUser {
 
     conf = HBaseConfiguration.create();
     conf.set(CommonConfigurationKeys.HADOOP_SECURITY_AUTHENTICATION, "kerberos");
-    assertFalse("HBase security should not be enabled if "
+    assertFalse("HBase security should not be enabled if " 
         + User.HBASE_SECURITY_CONF_KEY + " is not set accordingly",
         User.isHBaseSecurityEnabled(conf));
 

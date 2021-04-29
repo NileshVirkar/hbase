@@ -20,24 +20,23 @@ package org.apache.hadoop.hbase.util.compaction;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSUtils;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.base.Optional;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
 @InterfaceAudience.Private
@@ -46,28 +45,28 @@ class MajorCompactionRequest {
   private static final Logger LOG = LoggerFactory.getLogger(MajorCompactionRequest.class);
 
   protected final Configuration configuration;
-  protected final RegionInfo region;
+  protected final HRegionInfo region;
   private Set<String> stores;
 
-  MajorCompactionRequest(Configuration configuration, RegionInfo region) {
+  MajorCompactionRequest(Configuration configuration, HRegionInfo region) {
     this.configuration = configuration;
     this.region = region;
   }
 
-  MajorCompactionRequest(Configuration configuration, RegionInfo region,
+  MajorCompactionRequest(Configuration configuration, HRegionInfo region,
       Set<String> stores) {
     this(configuration, region);
     this.stores = stores;
   }
 
-  static Optional<MajorCompactionRequest> newRequest(Configuration configuration, RegionInfo info,
+  static Optional<MajorCompactionRequest> newRequest(Configuration configuration, HRegionInfo info,
       Set<String> stores, long timestamp) throws IOException {
     MajorCompactionRequest request =
         new MajorCompactionRequest(configuration, info, stores);
     return request.createRequest(configuration, stores, timestamp);
   }
 
-  RegionInfo getRegion() {
+  HRegionInfo getRegion() {
     return region;
   }
 
@@ -86,7 +85,7 @@ class MajorCompactionRequest {
     if (!familiesToCompact.isEmpty()) {
       request = new MajorCompactionRequest(configuration, region, familiesToCompact);
     }
-    return Optional.ofNullable(request);
+    return Optional.fromNullable(request);
   }
 
   Set<String> getStoresRequiringCompaction(Set<String> requestedStores, long timestamp)
@@ -170,9 +169,9 @@ class MajorCompactionRequest {
   HRegionFileSystem getFileSystem(Connection connection) throws IOException {
     Admin admin = connection.getAdmin();
     return HRegionFileSystem.openRegionFromFileSystem(admin.getConfiguration(),
-      CommonFSUtils.getCurrentFileSystem(admin.getConfiguration()), CommonFSUtils.getTableDir(
-        CommonFSUtils.getRootDir(admin.getConfiguration()), region.getTable()),
-      region, true);
+        FSUtils.getCurrentFileSystem(admin.getConfiguration()),
+        FSUtils.getTableDir(FSUtils.getRootDir(admin.getConfiguration()), region.getTable()),
+        region, true);
   }
 
   @Override

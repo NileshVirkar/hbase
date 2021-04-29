@@ -1,4 +1,5 @@
-/*
+/**
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,6 +20,7 @@ package org.apache.hadoop.hbase.master;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -26,26 +28,22 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.Pair;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * Class to hold dead servers list and utility querying dead server list.
- * Servers are added when they expire or when we find them in filesystem on startup.
- * When a server crash procedure is queued, it will populate the processing list and
- * then remove the server from processing list when done. Servers are removed from
- * dead server list when a new instance is started over the old on same hostname and
- * port or when new Master comes online tidying up after all initialization. Processing
- * list and deadserver list are not tied together (you don't have to be in deadservers
- * list to be processing and vice versa).
+ * On znode expiration, servers are added here.
  */
 @InterfaceAudience.Private
 public class DeadServer {
-  private static final Logger LOG = LoggerFactory.getLogger(DeadServer.class);
+  private static final Log LOG = LogFactory.getLog(DeadServer.class);
 
   /**
    * Set of known dead servers.  On znode expiration, servers are added here.
@@ -54,7 +52,39 @@ public class DeadServer {
    * and it's server logs are recovered, it will be told to call server startup
    * because by then, its regions have probably been reassigned.
    */
-  private final Map<ServerName, Long> deadServers = new HashMap<>();
+  private final Map<ServerName, Long> deadServers = new HashMap<ServerName, Long>();
+
+  /**
+   * Set of dead servers currently being processed
+   */
+  private final Set<ServerName> processingServers = new HashSet<ServerName>();
+
+  /**
+   * A dead server that comes back alive has a different start code. The new start code should be
+   *  greater than the old one, but we don't take this into account in this method.
+   *
+   * @param newServerName Servername as either <code>host:port</code> or
+   *                      <code>host,port,startcode</code>.
+   * @return true if this server was dead before and coming back alive again
+   */
+  public synchronized boolean cleanPreviousInstance(final ServerName newServerName) {
+    Iterator<ServerName> it = deadServers.keySet().iterator();
+    while (it.hasNext()) {
+      ServerName sn = it.next();
+      if (ServerName.isSameHostnameAndPort(sn, newServerName)) {
+        // remove from deadServers
+        it.remove();
+        // remove from processingServers
+        boolean removed = processingServers.remove(sn);
+        if (removed) {
+          LOG.debug("Removed " + sn + " ; numProcessing=" + processingServers.size());
+        }
+        return true;
+      }
+    }
+
+    return false;
+  }
 
   /**
    * @param serverName server name.
@@ -64,84 +94,117 @@ public class DeadServer {
     return deadServers.containsKey(serverName);
   }
 
+  /**
+   * @param serverName server name.
+   * @return true if this server is on the processing servers list false otherwise
+   */
+  public synchronized boolean isProcessingServer(final ServerName serverName) {
+    return processingServers.contains(serverName);
+  }
+
+  /**
+   * Checks if there are currently any dead servers being processed by the
+   * master.  Returns true if at least one region server is currently being
+   * processed as dead.
+   *
+   * @return true if any RS are being processed as dead
+   */
+  public synchronized boolean areDeadServersInProgress() {
+    return !processingServers.isEmpty();
+  }
+
   public synchronized Set<ServerName> copyServerNames() {
-    Set<ServerName> clone = new HashSet<>(deadServers.size());
+    Set<ServerName> clone = new HashSet<ServerName>(deadServers.size());
     clone.addAll(deadServers.keySet());
     return clone;
   }
 
   /**
    * Adds the server to the dead server list if it's not there already.
+   * @param sn the server name
    */
-  synchronized void putIfAbsent(ServerName sn) {
-    this.deadServers.putIfAbsent(sn, EnvironmentEdgeManager.currentTime());
+  public synchronized void add(ServerName sn) {
+    if (!deadServers.containsKey(sn)){
+      deadServers.put(sn, EnvironmentEdgeManager.currentTime());
+    }
+    boolean added = processingServers.add(sn);
+    if (LOG.isDebugEnabled() && added) {
+      LOG.debug("Added " + sn + "; numProcessing=" + processingServers.size());
+    }
+  }
+
+  /**
+   * Notify that we started processing this dead server.
+   * @param sn ServerName for the dead server.
+   */
+  public synchronized void notifyServer(ServerName sn) {
+    boolean added = processingServers.add(sn);
+    if (LOG.isDebugEnabled()) {
+      if (added) {
+        LOG.debug("Added " + sn + "; numProcessing=" + processingServers.size());
+      }
+      LOG.debug("Started processing " + sn + "; numProcessing=" + processingServers.size());
+    }
+  }
+
+  /**
+   * Complete processing for this dead server.
+   * @param sn ServerName for the dead server.
+   */
+  public synchronized void finish(ServerName sn) {
+    boolean removed = processingServers.remove(sn);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Finished processing " + sn + "; numProcessing=" + processingServers.size());
+      if (removed) {
+        LOG.debug("Removed " + sn + " ; numProcessing=" + processingServers.size());
+      }
+    }
   }
 
   public synchronized int size() {
     return deadServers.size();
   }
 
-  synchronized boolean isEmpty() {
+  public synchronized boolean isEmpty() {
     return deadServers.isEmpty();
   }
 
-  /**
-   * Handles restart of a server. The new server instance has a different start code.
-   * The new start code should be greater than the old one. We don't check that here.
-   * Removes the old server from deadserver list.
-   *
-   * @param newServerName Servername as either <code>host:port</code> or
-   *                      <code>host,port,startcode</code>.
-   * @return true if this server was dead before and coming back alive again
-   */
-  synchronized boolean cleanPreviousInstance(final ServerName newServerName) {
+  public synchronized void cleanAllPreviousInstances(final ServerName newServerName) {
     Iterator<ServerName> it = deadServers.keySet().iterator();
     while (it.hasNext()) {
-      if (cleanOldServerName(newServerName, it)) {
-        return true;
+      ServerName sn = it.next();
+      if (ServerName.isSameHostnameAndPort(sn, newServerName)) {
+        // remove from deadServers
+        it.remove();
+        // remove from processingServers
+        boolean removed = processingServers.remove(sn);
+        if (removed) {
+          LOG.debug("Removed " + sn + " ; numProcessing=" + processingServers.size());
+        }
       }
     }
-    return false;
-  }
-
-  synchronized void cleanAllPreviousInstances(final ServerName newServerName) {
-    Iterator<ServerName> it = deadServers.keySet().iterator();
-    while (it.hasNext()) {
-      cleanOldServerName(newServerName, it);
-    }
-  }
-
-  /**
-   * @param newServerName Server to match port and hostname against.
-   * @param deadServerIterator Iterator primed so can call 'next' on it.
-   * @return True if <code>newServerName</code> and current primed
-   *   iterator ServerName have same host and port and we removed old server
-   *   from iterator and from processing list.
-   */
-  private boolean cleanOldServerName(ServerName newServerName,
-      Iterator<ServerName> deadServerIterator) {
-    ServerName sn = deadServerIterator.next();
-    if (ServerName.isSameAddress(sn, newServerName)) {
-      // Remove from dead servers list. Don't remove from the processing list --
-      // let the SCP do it when it is done.
-      deadServerIterator.remove();
-      return true;
-    }
-    return false;
   }
 
   @Override
   public synchronized String toString() {
     // Display unified set of servers from both maps
-    Set<ServerName> servers = new HashSet<>();
+    Set<ServerName> servers = new HashSet<ServerName>();
     servers.addAll(deadServers.keySet());
+    servers.addAll(processingServers);
     StringBuilder sb = new StringBuilder();
     for (ServerName sn : servers) {
       if (sb.length() > 0) {
         sb.append(", ");
       }
       sb.append(sn.toString());
+      // Star entries that are being processed
+      if (processingServers.contains(sn)) {
+        sb.append("*");
+      }
     }
+    sb.append(" (numProcessing=");
+    sb.append(processingServers.size());
+    sb.append(')');
     return sb.toString();
   }
 
@@ -150,16 +213,16 @@ public class DeadServer {
    * @param ts the time, 0 for all
    * @return a sorted array list, by death time, lowest values first.
    */
-  synchronized List<Pair<ServerName, Long>> copyDeadServersSince(long ts) {
-    List<Pair<ServerName, Long>> res =  new ArrayList<>(size());
+  public synchronized List<Pair<ServerName, Long>> copyDeadServersSince(long ts){
+    List<Pair<ServerName, Long>> res =  new ArrayList<Pair<ServerName, Long>>(size());
 
     for (Map.Entry<ServerName, Long> entry:deadServers.entrySet()){
       if (entry.getValue() >= ts){
-        res.add(new Pair<>(entry.getKey(), entry.getValue()));
+        res.add(new Pair<ServerName, Long>(entry.getKey(), entry.getValue()));
       }
     }
 
-    Collections.sort(res, (o1, o2) -> o1.getSecond().compareTo(o2.getSecond()));
+    Collections.sort(res, ServerNameDeathDateComparator);
     return res;
   }
   
@@ -173,12 +236,28 @@ public class DeadServer {
     return time == null ? null : new Date(time);
   }
 
+  private static Comparator<Pair<ServerName, Long>> ServerNameDeathDateComparator =
+      new Comparator<Pair<ServerName, Long>>(){
+
+    @Override
+    public int compare(Pair<ServerName, Long> o1, Pair<ServerName, Long> o2) {
+      return o1.getSecond().compareTo(o2.getSecond());
+    }
+  };
+
   /**
-   * Called from rpc by operator cleaning up deadserver list.
+   * remove the specified dead server
    * @param deadServerName the dead server name
    * @return true if this server was removed
    */
   public synchronized boolean removeDeadServer(final ServerName deadServerName) {
-    return this.deadServers.remove(deadServerName) != null;
+    Preconditions.checkState(!processingServers.contains(deadServerName),
+      "Asked to remove server still in processingServers set " + deadServerName +
+          " (numProcessing=" + processingServers.size() + ")");
+    if (deadServers.remove(deadServerName) == null) {
+      return false;
+    }
+    return true;
   }
+
 }

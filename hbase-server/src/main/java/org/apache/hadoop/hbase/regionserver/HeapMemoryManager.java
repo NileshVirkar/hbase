@@ -21,46 +21,41 @@ package org.apache.hadoop.hbase.regionserver;
 import static org.apache.hadoop.hbase.HConstants.HFILE_BLOCK_CACHE_SIZE_KEY;
 
 import java.lang.management.MemoryUsage;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.Server;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.io.hfile.BlockCache;
-import org.apache.hadoop.hbase.io.hfile.CombinedBlockCache;
+import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.io.hfile.ResizableBlockCache;
-import org.apache.hadoop.hbase.io.util.MemorySizeUtil;
+import org.apache.hadoop.hbase.io.util.HeapMemorySizeUtil;
 import org.apache.hadoop.util.ReflectionUtils;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
- * Manages tuning of Heap memory using <code>HeapMemoryTuner</code>. Most part of the heap memory is
- * split between Memstores and BlockCache. This manager helps in tuning sizes of both these
- * dynamically, as per the R/W load on the servers.
+ * Manages tuning of Heap memory using <code>HeapMemoryTuner</code>.
  */
 @InterfaceAudience.Private
 public class HeapMemoryManager {
-  private static final Logger LOG = LoggerFactory.getLogger(HeapMemoryManager.class);
+  private static final Log LOG = LogFactory.getLog(HeapMemoryManager.class);
   private static final int CONVERT_TO_PERCENTAGE = 100;
-  private static final int CLUSTER_MINIMUM_MEMORY_THRESHOLD =
+  private static final int CLUSTER_MINIMUM_MEMORY_THRESHOLD = 
     (int) (CONVERT_TO_PERCENTAGE * HConstants.HBASE_CLUSTER_MINIMUM_MEMORY_THRESHOLD);
 
   public static final String BLOCK_CACHE_SIZE_MAX_RANGE_KEY = "hfile.block.cache.size.max.range";
   public static final String BLOCK_CACHE_SIZE_MIN_RANGE_KEY = "hfile.block.cache.size.min.range";
-  public static final String MEMSTORE_SIZE_MAX_RANGE_KEY =
+  public static final String MEMSTORE_SIZE_MAX_RANGE_KEY = 
       "hbase.regionserver.global.memstore.size.max.range";
-  public static final String MEMSTORE_SIZE_MIN_RANGE_KEY =
+  public static final String MEMSTORE_SIZE_MIN_RANGE_KEY = 
       "hbase.regionserver.global.memstore.size.min.range";
-  public static final String HBASE_RS_HEAP_MEMORY_TUNER_PERIOD =
+  public static final String HBASE_RS_HEAP_MEMORY_TUNER_PERIOD = 
       "hbase.regionserver.heapmemory.tuner.period";
   public static final int HBASE_RS_HEAP_MEMORY_TUNER_DEFAULT_PERIOD = 60 * 1000;
-  public static final String HBASE_RS_HEAP_MEMORY_TUNER_CLASS =
+  public static final String HBASE_RS_HEAP_MEMORY_TUNER_CLASS = 
       "hbase.regionserver.heapmemory.tuner.class";
 
   public static final float HEAP_OCCUPANCY_ERROR_VALUE = -0.0f;
@@ -72,11 +67,11 @@ public class HeapMemoryManager {
   private float blockCachePercent;
   private float blockCachePercentMinRange;
   private float blockCachePercentMaxRange;
+  private float l2BlockCachePercent;
 
   private float heapOccupancyPercent;
 
   private final ResizableBlockCache blockCache;
-  // TODO : remove this and mark regionServerAccounting as the observer directly
   private final FlushRequester memStoreFlusher;
   private final Server server;
   private final RegionServerAccounting regionServerAccounting;
@@ -91,7 +86,7 @@ public class HeapMemoryManager {
     // note that this initialization still isn't threadsafe, because updating a long isn't atomic.
     long tempMaxHeap = -1L;
     try {
-      final MemoryUsage usage = MemorySizeUtil.safeGetHeapMemoryUsage();
+      final MemoryUsage usage = HeapMemorySizeUtil.safeGetHeapMemoryUsage();
       if (usage != null) {
         tempMaxHeap = usage.getMax();
       }
@@ -100,14 +95,20 @@ public class HeapMemoryManager {
     }
   }
 
-  private MetricsHeapMemoryManager metricsHeapMemoryManager;
+  public static HeapMemoryManager create(Configuration conf, FlushRequester memStoreFlusher,
+                Server server, RegionServerAccounting regionServerAccounting) {
+    BlockCache blockCache = CacheConfig.instantiateBlockCache(conf);
+    if (blockCache instanceof ResizableBlockCache) {
+      return new HeapMemoryManager((ResizableBlockCache) blockCache, memStoreFlusher, server,
+                 regionServerAccounting);
+    }
+    return null;
+  }
 
-  private List<HeapMemoryTuneObserver> tuneObservers = new ArrayList<>();
-
-  HeapMemoryManager(BlockCache blockCache, FlushRequester memStoreFlusher,
+  HeapMemoryManager(ResizableBlockCache blockCache, FlushRequester memStoreFlusher,
                 Server server, RegionServerAccounting regionServerAccounting) {
     Configuration conf = server.getConfiguration();
-    this.blockCache = toResizableBlockCache(blockCache);
+    this.blockCache = blockCache;
     this.memStoreFlusher = memStoreFlusher;
     this.server = server;
     this.regionServerAccounting = regionServerAccounting;
@@ -116,23 +117,14 @@ public class HeapMemoryManager {
       HBASE_RS_HEAP_MEMORY_TUNER_DEFAULT_PERIOD);
     this.heapOccupancyLowWatermark = conf.getFloat(HConstants.HEAP_OCCUPANCY_LOW_WATERMARK_KEY,
       HConstants.DEFAULT_HEAP_OCCUPANCY_LOW_WATERMARK);
-    metricsHeapMemoryManager = new MetricsHeapMemoryManager();
-  }
-
-  private ResizableBlockCache toResizableBlockCache(BlockCache blockCache) {
-    if (blockCache instanceof CombinedBlockCache) {
-      return (ResizableBlockCache) ((CombinedBlockCache) blockCache).getFirstLevelCache();
-    } else {
-      return (ResizableBlockCache) blockCache;
-    }
   }
 
   private boolean doInit(Configuration conf) {
     boolean tuningEnabled = true;
-    globalMemStorePercent = MemorySizeUtil.getGlobalMemStoreHeapPercent(conf, false);
+    globalMemStorePercent = HeapMemorySizeUtil.getGlobalMemStorePercent(conf, false);
     blockCachePercent = conf.getFloat(HFILE_BLOCK_CACHE_SIZE_KEY,
         HConstants.HFILE_BLOCK_CACHE_SIZE_DEFAULT);
-    MemorySizeUtil.checkForClusterFreeHeapMemoryLimit(conf);
+    HeapMemorySizeUtil.checkForClusterFreeMemoryLimit(conf);
     // Initialize max and min range for memstore heap space
     globalMemStorePercentMinRange = conf.getFloat(MEMSTORE_SIZE_MIN_RANGE_KEY,
         globalMemStorePercent);
@@ -140,14 +132,14 @@ public class HeapMemoryManager {
         globalMemStorePercent);
     if (globalMemStorePercent < globalMemStorePercentMinRange) {
       LOG.warn("Setting " + MEMSTORE_SIZE_MIN_RANGE_KEY + " to " + globalMemStorePercent
-          + ", same value as " + MemorySizeUtil.MEMSTORE_SIZE_KEY
+          + ", same value as " + HeapMemorySizeUtil.MEMSTORE_SIZE_KEY
           + " because supplied value greater than initial memstore size value.");
       globalMemStorePercentMinRange = globalMemStorePercent;
       conf.setFloat(MEMSTORE_SIZE_MIN_RANGE_KEY, globalMemStorePercentMinRange);
     }
     if (globalMemStorePercent > globalMemStorePercentMaxRange) {
       LOG.warn("Setting " + MEMSTORE_SIZE_MAX_RANGE_KEY + " to " + globalMemStorePercent
-          + ", same value as " + MemorySizeUtil.MEMSTORE_SIZE_KEY
+          + ", same value as " + HeapMemorySizeUtil.MEMSTORE_SIZE_KEY
           + " because supplied value less than initial memstore size value.");
       globalMemStorePercentMaxRange = globalMemStorePercent;
       conf.setFloat(MEMSTORE_SIZE_MAX_RANGE_KEY, globalMemStorePercentMaxRange);
@@ -179,7 +171,8 @@ public class HeapMemoryManager {
     }
 
     int gml = (int) (globalMemStorePercentMaxRange * CONVERT_TO_PERCENTAGE);
-    int bcul = (int) ((blockCachePercentMinRange) * CONVERT_TO_PERCENTAGE);
+    this.l2BlockCachePercent = HeapMemorySizeUtil.getL2BlockCacheHeapPercent(conf);
+    int bcul = (int) ((blockCachePercentMinRange + l2BlockCachePercent) * CONVERT_TO_PERCENTAGE);
     if (CONVERT_TO_PERCENTAGE - (gml + bcul) < CLUSTER_MINIMUM_MEMORY_THRESHOLD) {
       throw new RuntimeException("Current heap configuration for MemStore and BlockCache exceeds "
           + "the threshold required for successful cluster operation. "
@@ -190,7 +183,7 @@ public class HeapMemoryManager {
           + blockCachePercentMinRange);
     }
     gml = (int) (globalMemStorePercentMinRange * CONVERT_TO_PERCENTAGE);
-    bcul = (int) ((blockCachePercentMaxRange) * CONVERT_TO_PERCENTAGE);
+    bcul = (int) ((blockCachePercentMaxRange + l2BlockCachePercent) * CONVERT_TO_PERCENTAGE);
     if (CONVERT_TO_PERCENTAGE - (gml + bcul) < CLUSTER_MINIMUM_MEMORY_THRESHOLD) {
       throw new RuntimeException("Current heap configuration for MemStore and BlockCache exceeds "
           + "the threshold required for successful cluster operation. "
@@ -204,10 +197,10 @@ public class HeapMemoryManager {
   }
 
   public void start(ChoreService service) {
-    LOG.info("Starting, tuneOn={}", this.tunerOn);
-    this.heapMemTunerChore = new HeapMemoryTunerChore();
-    service.scheduleChore(heapMemTunerChore);
-    if (tunerOn) {
+      LOG.info("Starting HeapMemoryTuner chore.");
+      this.heapMemTunerChore = new HeapMemoryTunerChore();
+      service.scheduleChore(heapMemTunerChore);
+      if (tunerOn) {
       // Register HeapMemoryTuner as a memstore flush listener
       memStoreFlusher.registerFlushRequestListener(heapMemTunerChore);
     }
@@ -215,12 +208,9 @@ public class HeapMemoryManager {
 
   public void stop() {
     // The thread is Daemon. Just interrupting the ongoing process.
-    LOG.info("Stopping");
-    this.heapMemTunerChore.shutdown(true);
-  }
-
-  public void registerTuneObserver(HeapMemoryTuneObserver observer) {
-    this.tuneObservers.add(observer);
+    LOG.info("Stopping HeapMemoryTuner chore.");
+    this.heapMemTunerChore.cancel(true);
+    
   }
 
   // Used by the test cases.
@@ -249,14 +239,12 @@ public class HeapMemoryManager {
       Class<? extends HeapMemoryTuner> tunerKlass = server.getConfiguration().getClass(
           HBASE_RS_HEAP_MEMORY_TUNER_CLASS, DefaultHeapMemoryTuner.class, HeapMemoryTuner.class);
       heapMemTuner = ReflectionUtils.newInstance(tunerKlass, server.getConfiguration());
-      tunerContext
-          .setOffheapMemStore(regionServerAccounting.isOffheap());
     }
 
     @Override
     protected void chore() {
       // Sample heap occupancy
-      final MemoryUsage usage = MemorySizeUtil.safeGetHeapMemoryUsage();
+      final MemoryUsage usage = HeapMemorySizeUtil.safeGetHeapMemoryUsage();
       if (usage != null) {
         heapOccupancyPercent = (float)usage.getUsed() / (float)usage.getCommitted();
       } else {
@@ -273,7 +261,7 @@ public class HeapMemoryManager {
             " is above heap occupancy alarm watermark (" + heapOccupancyLowWatermark + ")");
           alarming = true;
         }
-        metricsHeapMemoryManager.increaseAboveHeapOccupancyLowWatermarkCounter();
+
         triggerNow();
         try {
           // Need to sleep ourselves since we've told the chore's sleeper
@@ -302,26 +290,17 @@ public class HeapMemoryManager {
       // while remaining in the limits
       long curEvictCount;
       long curCacheMisCount;
-      long blockedFlushCnt;
-      long unblockedFlushCnt;
       curEvictCount = blockCache.getStats().getEvictedCount();
       tunerContext.setEvictCount(curEvictCount - evictCount);
       evictCount = curEvictCount;
       curCacheMisCount = blockCache.getStats().getMissCachingCount();
       tunerContext.setCacheMissCount(curCacheMisCount-cacheMissCount);
       cacheMissCount = curCacheMisCount;
-      blockedFlushCnt = blockedFlushCount.getAndSet(0);
-      tunerContext.setBlockedFlushCount(blockedFlushCnt);
-      metricsHeapMemoryManager.updateBlockedFlushCount(blockedFlushCnt);
-      unblockedFlushCnt = unblockedFlushCount.getAndSet(0);
-      tunerContext.setUnblockedFlushCount(unblockedFlushCnt);
-      metricsHeapMemoryManager.updateUnblockedFlushCount(unblockedFlushCnt);
-      // TODO : add support for offheap metrics
-      tunerContext.setCurBlockCacheUsed((float) blockCache.getCurrentSize() / maxHeapSize);
-      metricsHeapMemoryManager.setCurBlockCacheSizeGauge(blockCache.getCurrentSize());
-      long globalMemstoreHeapSize = regionServerAccounting.getGlobalMemStoreHeapSize();
-      tunerContext.setCurMemStoreUsed((float) globalMemstoreHeapSize / maxHeapSize);
-      metricsHeapMemoryManager.setCurMemStoreSizeGauge(globalMemstoreHeapSize);
+      tunerContext.setBlockedFlushCount(blockedFlushCount.getAndSet(0));
+      tunerContext.setUnblockedFlushCount(unblockedFlushCount.getAndSet(0));
+      tunerContext.setCurBlockCacheUsed((float)blockCache.getCurrentSize() / maxHeapSize);
+      tunerContext.setCurMemStoreUsed(
+                 (float)regionServerAccounting.getGlobalMemstoreSize() / maxHeapSize);
       tunerContext.setCurBlockCacheSize(blockCachePercent);
       tunerContext.setCurMemStoreSize(globalMemStorePercent);
       TunerResult result = null;
@@ -331,7 +310,7 @@ public class HeapMemoryManager {
         LOG.error("Exception thrown from the HeapMemoryTuner implementation", t);
       }
       if (result != null && result.needsTuning()) {
-        float memstoreSize = result.getMemStoreSize();
+        float memstoreSize = result.getMemstoreSize();
         float blockCacheSize = result.getBlockCacheSize();
         LOG.debug("From HeapMemoryTuner new memstoreSize: " + memstoreSize
             + ". new blockCacheSize: " + blockCacheSize);
@@ -356,60 +335,40 @@ public class HeapMemoryManager {
           blockCacheSize = blockCachePercentMaxRange;
         }
         int gml = (int) (memstoreSize * CONVERT_TO_PERCENTAGE);
-        int bcul = (int) ((blockCacheSize) * CONVERT_TO_PERCENTAGE);
+        int bcul = (int) ((blockCacheSize + l2BlockCachePercent) * CONVERT_TO_PERCENTAGE);
         if (CONVERT_TO_PERCENTAGE - (gml + bcul) < CLUSTER_MINIMUM_MEMORY_THRESHOLD) {
           LOG.info("Current heap configuration from HeapMemoryTuner exceeds "
               + "the threshold required for successful cluster operation. "
-              + "The combined value cannot exceed 0.8. " + MemorySizeUtil.MEMSTORE_SIZE_KEY
+              + "The combined value cannot exceed 0.8. " + HeapMemorySizeUtil.MEMSTORE_SIZE_KEY
               + " is " + memstoreSize + " and " + HFILE_BLOCK_CACHE_SIZE_KEY + " is "
               + blockCacheSize);
           // TODO can adjust the value so as not exceed 80%. Is that correct? may be.
         } else {
-          int memStoreDeltaSize =
-              (int) ((memstoreSize - globalMemStorePercent) * CONVERT_TO_PERCENTAGE);
-          int blockCacheDeltaSize =
-              (int) ((blockCacheSize - blockCachePercent) * CONVERT_TO_PERCENTAGE);
-          metricsHeapMemoryManager.updateMemStoreDeltaSizeHistogram(memStoreDeltaSize);
-          metricsHeapMemoryManager.updateBlockCacheDeltaSizeHistogram(blockCacheDeltaSize);
           long newBlockCacheSize = (long) (maxHeapSize * blockCacheSize);
-          // we could have got an increase or decrease in size for the offheap memstore
-          // also if the flush had happened due to heap overhead. In that case it is ok
-          // to adjust the onheap memstore limit configs
           long newMemstoreSize = (long) (maxHeapSize * memstoreSize);
           LOG.info("Setting block cache heap size to " + newBlockCacheSize
               + " and memstore heap size to " + newMemstoreSize);
           blockCachePercent = blockCacheSize;
           blockCache.setMaxSize(newBlockCacheSize);
           globalMemStorePercent = memstoreSize;
-          // Internally sets it to RegionServerAccounting
-          // TODO : Set directly on RSAccounting??
-          memStoreFlusher.setGlobalMemStoreLimit(newMemstoreSize);
-          for (HeapMemoryTuneObserver observer : tuneObservers) {
-            // Risky.. If this newMemstoreSize decreases we reduce the count in offheap chunk pool
-            observer.onHeapMemoryTune(newMemstoreSize, newBlockCacheSize);
-          }
+          memStoreFlusher.setGlobalMemstoreLimit(newMemstoreSize);
         }
-      } else {
-        metricsHeapMemoryManager.increaseTunerDoNothingCounter();
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("No changes made by HeapMemoryTuner.");
-        }
+      } else if (LOG.isDebugEnabled()) {
+        LOG.debug("No changes made by HeapMemoryTuner.");
       }
     }
 
     @Override
     public void flushRequested(FlushType type, Region region) {
       switch (type) {
-      case ABOVE_ONHEAP_HIGHER_MARK:
+      case ABOVE_HIGHER_MARK:
         blockedFlushCount.incrementAndGet();
         break;
-      case ABOVE_ONHEAP_LOWER_MARK:
+      case ABOVE_LOWER_MARK:
         unblockedFlushCount.incrementAndGet();
         break;
-      // Removed the counting of the offheap related flushes (after reviews). Will add later if
-      // needed
       default:
-        // In case of any other flush don't do any action.
+        // In case of normal flush don't do any action.
         break;
       }
     }
@@ -429,7 +388,6 @@ public class HeapMemoryManager {
     private float curMemStoreUsed;
     private float curMemStoreSize;
     private float curBlockCacheSize;
-    private boolean offheapMemstore;
 
     public long getBlockedFlushCount() {
       return blockedFlushCount;
@@ -494,14 +452,6 @@ public class HeapMemoryManager {
     public void setCurMemStoreUsed(float d) {
         this.curMemStoreUsed = d;
     }
-
-    public void setOffheapMemStore(boolean offheapMemstore) {
-      this.offheapMemstore = offheapMemstore;
-    }
-
-    public boolean isOffheapMemStore() {
-      return this.offheapMemstore;
-    }
   }
 
   /**
@@ -517,11 +467,11 @@ public class HeapMemoryManager {
       this.needsTuning = needsTuning;
     }
 
-    public float getMemStoreSize() {
+    public float getMemstoreSize() {
       return memstoreSize;
     }
 
-    public void setMemStoreSize(float memstoreSize) {
+    public void setMemstoreSize(float memstoreSize) {
       this.memstoreSize = memstoreSize;
     }
 
@@ -536,18 +486,5 @@ public class HeapMemoryManager {
     public boolean needsTuning() {
       return needsTuning;
     }
-  }
-
-  /**
-   * Every class that wants to observe heap memory tune actions must implement this interface.
-   */
-  public static interface HeapMemoryTuneObserver {
-
-    /**
-     * This method would be called by HeapMemoryManger when a heap memory tune action took place.
-     * @param newMemstoreSize The newly calculated global memstore size
-     * @param newBlockCacheSize The newly calculated global blockcache size
-     */
-    void onHeapMemoryTune(long newMemstoreSize, long newBlockCacheSize);
   }
 }

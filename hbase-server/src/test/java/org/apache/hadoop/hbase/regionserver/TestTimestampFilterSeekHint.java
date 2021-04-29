@@ -1,4 +1,5 @@
-/**
+/*
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,11 +21,9 @@ package org.apache.hadoop.hbase.regionserver;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
-import org.apache.commons.lang3.RandomStringUtils;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.commons.lang.RandomStringUtils;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.filter.TimestampsFilter;
@@ -32,7 +31,6 @@ import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
@@ -41,11 +39,7 @@ import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 @Category({RegionServerTests.class, LargeTests.class})
 public class TestTimestampFilterSeekHint {
 
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestTimestampFilterSeekHint.class);
-
-  private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
+  private final static HBaseTestingUtility TEST_UTIL = HBaseTestingUtility.createLocalHTU();
   private final static String RK = "myRK";
   private final static byte[] RK_BYTES = Bytes.toBytes(RK);
 
@@ -95,14 +89,12 @@ public class TestTimestampFilterSeekHint {
 
   @Before
   public void prepareRegion() throws IOException {
-    ColumnFamilyDescriptor columnFamilyDescriptor =
-      ColumnFamilyDescriptorBuilder
-        .newBuilder(Bytes.toBytes(FAMILY))
-        .setBlocksize(1024)
-        .setMaxVersions(MAX_VERSIONS)
-        .build();
-    region = TEST_UTIL
-      .createTestRegion("TestTimestampFilterSeekHint" + regionCount++, columnFamilyDescriptor);
+    region =
+        TEST_UTIL.createTestRegion("TestTimestampFilterSeekHint" + regionCount++,
+            new HColumnDescriptor(FAMILY)
+                .setBlocksize(1024)
+                .setMaxVersions(MAX_VERSIONS)
+        );
 
     for (long i = 0; i <MAX_VERSIONS - 2; i++) {
       Put p = new Put(RK_BYTES, i);

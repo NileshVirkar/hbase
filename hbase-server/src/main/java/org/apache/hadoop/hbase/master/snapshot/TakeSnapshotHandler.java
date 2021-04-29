@@ -17,20 +17,23 @@
  */
 package org.apache.hadoop.hbase.master.snapshot;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.errorhandling.ForeignException;
 import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
 import org.apache.hadoop.hbase.errorhandling.ForeignExceptionSnare;
@@ -39,26 +42,21 @@ import org.apache.hadoop.hbase.executor.EventType;
 import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.master.MetricsSnapshot;
 import org.apache.hadoop.hbase.master.SnapshotSentinel;
-import org.apache.hadoop.hbase.master.locking.LockManager;
-import org.apache.hadoop.hbase.master.locking.LockManager.MasterLock;
+import org.apache.hadoop.hbase.master.TableLockManager;
+import org.apache.hadoop.hbase.master.TableLockManager.TableLock;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.monitoring.TaskMonitor;
-import org.apache.hadoop.hbase.procedure2.LockType;
+import org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription;
 import org.apache.hadoop.hbase.snapshot.ClientSnapshotDescriptionUtils;
+import org.apache.hadoop.hbase.snapshot.SnapshotCreationException;
 import org.apache.hadoop.hbase.snapshot.SnapshotDescriptionUtils;
 import org.apache.hadoop.hbase.snapshot.SnapshotManifest;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
+import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.zookeeper.KeeperException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-
-import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
 
 /**
  * A handler for taking snapshots from the master.
@@ -70,7 +68,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.Snapshot
 @InterfaceAudience.Private
 public abstract class TakeSnapshotHandler extends EventHandler implements SnapshotSentinel,
     ForeignExceptionSnare {
-  private static final Logger LOG = LoggerFactory.getLogger(TakeSnapshotHandler.class);
+  private static final Log LOG = LogFactory.getLog(TakeSnapshotHandler.class);
 
   private volatile boolean finished;
 
@@ -86,13 +84,14 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
   protected final Path workingDir;
   private final MasterSnapshotVerifier verifier;
   protected final ForeignExceptionDispatcher monitor;
-  private final LockManager.MasterLock tableLock;
+  protected final TableLockManager tableLockManager;
+  protected final TableLock tableLock;
   protected final MonitoredTask status;
   protected final TableName snapshotTable;
   protected final SnapshotManifest snapshotManifest;
   protected final SnapshotManager snapshotManager;
 
-  protected TableDescriptor htd;
+  protected HTableDescriptor htd;
 
   /**
    * @param snapshot descriptor of the snapshot to take
@@ -124,9 +123,10 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
     this.workingDirFs = this.workingDir.getFileSystem(this.conf);
     this.monitor = new ForeignExceptionDispatcher(snapshot.getName());
 
-    this.tableLock = master.getLockManager().createMasterLock(
-        snapshotTable, LockType.EXCLUSIVE,
-        this.getClass().getName() + ": take snapshot " + snapshot.getName());
+    this.tableLockManager = master.getTableLockManager();
+    this.tableLock = this.tableLockManager.writeLock(
+        snapshotTable,
+        EventType.C_M_SNAPSHOT_TABLE.toString());
 
     // prepare the verify
     this.verifier = new MasterSnapshotVerifier(masterServices, snapshot, workingDirFs);
@@ -134,21 +134,17 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
     this.status = TaskMonitor.get().createStatus(
       "Taking " + snapshot.getType() + " snapshot on table: " + snapshotTable);
     this.status.enableStatusJournal(true);
+
     this.snapshotManifest =
         SnapshotManifest.create(conf, rootFs, workingDir, snapshot, monitor, status);
   }
 
-  private TableDescriptor loadTableDescriptor()
-      throws IOException {
-    TableDescriptor htd =
+  private HTableDescriptor loadTableDescriptor()
+      throws FileNotFoundException, IOException {
+    HTableDescriptor htd =
       this.master.getTableDescriptors().get(snapshotTable);
     if (htd == null) {
-      throw new IOException("TableDescriptor missing for " + snapshotTable);
-    }
-    if (htd.getMaxFileSize()==-1 &&
-        this.snapshot.getMaxFileSize()>0) {
-      htd = TableDescriptorBuilder.newBuilder(htd).setValue(TableDescriptorBuilder.MAX_FILESIZE,
-        Long.toString(this.snapshot.getMaxFileSize())).build();
+      throw new IOException("HTableDescriptor missing for " + snapshotTable);
     }
     return htd;
   }
@@ -156,14 +152,18 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
   @Override
   public TakeSnapshotHandler prepare() throws Exception {
     super.prepare();
-    // after this, you should ensure to release this lock in case of exceptions
-    this.tableLock.acquire();
+    this.tableLock.acquire(); // after this, you should ensure to release this lock in
+                              // case of exceptions
+    boolean success = false;
     try {
       this.htd = loadTableDescriptor(); // check that .tableinfo is present
-    } catch (Exception e) {
-      this.tableLock.release();
-      throw e;
+      success = true;
+    } finally {
+      if (!success) {
+        releaseTableLock();
+      }
     }
+
     return this;
   }
 
@@ -178,16 +178,8 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
     String msg = "Running " + snapshot.getType() + " table snapshot " + snapshot.getName() + " "
         + eventType + " on table " + snapshotTable;
     LOG.info(msg);
-    MasterLock tableLockToRelease = this.tableLock;
     status.setStatus(msg);
     try {
-      if (downgradeToSharedTableLock()) {
-        // release the exclusive lock and hold the shared lock instead
-        tableLockToRelease = master.getLockManager().createMasterLock(snapshotTable,
-          LockType.SHARED, this.getClass().getName() + ": take snapshot " + snapshot.getName());
-        tableLock.release();
-        tableLockToRelease.acquire();
-      }
       // If regions move after this meta scan, the region specific snapshot should fail, triggering
       // an external exception that gets captured here.
 
@@ -196,13 +188,13 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
       snapshotManifest.addTableDescriptor(this.htd);
       monitor.rethrowException();
 
-      List<Pair<RegionInfo, ServerName>> regionsAndLocations;
+      List<Pair<HRegionInfo, ServerName>> regionsAndLocations;
       if (TableName.META_TABLE_NAME.equals(snapshotTable)) {
-        regionsAndLocations = MetaTableLocator.getMetaRegionsAndLocations(
+        regionsAndLocations = new MetaTableLocator().getMetaRegionsAndLocations(
           server.getZooKeeper());
       } else {
         regionsAndLocations = MetaTableAccessor.getTableRegionsAndLocations(
-          server.getConnection(), snapshotTable, false);
+          server.getZooKeeper(), server.getConnection(), snapshotTable, false);
       }
 
       // run the snapshot
@@ -210,10 +202,10 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
       monitor.rethrowException();
 
       // extract each pair to separate lists
-      Set<String> serverNames = new HashSet<>();
-      for (Pair<RegionInfo, ServerName> p : regionsAndLocations) {
+      Set<String> serverNames = new HashSet<String>();
+      for (Pair<HRegionInfo, ServerName> p : regionsAndLocations) {
         if (p != null && p.getFirst() != null && p.getSecond() != null) {
-          RegionInfo hri = p.getFirst();
+          HRegionInfo hri = p.getFirst();
           if (hri.isOffline() && (hri.isSplit() || hri.isSplitParent())) continue;
           serverNames.add(p.getSecond().toString());
         }
@@ -228,17 +220,11 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
       verifier.verifySnapshot(this.workingDir, serverNames);
 
       // complete the snapshot, atomically moving from tmp to .snapshot dir.
-      SnapshotDescriptionUtils.completeSnapshot(this.snapshotDir, this.workingDir, this.rootFs,
-        this.workingDirFs, this.conf);
-      finished = true;
+      completeSnapshot(this.snapshotDir, this.workingDir, this.rootFs, this.workingDirFs);
       msg = "Snapshot " + snapshot.getName() + " of table " + snapshotTable + " completed";
       status.markComplete(msg);
       LOG.info(msg);
       metricsSnapshot.addSnapshot(status.getCompletionTimestamp() - status.getStartTime());
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost()
-            .postCompletedSnapshotAction(ProtobufUtil.createSnapshotDesc(snapshot), this.htd);
-      }
     } catch (Exception e) { // FindBugs: REC_CATCH_EXCEPTION
       status.abort("Failed to complete snapshot " + snapshot.getName() + " on table " +
           snapshotTable + " because " + e.getMessage());
@@ -263,32 +249,51 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
       if (LOG.isDebugEnabled()) {
         LOG.debug("Table snapshot journal : \n" + status.prettyPrintJournal());
       }
-      tableLockToRelease.release();
+      releaseTableLock();
+    }
+  }
+
+  protected void releaseTableLock() {
+    if (this.tableLock != null) {
+      try {
+        this.tableLock.release();
+      } catch (IOException ex) {
+        LOG.warn("Could not release the table lock", ex);
+      }
     }
   }
 
   /**
-   * When taking snapshot, first we must acquire the exclusive table lock to confirm that there are
-   * no ongoing merge/split procedures. But later, we should try our best to release the exclusive
-   * lock as this may hurt the availability, because we need to hold the shared lock when assigning
-   * regions.
-   * <p/>
-   * See HBASE-21480 for more details.
+   * Reset the manager to allow another snapshot to proceed.
+   * Commits the snapshot process by moving the working snapshot
+   * to the finalized filepath
+   *
+   * @param snapshotDir The file path of the completed snapshots
+   * @param workingDir  The file path of the in progress snapshots
+   * @param fs The file system of the completed snapshots
+   * @param workingDirFs The file system of the in progress snapshots
+   *
+   * @throws SnapshotCreationException if the snapshot could not be moved
+   * @throws IOException the filesystem could not be reached
    */
-  protected abstract boolean downgradeToSharedTableLock();
+  public void completeSnapshot(Path snapshotDir, Path workingDir, FileSystem fs,
+      FileSystem workingDirFs) throws SnapshotCreationException, IOException {
+    SnapshotDescriptionUtils.completeSnapshot(snapshotDir, workingDir, fs, workingDirFs, conf);
+    finished = true;
+  }
 
   /**
    * Snapshot the specified regions
    */
-  protected abstract void snapshotRegions(List<Pair<RegionInfo, ServerName>> regions)
+  protected abstract void snapshotRegions(List<Pair<HRegionInfo, ServerName>> regions)
       throws IOException, KeeperException;
 
   /**
    * Take a snapshot of the specified disabled region
    */
-  protected void snapshotDisabledRegion(final RegionInfo regionInfo)
+  protected void snapshotDisabledRegion(final HRegionInfo regionInfo)
       throws IOException {
-    snapshotManifest.addRegion(CommonFSUtils.getTableDir(rootDir, snapshotTable), regionInfo);
+    snapshotManifest.addRegion(FSUtils.getTableDir(rootDir, snapshotTable), regionInfo);
     monitor.rethrowException();
     status.setStatus("Completed referencing HFiles for offline region " + regionInfo.toString() +
         " of table: " + snapshotTable);
@@ -344,4 +349,5 @@ public abstract class TakeSnapshotHandler extends EventHandler implements Snapsh
   public ForeignException getException() {
     return monitor.getException();
   }
+
 }

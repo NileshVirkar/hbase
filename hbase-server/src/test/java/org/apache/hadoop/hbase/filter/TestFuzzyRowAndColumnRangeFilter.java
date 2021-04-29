@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -7,13 +7,14 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 package org.apache.hadoop.hbase.filter;
 
@@ -23,10 +24,12 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Put;
@@ -34,38 +37,23 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.testclassification.FilterTests;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.junit.rules.TestName;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
  */
-@Category({FilterTests.class, MediumTests.class})
+@Category(MediumTests.class)
 public class TestFuzzyRowAndColumnRangeFilter {
-
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestFuzzyRowAndColumnRangeFilter.class);
-
   private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
-  private static final Logger LOG = LoggerFactory.getLogger(TestFuzzyRowAndColumnRangeFilter.class);
-
-  @Rule
-  public TestName name = new TestName();
+  private static final Log LOG = LogFactory.getLog(TestFuzzyRowAndColumnRangeFilter.class);
 
   /**
    * @throws java.lang.Exception
@@ -102,7 +90,8 @@ public class TestFuzzyRowAndColumnRangeFilter {
   @Test
   public void Test() throws Exception {
     String cf = "f";
-    Table ht = TEST_UTIL.createTable(TableName.valueOf(name.getMethodName()),
+    String table = "TestFuzzyAndColumnRangeFilterClient";
+    Table ht = TEST_UTIL.createTable(TableName.valueOf(table),
             Bytes.toBytes(cf), Integer.MAX_VALUE);
 
     // 10 byte row key - (2 bytes 4 bytes 4 bytes)
@@ -125,7 +114,7 @@ public class TestFuzzyRowAndColumnRangeFilter {
 
           Put p = new Put(rk);
           p.setDurability(Durability.SKIP_WAL);
-          p.addColumn(Bytes.toBytes(cf), cq, Bytes.toBytes(c));
+          p.add(cf.getBytes(), cq, Bytes.toBytes(c));
           ht.put(p);
           LOG.info("Inserting: rk: " + Bytes.toStringBinary(rk) + " cq: "
                   + Bytes.toStringBinary(cq));
@@ -154,7 +143,7 @@ public class TestFuzzyRowAndColumnRangeFilter {
 
     byte[] mask = new byte[] {0 , 0, 1, 1, 1, 1, 0, 0, 0, 0};
 
-    Pair<byte[], byte[]> pair = new Pair<>(fuzzyKey, mask);
+    Pair<byte[], byte[]> pair = new Pair<byte[], byte[]>(fuzzyKey, mask);
     FuzzyRowFilter fuzzyRowFilter = new FuzzyRowFilter(Lists.newArrayList(pair));
     ColumnRangeFilter columnRangeFilter = new ColumnRangeFilter(Bytes.toBytes(cqStart), true
             , Bytes.toBytes(4), true);
@@ -167,12 +156,12 @@ public class TestFuzzyRowAndColumnRangeFilter {
   private void runScanner(Table hTable, int expectedSize, Filter... filters) throws IOException {
     String cf = "f";
     Scan scan = new Scan();
-    scan.addFamily(Bytes.toBytes(cf));
+    scan.addFamily(cf.getBytes());
     FilterList filterList = new FilterList(filters);
     scan.setFilter(filterList);
 
     ResultScanner scanner = hTable.getScanner(scan);
-    List<Cell> results = new ArrayList<>();
+    List<Cell> results = new ArrayList<Cell>();
     Result result;
     long timeBeforeScan = System.currentTimeMillis();
     while ((result = scanner.next()) != null) {

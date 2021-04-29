@@ -25,10 +25,9 @@ import java.util.List;
 import java.util.Map.Entry;
 import java.util.TreeMap;
 import java.util.TreeSet;
-
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.Bytes.ByteArrayComparator;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ArrayListMultimap;
@@ -53,7 +52,7 @@ import org.apache.hbase.thirdparty.com.google.common.collect.TreeMultimap;
  */
 @InterfaceAudience.Private
 public class RegionSplitCalculator<R extends KeyRange> {
-  private static final Logger LOG = LoggerFactory.getLogger(RegionSplitCalculator.class);
+  private static final Log LOG = LogFactory.getLog(RegionSplitCalculator.class);
 
   private final Comparator<R> rangeCmp;
   /**
@@ -62,7 +61,7 @@ public class RegionSplitCalculator<R extends KeyRange> {
    * Invariant: once populated this has 0 entries if empty or at most n+1 values
    * where n == number of added ranges.
    */
-  private final TreeSet<byte[]> splits = new TreeSet<>(BYTES_COMPARATOR);
+  private final TreeSet<byte[]> splits = new TreeSet<byte[]>(BYTES_COMPARATOR);
 
   /**
    * This is a map from start key to regions with the same start key.
@@ -115,7 +114,6 @@ public class RegionSplitCalculator<R extends KeyRange> {
     byte[] start = range.getStartKey();
     byte[] end = specialEndKey(range);
 
-    // No need to use Arrays.equals because ENDKEY is null
     if (end != ENDKEY && Bytes.compareTo(start, end) > 0) {
       // don't allow backwards edges
       LOG.debug("attempted to add backwards edge: " + Bytes.toString(start)
@@ -177,11 +175,11 @@ public class RegionSplitCalculator<R extends KeyRange> {
    */
   public static <R extends KeyRange> List<R>
       findBigRanges(Collection<R> bigOverlap, int count) {
-    List<R> bigRanges = new ArrayList<>();
+    List<R> bigRanges = new ArrayList<R>();
 
     // The key is the count of overlaps,
     // The value is a list of ranges that have that many overlaps
-    TreeMap<Integer, List<R>> overlapRangeMap = new TreeMap<>();
+    TreeMap<Integer, List<R>> overlapRangeMap = new TreeMap<Integer, List<R>>();
     for (R r: bigOverlap) {
       // Calculates the # of overlaps for each region
       // and populates rangeOverlapMap
@@ -206,7 +204,7 @@ public class RegionSplitCalculator<R extends KeyRange> {
         Integer key = Integer.valueOf(overlappedRegions);
         List<R> ranges = overlapRangeMap.get(key);
         if (ranges == null) {
-          ranges = new ArrayList<>();
+          ranges = new ArrayList<R>();
           overlapRangeMap.put(key, ranges);
         }
         ranges.add(r);

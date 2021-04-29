@@ -22,10 +22,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.thrift.CallQueue.Call;
 import org.apache.hadoop.hbase.util.Threads;
 import org.apache.thrift.TException;
 import org.apache.thrift.TProcessor;
@@ -36,9 +38,7 @@ import org.apache.thrift.transport.TServerTransport;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
@@ -100,7 +100,7 @@ public class TBoundedThreadPoolServer extends TServer {
    */
   public static final int TIME_TO_WAIT_AFTER_SHUTDOWN_MS = 5000;
 
-  private static final Logger LOG = LoggerFactory.getLogger(
+  private static final Log LOG = LogFactory.getLog(
       TBoundedThreadPoolServer.class.getName());
 
   private final CallQueue callQueue;
@@ -130,7 +130,7 @@ public class TBoundedThreadPoolServer extends TServer {
   }
 
   /** Executor service for handling client connections */
-  private ThreadPoolExecutor executorService;
+  private ExecutorService executorService;
 
   /** Flag for stopping the server */
   private volatile boolean stopped;
@@ -140,24 +140,20 @@ public class TBoundedThreadPoolServer extends TServer {
   public TBoundedThreadPoolServer(Args options, ThriftMetrics metrics) {
     super(options);
 
-    int minWorkerThreads = options.minWorkerThreads;
-    int maxWorkerThreads = options.maxWorkerThreads;
     if (options.maxQueuedRequests > 0) {
       this.callQueue = new CallQueue(
-          new LinkedBlockingQueue<>(options.maxQueuedRequests), metrics);
-      minWorkerThreads = maxWorkerThreads;
+          new LinkedBlockingQueue<Call>(options.maxQueuedRequests), metrics);
     } else {
-      this.callQueue = new CallQueue(new SynchronousQueue<>(), metrics);
+      this.callQueue = new CallQueue(new SynchronousQueue<Call>(), metrics);
     }
 
     ThreadFactoryBuilder tfb = new ThreadFactoryBuilder();
     tfb.setDaemon(true);
     tfb.setNameFormat("thrift-worker-%d");
     executorService =
-        new THBaseThreadPoolExecutor(minWorkerThreads,
-            maxWorkerThreads, options.threadKeepAliveTimeSec,
+        new THBaseThreadPoolExecutor(options.minWorkerThreads,
+            options.maxWorkerThreads, options.threadKeepAliveTimeSec,
             TimeUnit.SECONDS, this.callQueue, tfb.build(), metrics);
-    executorService.allowCoreThreadTimeOut(true);
     serverOptions = options;
   }
 
@@ -259,7 +255,7 @@ public class TBoundedThreadPoolServer extends TServer {
     serverTransport_.interrupt();
   }
 
-  private final class ClientConnnection implements Runnable {
+  private class ClientConnnection implements Runnable {
 
     private TTransport client;
 

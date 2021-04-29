@@ -22,16 +22,15 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.Stoppable;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.NonceKey;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Implementation of nonce manager that stores nonces in a hash map and cleans them up after
@@ -40,7 +39,7 @@ import org.slf4j.LoggerFactory;
 @InterfaceAudience.Private
 public class ServerNonceManager {
   public static final String HASH_NONCE_GRACE_PERIOD_KEY = "hbase.server.hashNonce.gracePeriod";
-  private static final Logger LOG = LoggerFactory.getLogger(ServerNonceManager.class);
+  private static final Log LOG = LogFactory.getLog(ServerNonceManager.class);
 
   /** The time to wait in an extremely unlikely case of a conflict with a running op.
    * Only here so that tests could override it and not wait. */
@@ -95,7 +94,11 @@ public class ServerNonceManager {
     }
 
     public boolean isExpired(long minRelevantTime) {
-      return getActivityTime() < (minRelevantTime & (~0L >>> 3));
+      return getActivityTime() < (minRelevantTime & (~0l >>> 3));
+    }
+
+    private long getActivityTime() {
+      return this.data >>> 3;
     }
 
     public void setMvcc(long mvcc) {
@@ -104,10 +107,6 @@ public class ServerNonceManager {
 
     public long getMvcc() {
       return this.mvcc;
-    }
-
-    private long getActivityTime() {
-      return this.data >>> 3;
     }
   }
 
@@ -119,7 +118,8 @@ public class ServerNonceManager {
    * which is a realistic worst case. If it's much worse, we could use some sort of memory
    * limit and cleanup.
    */
-  private ConcurrentHashMap<NonceKey, OperationContext> nonces = new ConcurrentHashMap<>();
+  private ConcurrentHashMap<NonceKey, OperationContext> nonces =
+      new ConcurrentHashMap<NonceKey, OperationContext>();
 
   private int deleteNonceGracePeriod;
 

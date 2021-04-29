@@ -1,4 +1,6 @@
 /**
+ * Copyright The Apache Software Foundation
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -25,29 +27,31 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
-import java.util.concurrent.atomic.LongAdder;
-import org.apache.hadoop.hbase.io.hfile.BlockCacheFactory;
+import java.util.concurrent.atomic.AtomicLong;
+import org.apache.commons.collections.map.LinkedMap;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.io.hfile.BlockCacheKey;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.io.hfile.CacheConfig;
+import org.apache.hadoop.hbase.io.hfile.bucket.BucketCache.BucketEntry;
 
 import org.apache.hbase.thirdparty.com.google.common.base.MoreObjects;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.MinMaxPriorityQueue;
 import org.apache.hbase.thirdparty.com.google.common.primitives.Ints;
-import org.apache.hbase.thirdparty.org.apache.commons.collections4.map.LinkedMap;
 
 /**
- * This class is used to allocate a block with specified size and free the block when evicting. It
- * manages an array of buckets, each bucket is associated with a size and caches elements up to this
- * size. For a completely empty bucket, this size could be re-specified dynamically.
- * <p/>
+ * This class is used to allocate a block with specified size and free the block
+ * when evicting. It manages an array of buckets, each bucket is associated with
+ * a size and caches elements up to this size. For a completely empty bucket, this
+ * size could be re-specified dynamically.
+ *
  * This class is not thread safe.
  */
 @InterfaceAudience.Private
 public final class BucketAllocator {
-  private static final Logger LOG = LoggerFactory.getLogger(BucketAllocator.class);
+  private static final Log LOG = LogFactory.getLog(BucketAllocator.class);
 
   public final static class Bucket {
     private long baseOffset;
@@ -308,7 +312,7 @@ public final class BucketAllocator {
     this.bucketSizes = bucketSizes == null ? DEFAULT_BUCKET_SIZES : bucketSizes;
     Arrays.sort(this.bucketSizes);
     this.bigItemSize = Ints.max(this.bucketSizes);
-    this.bucketCapacity = FEWEST_ITEMS_IN_BUCKET * (long) bigItemSize;
+    this.bucketCapacity = (long) FEWEST_ITEMS_IN_BUCKET * bigItemSize;
     buckets = new Bucket[(int) (availableSpace / bucketCapacity)];
     if (buckets.length < this.bucketSizes.length)
       throw new BucketAllocatorException("Bucket allocator size too small (" + buckets.length +
@@ -340,7 +344,7 @@ public final class BucketAllocator {
    * @throws BucketAllocatorException
    */
   BucketAllocator(long availableSpace, int[] bucketSizes, Map<BlockCacheKey, BucketEntry> map,
-      LongAdder realCacheSize) throws BucketAllocatorException {
+      AtomicLong realCacheSize) throws BucketAllocatorException {
     this(availableSpace, bucketSizes);
 
     // each bucket has an offset, sizeindex. probably the buckets are too big
@@ -375,14 +379,13 @@ public final class BucketAllocator {
       }
       Bucket b = buckets[bucketNo];
       if (reconfigured[bucketNo]) {
-        if (b.sizeIndex() != bucketSizeIndex) {
-          throw new BucketAllocatorException("Inconsistent allocation in bucket map;");
-        }
-      } else {
-        if (!b.isCompletelyFree()) {
+        if (b.sizeIndex() != bucketSizeIndex)
           throw new BucketAllocatorException(
-              "Reconfiguring bucket " + bucketNo + " but it's already allocated; corrupt data");
-        }
+              "Inconsistent allocation in bucket map;");
+      } else {
+        if (!b.isCompletelyFree())
+          throw new BucketAllocatorException("Reconfiguring bucket "
+              + bucketNo + " but it's already allocated; corrupt data");
         // Need to remove the bucket from whichever list it's currently in at
         // the moment...
         BucketSizeInfo bsi = bucketSizeInfos[bucketSizeIndex];
@@ -391,19 +394,19 @@ public final class BucketAllocator {
         bsi.instantiateBucket(b);
         reconfigured[bucketNo] = true;
       }
-      realCacheSize.add(foundLen);
+      realCacheSize.addAndGet(foundLen);
       buckets[bucketNo].addAllocation(foundOffset);
       usedSize += buckets[bucketNo].getItemAllocationSize();
       bucketSizeInfos[bucketSizeIndex].blockAllocated(b);
     }
 
     if (sizeNotMatchedCount > 0) {
-      LOG.warn("There are " + sizeNotMatchedCount + " blocks which can't be rebuilt because " +
-        "there is no matching bucket size for these blocks");
+      LOG.warn("There are " + sizeNotMatchedCount + " blocks which can't be rebuilt because "
+          + "there is no matching bucket size for these blocks");
     }
     if (insufficientCapacityCount > 0) {
       LOG.warn("There are " + insufficientCapacityCount + " blocks which can't be rebuilt - "
-        + "did you shrink the cache?");
+          + "did you shrink the cache?");
     }
   }
 
@@ -444,7 +447,7 @@ public final class BucketAllocator {
     BucketSizeInfo bsi = roundUpToBucketSizeInfo(blockSize);
     if (bsi == null) {
       throw new BucketAllocatorException("Allocation too big size=" + blockSize +
-        "; adjust BucketCache sizes " + BlockCacheFactory.BUCKET_CACHE_BUCKETS_KEY +
+        "; adjust BucketCache sizes " + CacheConfig.BUCKET_CACHE_BUCKETS_KEY +
         " to accomodate if size seems reasonable and you want it cached.");
     }
     long offset = bsi.allocateBlock();

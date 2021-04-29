@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,16 +22,20 @@ import static org.junit.Assert.assertEquals;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.AuthUtil;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.Coprocessor;
-import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableNameTestRule;
 import org.apache.hadoop.hbase.TableNotFoundException;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Delete;
@@ -42,37 +46,34 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.regionserver.RegionServerCoprocessorHost;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.access.Permission.Action;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
-import org.apache.hadoop.hbase.testclassification.SecurityTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Threads;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
-@Category({SecurityTests.class, MediumTests.class})
+@Category({LargeTests.class})
 public class TestCellACLs extends SecureTestUtil {
+  private static final Log LOG = LogFactory.getLog(TestCellACLs.class);
 
-  @ClassRule
-  public static final HBaseClassTestRule CLASS_RULE =
-      HBaseClassTestRule.forClass(TestCellACLs.class);
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestCellACLs.class);
+  static {
+    Logger.getLogger(AccessController.class).setLevel(Level.TRACE);
+    Logger.getLogger(AccessControlFilter.class).setLevel(Level.TRACE);
+    Logger.getLogger(TableAuthManager.class).setLevel(Level.TRACE);
+  }
 
   @Rule
   public TableNameTestRule testTable = new TableNameTestRule();
@@ -111,14 +112,15 @@ public class TestCellACLs extends SecureTestUtil {
     MasterCoprocessorHost cpHost = TEST_UTIL.getMiniHBaseCluster().getMaster()
         .getMasterCoprocessorHost();
     cpHost.load(AccessController.class, Coprocessor.PRIORITY_HIGHEST, conf);
-    AccessController ac = cpHost.findCoprocessor(AccessController.class);
-    cpHost.createEnvironment(ac, Coprocessor.PRIORITY_HIGHEST, 1, conf);
+    AccessController ac = (AccessController)
+      cpHost.findCoprocessor(AccessController.class.getName());
+    cpHost.createEnvironment(AccessController.class, ac, Coprocessor.PRIORITY_HIGHEST, 1, conf);
     RegionServerCoprocessorHost rsHost = TEST_UTIL.getMiniHBaseCluster().getRegionServer(0)
         .getRegionServerCoprocessorHost();
-    rsHost.createEnvironment(ac, Coprocessor.PRIORITY_HIGHEST, 1, conf);
+    rsHost.createEnvironment(AccessController.class, ac, Coprocessor.PRIORITY_HIGHEST, 1, conf);
 
     // Wait for the ACL table to become available
-    TEST_UTIL.waitTableEnabled(PermissionStorage.ACL_TABLE_NAME);
+    TEST_UTIL.waitTableEnabled(AccessControlLists.ACL_TABLE_NAME);
 
     // create a set of test users
     USER_OWNER = User.createUserForTesting(conf, "owner", new String[0]);
@@ -126,9 +128,6 @@ public class TestCellACLs extends SecureTestUtil {
     GROUP_USER = User.createUserForTesting(conf, "group_user", new String[] { GROUP });
 
     usersAndGroups = new String[] { USER_OTHER.getShortName(), AuthUtil.toGroupEntry(GROUP) };
-
-    // Grant table creation permission to USER_OWNER
-    grantGlobal(TEST_UTIL, USER_OWNER.getShortName(), Action.CREATE);
   }
 
   @AfterClass
@@ -139,36 +138,39 @@ public class TestCellACLs extends SecureTestUtil {
   @Before
   public void setUp() throws Exception {
     // Create the test table (owner added to the _acl_ table)
-    TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(testTable.getTableName())
-      .setColumnFamily(
-        ColumnFamilyDescriptorBuilder.newBuilder(TEST_FAMILY).setMaxVersions(4).build()).build();
-    createTable(TEST_UTIL, USER_OWNER, tableDescriptor, new byte[][] { Bytes.toBytes("s") });
+    Admin admin = TEST_UTIL.getHBaseAdmin();
+    HTableDescriptor htd = new HTableDescriptor(testTable.getTableName());
+    HColumnDescriptor hcd = new HColumnDescriptor(TEST_FAMILY);
+    hcd.setMaxVersions(4);
+    htd.setOwner(USER_OWNER);
+    htd.addFamily(hcd);
+    admin.createTable(htd, new byte[][] { Bytes.toBytes("s") });
     TEST_UTIL.waitTableEnabled(testTable.getTableName());
     LOG.info("Sleeping a second because of HBASE-12581");
     Threads.sleep(1000);
   }
 
-  @Test
+  @Test (timeout=120000)
   public void testCellPermissions() throws Exception {
     // store two sets of values, one store with a cell level ACL, and one without
     verifyAllowed(new AccessTestAction() {
       @Override
       public Object run() throws Exception {
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName());) {
           Put p;
           // with ro ACL
-          p = new Put(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q1, ZERO);
+          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
           p.setACL(prepareCellPermissions(usersAndGroups, Action.READ));
           t.put(p);
           // with rw ACL
-          p = new Put(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q2, ZERO);
+          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q2, ZERO);
           p.setACL(prepareCellPermissions(usersAndGroups, Action.READ, Action.WRITE));
           t.put(p);
           // no ACL
           p = new Put(TEST_ROW)
-              .addColumn(TEST_FAMILY, TEST_Q3, ZERO)
-              .addColumn(TEST_FAMILY, TEST_Q4, ZERO);
+            .add(TEST_FAMILY, TEST_Q3, ZERO)
+            .add(TEST_FAMILY, TEST_Q4, ZERO);
           t.put(p);
         }
         return null;
@@ -181,8 +183,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Get get = new Get(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q1);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           return t.get(get).listCells();
         }
       }
@@ -192,8 +194,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Get get = new Get(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q2);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           return t.get(get).listCells();
         }
       }
@@ -203,8 +205,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Get get = new Get(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q3);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           return t.get(get).listCells();
         }
       }
@@ -214,8 +216,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Get get = new Get(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q4);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           return t.get(get).listCells();
         }
       }
@@ -241,12 +243,11 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public List<Cell> run() throws Exception {
         Scan scan = new Scan();
-        scan.withStartRow(TEST_ROW);
-        scan.withStopRow(Bytes.add(TEST_ROW, new byte[]{ 0 }));
+        scan.setStartRow(TEST_ROW);
+        scan.setStopRow(Bytes.add(TEST_ROW, new byte[]{ 0 } ));
         scan.addFamily(TEST_FAMILY);
-        Connection connection = ConnectionFactory.createConnection(conf);
-        Table t = connection.getTable(testTable.getTableName());
-        try {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           ResultScanner scanner = t.getScanner(scan);
           Result result = null;
           do {
@@ -255,9 +256,6 @@ public class TestCellACLs extends SecureTestUtil {
               scanResults.addAll(result.listCells());
             }
           } while (result != null);
-        } finally {
-          t.close();
-          connection.close();
         }
         return scanResults;
       }
@@ -283,8 +281,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Increment i = new Increment(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q1, 1L);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           t.increment(i);
         }
         return null;
@@ -295,8 +293,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Increment i = new Increment(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q2, 1L);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           t.increment(i);
         }
         return null;
@@ -307,10 +305,10 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Increment i = new Increment(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q2, 1L);
-        // Tag this increment with an ACL that denies write permissions to USER_OTHER and GROUP
-        i.setACL(prepareCellPermissions(usersAndGroups, Action.READ));
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        // Tag this increment with an ACL that denies write permissions to USER_OTHER
+        i.setACL(USER_OTHER.getShortName(), new Permission(Action.READ));
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           t.increment(i);
         }
         return null;
@@ -321,8 +319,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Increment i = new Increment(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q3, 1L);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           t.increment(i);
         }
         return null;
@@ -346,8 +344,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Delete delete = new Delete(TEST_ROW).addFamily(TEST_FAMILY);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           t.delete(delete);
         }
         return null;
@@ -358,8 +356,8 @@ public class TestCellACLs extends SecureTestUtil {
       @Override
       public Object run() throws Exception {
         Delete delete = new Delete(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q1);
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           t.delete(delete);
         }
         return null;
@@ -375,7 +373,7 @@ public class TestCellACLs extends SecureTestUtil {
    * Insure we are not granting access in the absence of any cells found
    * when scanning for covered cells.
    */
-  @Test
+  @Test (timeout=120000)
   public void testCoveringCheck() throws Exception {
     // Grant read access to USER_OTHER
     grantOnTable(TEST_UTIL, USER_OTHER.getShortName(), testTable.getTableName(), TEST_FAMILY,
@@ -384,21 +382,21 @@ public class TestCellACLs extends SecureTestUtil {
     grantOnTable(TEST_UTIL, AuthUtil.toGroupEntry(GROUP), testTable.getTableName(), TEST_FAMILY,
       null, Action.READ);
 
-    // A write by USER_OTHER should be denied.
+ // A write by USER_OTHER should be denied.
     // This is where we could have a big problem if there is an error in the
     // covering check logic.
-    verifyUserDeniedForWrite(USER_OTHER, ZERO);
+    verfifyUserDeniedForWrite(USER_OTHER, ZERO);
     // A write by GROUP_USER from group GROUP should be denied.
-    verifyUserDeniedForWrite(GROUP_USER, ZERO);
+    verfifyUserDeniedForWrite(GROUP_USER, ZERO);
 
     // Add the cell
     verifyAllowed(new AccessTestAction() {
       @Override
       public Object run() throws Exception {
-        try(Connection connection = ConnectionFactory.createConnection(conf);
-            Table t = connection.getTable(testTable.getTableName())) {
+        try (Table t = new HTable(TEST_UTIL.getConfiguration(),
+            testTable.getTableName())) {
           Put p;
-          p = new Put(TEST_ROW).addColumn(TEST_FAMILY, TEST_Q1, ZERO);
+          p = new Put(TEST_ROW).add(TEST_FAMILY, TEST_Q1, ZERO);
           t.put(p);
         }
         return null;
@@ -406,9 +404,9 @@ public class TestCellACLs extends SecureTestUtil {
     }, USER_OWNER);
 
     // A write by USER_OTHER should still be denied, just to make sure
-    verifyUserDeniedForWrite(USER_OTHER, ONE);
+    verfifyUserDeniedForWrite(USER_OTHER, ONE);
     // A write by GROUP_USER from group GROUP should still be denied
-    verifyUserDeniedForWrite(GROUP_USER, ONE);
+    verfifyUserDeniedForWrite(GROUP_USER, ONE);
 
     // A read by USER_OTHER should be allowed, just to make sure
     verifyUserAllowedForRead(USER_OTHER);
@@ -416,7 +414,7 @@ public class TestCellACLs extends SecureTestUtil {
     verifyUserAllowedForRead(GROUP_USER);
   }
 
-  private void verifyUserDeniedForWrite(final User user, final byte[] value) throws Exception {
+  private void verfifyUserDeniedForWrite(final User user, final byte[] value) throws Exception {
     verifyDenied(new AccessTestAction() {
       @Override
       public Object run() throws Exception {
@@ -444,12 +442,13 @@ public class TestCellACLs extends SecureTestUtil {
   }
 
   private Map<String, Permission> prepareCellPermissions(String[] users, Action... action) {
-    Map<String, Permission> perms = new HashMap<>(2);
+    Map<String, Permission> perms = new HashMap<String, Permission>(2);
     for (String user : users) {
       perms.put(user, new Permission(action));
     }
     return perms;
   }
+
 
   @After
   public void tearDown() throws Exception {
@@ -460,6 +459,6 @@ public class TestCellACLs extends SecureTestUtil {
       // Test deleted the table, no problem
       LOG.info("Test deleted table " + testTable.getTableName());
     }
-    assertEquals(0, PermissionStorage.getTablePermissions(conf, testTable.getTableName()).size());
+    assertEquals(0, AccessControlLists.getTablePermissions(conf, testTable.getTableName()).size());
   }
 }

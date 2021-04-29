@@ -24,8 +24,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.util.GsonUtil;
-import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.gson.Gson;
 
@@ -193,14 +193,13 @@ class MonitoredTaskImpl implements MonitoredTask {
    * Force the completion timestamp backwards so that
    * it expires now.
    */
-  @Override
   public void expireNow() {
     stateTime -= 180 * 1000;
   }
 
   @Override
   public Map<String, Object> toMap() {
-    Map<String, Object> map = new HashMap<>();
+    Map<String, Object> map = new HashMap<String, Object>();
     map.put("description", getDescription());
     map.put("status", getStatus());
     map.put("state", getState());
@@ -270,9 +269,6 @@ class MonitoredTaskImpl implements MonitoredTask {
 
   @Override
   public String prettyPrintJournal() {
-    if (!journalEnabled) {
-      return "";
-    }
     StringBuilder sb = new StringBuilder();
     for (int i = 0; i < journal.size(); i++) {
       StatusJournalEntry je = journal.get(i);

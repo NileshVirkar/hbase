@@ -27,44 +27,45 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import org.apache.commons.lang3.ArrayUtils;
-import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.GnuParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.OptionBuilder;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.ClusterStatus;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HColumnDescriptor;
+import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.NoServerForRegionException;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.GnuParser;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.HelpFormatter;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.OptionBuilder;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.Options;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.ParseException;
 
 /**
  * The {@link RegionSplitter} class provides several utilities to help in the
@@ -139,7 +140,7 @@ import org.apache.hbase.thirdparty.org.apache.commons.cli.ParseException;
  */
 @InterfaceAudience.Private
 public class RegionSplitter {
-  private static final Logger LOG = LoggerFactory.getLogger(RegionSplitter.class);
+  private static final Log LOG = LogFactory.getLog(RegionSplitter.class);
 
   /**
    * A generic interface for the RegionSplitter code to use for all it's
@@ -326,7 +327,7 @@ public class RegionSplitter {
     opt.addOption(null, "lastrow", true,
         "Last Row in Table for Split Algorithm");
     opt.addOption(null, "risky", false,
-        "Skip verification steps to complete quickly. "
+        "Skip verification steps to complete quickly."
             + "STRONGLY DISCOURAGED for production systems.  ");
     CommandLine cmd = new GnuParser().parse(opt, args);
 
@@ -351,8 +352,8 @@ public class RegionSplitter {
     boolean oneOperOnly = createTable ^ rollingSplit;
 
     if (2 != cmd.getArgList().size() || !oneOperOnly || cmd.hasOption("h")) {
-      new HelpFormatter().printHelp("bin/hbase regionsplitter <TABLE> <SPLITALGORITHM>\n"+
-          "SPLITALGORITHM is the java class name of a class implementing " +
+      new HelpFormatter().printHelp("RegionSplitter <TABLE> <SPLITALGORITHM>\n"+
+          "SPLITALGORITHM is a java class name of a class implementing " +
           "SplitAlgorithm, or one of the special strings HexStringSplit or " +
           "DecimalStringSplit or UniformSplit, which are built-in split algorithms. " +
           "HexStringSplit treats keys as hexadecimal ASCII, and " +
@@ -395,16 +396,16 @@ public class RegionSplitter {
     LOG.debug("Creating table " + tableName + " with " + columnFamilies.length
         + " column families.  Presplitting to " + splitCount + " regions");
 
-    TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableName);
+    HTableDescriptor desc = new HTableDescriptor(tableName);
     for (String cf : columnFamilies) {
-      builder.setColumnFamily(ColumnFamilyDescriptorBuilder.of(cf));
+      desc.addFamily(new HColumnDescriptor(Bytes.toBytes(cf)));
     }
     try (Connection connection = ConnectionFactory.createConnection(conf)) {
       Admin admin = connection.getAdmin();
       try {
         Preconditions.checkArgument(!admin.tableExists(tableName),
           "Table already exists: " + tableName);
-        admin.createTable(builder.build(), splitAlgo.split(splitCount));
+        admin.createTable(desc, splitAlgo.split(splitCount));
       } finally {
         admin.close();
       }
@@ -412,13 +413,11 @@ public class RegionSplitter {
       if (!conf.getBoolean("split.verify", true)) {
         // NOTE: createTable is synchronous on the table, but not on the regions
         int onlineRegions = 0;
-        try (RegionLocator locator = connection.getRegionLocator(tableName)) {
-          while (onlineRegions < splitCount) {
-            onlineRegions = locator.getAllRegionLocations().size();
-            LOG.debug(onlineRegions + " of " + splitCount + " regions online...");
-            if (onlineRegions < splitCount) {
-              Thread.sleep(10 * 1000); // sleep
-            }
+        while (onlineRegions < splitCount) {
+          onlineRegions = MetaTableAccessor.getRegionCount(connection, tableName);
+          LOG.debug(onlineRegions + " of " + splitCount + " regions online...");
+          if (onlineRegions < splitCount) {
+            Thread.sleep(10 * 1000); // sleep
           }
         }
       }
@@ -430,11 +429,12 @@ public class RegionSplitter {
    * Alternative getCurrentNrHRS which is no longer available.
    * @param connection
    * @return Rough count of regionservers out on cluster.
-   * @throws IOException if a remote or network exception occurs
+   * @throws IOException 
    */
   private static int getRegionServerCount(final Connection connection) throws IOException {
     try (Admin admin = connection.getAdmin()) {
-      Collection<ServerName> servers = admin.getRegionServers();
+      ClusterStatus status = admin.getClusterStatus();
+      Collection<ServerName> servers = status.getServers();
       return servers == null || servers.isEmpty()? 0: servers.size();
     }
   }
@@ -457,8 +457,8 @@ public class RegionSplitter {
       // Max outstanding splits. default == 50% of servers
       final int MAX_OUTSTANDING = Math.max(getRegionServerCount(connection) / 2, minOS);
 
-      Path hbDir = CommonFSUtils.getRootDir(conf);
-      Path tableDir = CommonFSUtils.getTableDir(hbDir, tableName);
+      Path hbDir = FSUtils.getRootDir(conf);
+      Path tableDir = FSUtils.getTableDir(hbDir, tableName);
       Path splitFile = new Path(tableDir, "_balancedSplit");
       FileSystem fs = FileSystem.get(conf);
 
@@ -547,7 +547,7 @@ public class RegionSplitter {
                   }
 
                   // make sure this region wasn't already split
-                  byte[] sk = regionLoc.getRegion().getStartKey();
+                  byte[] sk = regionLoc.getRegionInfo().getStartKey();
                   if (sk.length != 0) {
                     if (Bytes.equals(split, sk)) {
                       LOG.debug("Region already split on "
@@ -681,7 +681,7 @@ public class RegionSplitter {
       }
     }
     try {
-      return splitClass.asSubclass(SplitAlgorithm.class).getDeclaredConstructor().newInstance();
+      return splitClass.asSubclass(SplitAlgorithm.class).newInstance();
     } catch (Exception e) {
       throw new IOException("Problem loading split algorithm: ", e);
     }
@@ -703,12 +703,13 @@ public class RegionSplitter {
     Path tableDir = tableDirAndSplitFile.getFirst();
     FileSystem fs = tableDir.getFileSystem(connection.getConfiguration());
     // Clear the cache to forcibly refresh region information
-    connection.clearRegionLocationCache();
-    TableDescriptor htd = null;
+    ((ClusterConnection)connection).clearRegionCache();
+    HTableDescriptor htd = null;
     try (Table table = connection.getTable(tableName)) {
-      htd = table.getDescriptor();
+      htd = table.getTableDescriptor();
     }
     try (RegionLocator regionLocator = connection.getRegionLocator(tableName)) {
+
       // for every region that hasn't been verified as a finished split
       for (Pair<byte[], byte[]> region : regionList) {
         byte[] start = region.getFirst();
@@ -716,14 +717,14 @@ public class RegionSplitter {
 
         // see if the new split daughter region has come online
         try {
-          RegionInfo dri = regionLocator.getRegionLocation(split, true).getRegion();
+          HRegionInfo dri = regionLocator.getRegionLocation(split).getRegionInfo();
           if (dri.isOffline() || !Bytes.equals(dri.getStartKey(), split)) {
             logicalSplitting.add(region);
             continue;
           }
         } catch (NoServerForRegionException nsfre) {
           // NSFRE will occur if the old hbase:meta entry has no server assigned
-          LOG.info(nsfre.toString(), nsfre);
+          LOG.info(nsfre);
           logicalSplitting.add(region);
           continue;
         }
@@ -731,10 +732,10 @@ public class RegionSplitter {
         try {
           // when a daughter region is opened, a compaction is triggered
           // wait until compaction completes for both daughter regions
-          LinkedList<RegionInfo> check = Lists.newLinkedList();
-          check.add(regionLocator.getRegionLocation(start).getRegion());
-          check.add(regionLocator.getRegionLocation(split).getRegion());
-          for (RegionInfo hri : check.toArray(new RegionInfo[check.size()])) {
+          LinkedList<HRegionInfo> check = Lists.newLinkedList();
+          check.add(regionLocator.getRegionLocation(start).getRegionInfo());
+          check.add(regionLocator.getRegionLocation(split).getRegionInfo());
+          for (HRegionInfo hri : check.toArray(new HRegionInfo[check.size()])) {
             byte[] sk = hri.getStartKey();
             if (sk.length == 0)
               sk = splitAlgo.firstRow();
@@ -744,7 +745,7 @@ public class RegionSplitter {
 
             // Check every Column Family for that region -- check does not have references.
             boolean refFound = false;
-            for (ColumnFamilyDescriptor c : htd.getColumnFamilies()) {
+            for (HColumnDescriptor c : htd.getFamilies()) {
               if ((refFound = regionFs.hasReferences(c.getNameAsString()))) {
                 break;
               }
@@ -763,7 +764,7 @@ public class RegionSplitter {
         } catch (NoServerForRegionException nsfre) {
           LOG.debug("No Server Exception thrown for: " + splitAlgo.rowToStr(start));
           physicalSplitting.add(region);
-          connection.clearRegionLocationCache();
+          ((ClusterConnection)connection).clearRegionCache();
         }
       }
 
@@ -779,14 +780,15 @@ public class RegionSplitter {
    * @param conf
    * @param tableName
    * @return A Pair where first item is table dir and second is the split file.
-   * @throws IOException if a remote or network exception occurs
+   * @throws IOException 
    */
   private static Pair<Path, Path> getTableDirAndSplitFile(final Configuration conf,
-    final TableName tableName) throws IOException {
-    Path hbDir = CommonFSUtils.getRootDir(conf);
-    Path tableDir = CommonFSUtils.getTableDir(hbDir, tableName);
+      final TableName tableName)
+  throws IOException {
+    Path hbDir = FSUtils.getRootDir(conf);
+    Path tableDir = FSUtils.getTableDir(hbDir, tableName);
     Path splitFile = new Path(tableDir, "_balancedSplit");
-    return new Pair<>(tableDir, splitFile);
+    return new Pair<Path, Path>(tableDir, splitFile);
   }
 
   static LinkedList<Pair<byte[], byte[]>> getSplits(final Connection connection,
@@ -796,7 +798,7 @@ public class RegionSplitter {
       getTableDirAndSplitFile(connection.getConfiguration(), tableName);
     Path tableDir = tableDirAndSplitFile.getFirst();
     Path splitFile = tableDirAndSplitFile.getSecond();
-
+ 
     FileSystem fs = tableDir.getFileSystem(connection.getConfiguration());
 
     // Using strings because (new byte[]{0}).equals(new byte[]{0}) == false
@@ -844,7 +846,8 @@ public class RegionSplitter {
       fs.rename(tmpFile, splitFile);
     } else {
       LOG.debug("_balancedSplit file found. Replay log to restore state...");
-      RecoverLeaseFSUtils.recoverFileLease(fs, splitFile, connection.getConfiguration(), null);
+      FSUtils.getInstance(fs, connection.getConfiguration())
+        .recoverFileLease(fs, splitFile, connection.getConfiguration(), null);
 
       // parse split file and process remaining splits
       FSDataInputStream tmpIn = fs.open(splitFile);
@@ -941,7 +944,6 @@ public class RegionSplitter {
       this.rowComparisonLength = lastRow.length();
     }
 
-    @Override
     public byte[] split(byte[] start, byte[] end) {
       BigInteger s = convertToBigInteger(start);
       BigInteger e = convertToBigInteger(end);
@@ -949,7 +951,6 @@ public class RegionSplitter {
       return convertToByte(split2(s, e));
     }
 
-    @Override
     public byte[][] split(int n) {
       Preconditions.checkArgument(lastRowInt.compareTo(firstRowInt) > 0,
           "last row (%s) is configured less than first row (%s)", lastRow,
@@ -976,8 +977,8 @@ public class RegionSplitter {
       BigInteger e = convertToBigInteger(end);
 
       Preconditions.checkArgument(e.compareTo(s) > 0,
-                      "last row (%s) is configured less than first row (%s)", rowToStr(end),
-                      end);
+              "last row (%s) is configured less than first row (%s)", rowToStr(end),
+              end);
       // +1 to range because the last row is inclusive
       BigInteger range = e.subtract(s).add(BigInteger.ONE);
       Preconditions.checkState(range.compareTo(BigInteger.valueOf(numSplits)) >= 0,
@@ -1003,23 +1004,19 @@ public class RegionSplitter {
       }
     }
 
-    @Override
     public byte[] firstRow() {
       return convertToByte(firstRowInt);
     }
 
-    @Override
     public byte[] lastRow() {
       return convertToByte(lastRowInt);
     }
 
-    @Override
     public void setFirstRow(String userInput) {
       firstRow = userInput;
       firstRowInt = new BigInteger(firstRow, radix);
     }
 
-    @Override
     public void setLastRow(String userInput) {
       lastRow = userInput;
       lastRowInt = new BigInteger(lastRow, radix);
@@ -1027,17 +1024,14 @@ public class RegionSplitter {
       rowComparisonLength = lastRow.length();
     }
 
-    @Override
     public byte[] strToRow(String in) {
       return convertToByte(new BigInteger(in, radix));
     }
 
-    @Override
     public String rowToStr(byte[] row) {
       return Bytes.toStringBinary(row);
     }
 
-    @Override
     public String separator() {
       return " ";
     }
@@ -1131,12 +1125,13 @@ public class RegionSplitter {
     byte[] firstRowBytes = ArrayUtils.EMPTY_BYTE_ARRAY;
     byte[] lastRowBytes =
             new byte[] {xFF, xFF, xFF, xFF, xFF, xFF, xFF, xFF};
-    @Override
     public byte[] split(byte[] start, byte[] end) {
       return Bytes.split(start, end, 1)[1];
     }
 
     @Override
+    @edu.umd.cs.findbugs.annotations.SuppressWarnings(value="NP_NULL_ON_SOME_PATH",
+      justification="Preconditions checks insure we are not going to dereference a null value")
     public byte[][] split(int numRegions) {
       Preconditions.checkArgument(
           Bytes.compareTo(lastRowBytes, firstRowBytes) > 0,
@@ -1150,11 +1145,9 @@ public class RegionSplitter {
           "Could not split region with given user input: " + this);
 
       // remove endpoints, which are included in the splits list
-
-      return splits == null? null: Arrays.copyOfRange(splits, 1, splits.length - 1);
+      return Arrays.copyOfRange(splits, 1, splits.length - 1);
     }
 
-    @Override
     public byte[][] split(byte[] start, byte[] end, int numSplits, boolean inclusive) {
       if (Arrays.equals(start, HConstants.EMPTY_BYTE_ARRAY)) {
         start = firstRowBytes;

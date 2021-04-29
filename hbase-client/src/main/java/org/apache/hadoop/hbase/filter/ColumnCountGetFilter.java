@@ -19,17 +19,16 @@
 
 package org.apache.hadoop.hbase.filter;
 
-import java.io.IOException;
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.ArrayList;
 import java.util.Objects;
-
 import org.apache.hadoop.hbase.Cell;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.FilterProtos;
+import org.apache.hadoop.hbase.protobuf.generated.FilterProtos;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferException;
 
 /**
  * Simple filter that returns first N columns on row only.
@@ -38,6 +37,7 @@ import org.apache.hbase.thirdparty.com.google.protobuf.InvalidProtocolBufferExce
  * makes this filter unsuitable as a Scan filter.
  */
 @InterfaceAudience.Public
+@InterfaceStability.Stable
 public class ColumnCountGetFilter extends FilterBase {
   private int limit = 0;
   private int count = 0;
@@ -52,21 +52,21 @@ public class ColumnCountGetFilter extends FilterBase {
   }
 
   @Override
-  public boolean filterRowKey(Cell cell) throws IOException {
-    // Impl in FilterBase might do unnecessary copy for Off heap backed Cells.
-    if (filterAllRemaining()) return true;
-    return false;
-  }
-
-  @Override
   public boolean filterAllRemaining() {
     return this.count > this.limit;
   }
 
   @Override
-  public ReturnCode filterCell(final Cell c) {
+  public ReturnCode filterKeyValue(Cell v) {
     this.count++;
     return filterAllRemaining() ? ReturnCode.NEXT_COL : ReturnCode.INCLUDE_AND_NEXT_COL;
+  }
+
+  // Override here explicitly as the method in super class FilterBase might do a KeyValue recreate.
+  // See HBASE-12068
+  @Override
+  public Cell transformCell(Cell v) {
+    return v;
   }
 
   @Override
@@ -110,7 +110,7 @@ public class ColumnCountGetFilter extends FilterBase {
   }
 
   /**
-   * @param o the other filter to compare with
+   * @param other
    * @return true if and only if the fields of the filter that are serialized
    * are equal to the corresponding fields in other.  Used for testing.
    */

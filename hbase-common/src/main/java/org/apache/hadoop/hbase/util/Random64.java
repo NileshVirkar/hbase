@@ -23,7 +23,8 @@ import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
 /**

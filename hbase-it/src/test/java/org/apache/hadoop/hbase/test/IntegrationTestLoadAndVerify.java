@@ -33,6 +33,9 @@ import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -41,33 +44,32 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.IntegrationTestBase;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
+import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
+import org.apache.hadoop.hbase.testclassification.IntegrationTests;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.BufferedMutator;
 import org.apache.hadoop.hbase.client.BufferedMutatorParams;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
-import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
+import org.apache.hadoop.hbase.client.ScannerCallable;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.mapreduce.NMapInputFormat;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
 import org.apache.hadoop.hbase.mapreduce.TableMapper;
 import org.apache.hadoop.hbase.mapreduce.TableRecordReaderImpl;
 import org.apache.hadoop.hbase.mapreduce.WALPlayer;
-import org.apache.hadoop.hbase.testclassification.IntegrationTests;
 import org.apache.hadoop.hbase.util.AbstractHBaseTool;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.CommonFSUtils;
-import org.apache.hadoop.hbase.wal.WALEdit;
 import org.apache.hadoop.hbase.wal.WALKey;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.NullWritable;
@@ -81,11 +83,8 @@ import org.apache.hadoop.mapreduce.lib.output.NullOutputFormat;
 import org.apache.hadoop.util.ToolRunner;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
-import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
 
 /**
  * A large test which loads a lot of data that has internal references, and
@@ -107,7 +106,7 @@ import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
 @Category(IntegrationTests.class)
 public class IntegrationTestLoadAndVerify  extends IntegrationTestBase  {
 
-  private static final Logger LOG = LoggerFactory.getLogger(IntegrationTestLoadAndVerify.class);
+  private static final Log LOG = LogFactory.getLog(IntegrationTestLoadAndVerify.class);
 
   private static final String TEST_NAME = "IntegrationTestLoadAndVerify";
   private static final byte[] TEST_FAMILY = Bytes.toBytes("f1");
@@ -189,10 +188,10 @@ public void cleanUpCluster() throws Exception {
     protected BufferedMutator mutator;
     protected Configuration conf;
     protected int numBackReferencesPerRow;
-
     protected String shortTaskId;
 
     protected Random rand = new Random();
+
     protected Counter rowsWritten, refsWritten;
 
     @Override
@@ -242,12 +241,12 @@ public void cleanUpCluster() throws Exception {
           Bytes.putLong(row, 0, byteSwapped);
 
           Put p = new Put(row);
-          p.addColumn(TEST_FAMILY, TEST_QUALIFIER, HConstants.EMPTY_BYTE_ARRAY);
+          p.add(TEST_FAMILY, TEST_QUALIFIER, HConstants.EMPTY_BYTE_ARRAY);
           if (blockStart > 0) {
             for (int j = 0; j < numBackReferencesPerRow; j++) {
               long referredRow = blockStart - BLOCK_SIZE + rand.nextInt(BLOCK_SIZE);
               Bytes.putLong(row, 0, swapLong(referredRow));
-              p.addColumn(TEST_FAMILY, row, HConstants.EMPTY_BYTE_ARRAY);
+              p.add(TEST_FAMILY, row, HConstants.EMPTY_BYTE_ARRAY);
             }
             refsWritten.increment(1);
           }
@@ -330,15 +329,15 @@ public void cleanUpCluster() throws Exception {
     }
   }
 
-  protected Job doLoad(Configuration conf, TableDescriptor tableDescriptor) throws Exception {
+  protected Job doLoad(Configuration conf, HTableDescriptor htd) throws Exception {
     Path outputDir = getTestDir(TEST_NAME, "load-output");
     LOG.info("Load output dir: " + outputDir);
 
     NMapInputFormat.setNumMapTasks(conf, conf.getInt(NUM_MAP_TASKS_KEY, NUM_MAP_TASKS_DEFAULT));
-    conf.set(TABLE_NAME_KEY, tableDescriptor.getTableName().getNameAsString());
+    conf.set(TABLE_NAME_KEY, htd.getTableName().getNameAsString());
 
     Job job = Job.getInstance(conf);
-    job.setJobName(TEST_NAME + " Load for " + tableDescriptor.getTableName());
+    job.setJobName(TEST_NAME + " Load for " + htd.getTableName());
     job.setJarByClass(this.getClass());
     setMapperClass(job);
     job.setInputFormatClass(NMapInputFormat.class);
@@ -358,19 +357,19 @@ public void cleanUpCluster() throws Exception {
     job.setMapperClass(LoadMapper.class);
   }
 
-  protected void doVerify(Configuration conf, TableDescriptor tableDescriptor) throws Exception {
+  protected void doVerify(Configuration conf, HTableDescriptor htd) throws Exception {
     Path outputDir = getTestDir(TEST_NAME, "verify-output");
     LOG.info("Verify output dir: " + outputDir);
 
     Job job = Job.getInstance(conf);
     job.setJarByClass(this.getClass());
-    job.setJobName(TEST_NAME + " Verification for " + tableDescriptor.getTableName());
+    job.setJobName(TEST_NAME + " Verification for " + htd.getTableName());
     setJobScannerConf(job);
 
     Scan scan = new Scan();
 
     TableMapReduceUtil.initTableMapperJob(
-        tableDescriptor.getTableName().getNameAsString(), scan, VerifyMapper.class,
+        htd.getTableName().getNameAsString(), scan, VerifyMapper.class,
         BytesWritable.class, BytesWritable.class, job);
     TableMapReduceUtil.addDependencyJarsForClasses(job.getConfiguration(), AbstractHBaseTool.class);
     int scannerCaching = conf.getInt("verify.scannercaching", SCANNER_CACHING);
@@ -426,7 +425,7 @@ public void cleanUpCluster() throws Exception {
           try {
             LOG.info("Found cell=" + cell + " , walKey=" + context.getCurrentKey());
           } catch (IOException|InterruptedException e) {
-            LOG.warn(e.toString(), e);
+            LOG.warn(e);
           }
           if (rows.addAndGet(1) < MISSING_ROWS_TO_LOG) {
             context.getCounter(FOUND_GROUP_KEY, keyStr).increment(1);
@@ -456,7 +455,7 @@ public void cleanUpCluster() throws Exception {
       throws IOException, InterruptedException {
     Path keysInputDir = new Path(conf.get(SEARCHER_INPUTDIR_KEY));
     FileSystem fs = FileSystem.get(conf);
-    SortedSet<byte []> result = new TreeSet<>(Bytes.BYTES_COMPARATOR);
+    SortedSet<byte []> result = new TreeSet<byte []>(Bytes.BYTES_COMPARATOR);
     if (!fs.exists(keysInputDir)) {
       throw new FileNotFoundException(keysInputDir.toString());
     }
@@ -507,10 +506,10 @@ public void cleanUpCluster() throws Exception {
     if (keys.isEmpty()) throw new RuntimeException("No keys to find");
     LOG.info("Count of keys to find: " + keys.size());
     for(byte [] key: keys)  LOG.info("Key: " + Bytes.toStringBinary(key));
+    Path hbaseDir = new Path(getConf().get(HConstants.HBASE_DIR));
     // Now read all WALs. In two dirs. Presumes certain layout.
-    Path walsDir = new Path(CommonFSUtils.getWALRootDir(getConf()), HConstants.HREGION_LOGDIR_NAME);
-    Path oldWalsDir = new Path(
-        CommonFSUtils.getWALRootDir(getConf()), HConstants.HREGION_OLDLOGDIR_NAME);
+    Path walsDir = new Path(hbaseDir, HConstants.HREGION_LOGDIR_NAME);
+    Path oldWalsDir = new Path(hbaseDir, HConstants.HREGION_OLDLOGDIR_NAME);
     LOG.info("Running Search with keys inputDir=" + inputDir +
       " against " + getConf().get(HConstants.HBASE_DIR));
     int ret = ToolRunner.run(new WALSearcher(getConf()), new String [] {walsDir.toString(), ""});
@@ -519,6 +518,8 @@ public void cleanUpCluster() throws Exception {
   }
 
   private static void setJobScannerConf(Job job) {
+    // Make sure scanners log something useful to make debugging possible.
+    job.getConfiguration().setBoolean(ScannerCallable.LOG_SCANNER_ACTIVITY, true);
     long lpr = job.getConfiguration().getLong(NUM_TO_WRITE_KEY, NUM_TO_WRITE_DEFAULT) / 100;
     job.getConfiguration().setInt(TableRecordReaderImpl.LOG_PER_ROW_COUNT, (int)lpr);
   }
@@ -533,19 +534,18 @@ public void cleanUpCluster() throws Exception {
 
   @Test
   public void testLoadAndVerify() throws Exception {
-    TableDescriptor tableDescriptor =
-      TableDescriptorBuilder.newBuilder(TableName.valueOf(TEST_NAME))
-        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(TEST_FAMILY)).build();
+    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(TEST_NAME));
+    htd.addFamily(new HColumnDescriptor(TEST_FAMILY));
 
-    Admin admin = getTestingUtil(getConf()).getAdmin();
-    admin.createTable(tableDescriptor, Bytes.toBytes(0L), Bytes.toBytes(-1L), 40);
+    Admin admin = getTestingUtil(getConf()).getHBaseAdmin();
+    admin.createTable(htd, Bytes.toBytes(0L), Bytes.toBytes(-1L), 40);
 
-    doLoad(getConf(), tableDescriptor);
-    doVerify(getConf(), tableDescriptor);
+    doLoad(getConf(), htd);
+    doVerify(getConf(), htd);
 
     // Only disable and drop if we succeeded to verify - otherwise it's useful
     // to leave it around for post-mortem
-    getTestingUtil(getConf()).deleteTable(tableDescriptor.getTableName());
+    getTestingUtil(getConf()).deleteTable(htd.getTableName());
   }
 
   @Override
@@ -615,20 +615,20 @@ public void cleanUpCluster() throws Exception {
 
     // create HTableDescriptor for specified table
     TableName table = getTablename();
-    TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(table)
-      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(TEST_FAMILY)).build();
+    HTableDescriptor htd = new HTableDescriptor(table);
+    htd.addFamily(new HColumnDescriptor(TEST_FAMILY));
 
     if (doLoad) {
       try (Connection conn = ConnectionFactory.createConnection(getConf());
           Admin admin = conn.getAdmin()) {
-        admin.createTable(tableDescriptor, Bytes.toBytes(0L), Bytes.toBytes(-1L), numPresplits);
-        doLoad(getConf(), tableDescriptor);
+        admin.createTable(htd, Bytes.toBytes(0L), Bytes.toBytes(-1L), numPresplits);
+        doLoad(getConf(), htd);
       }
     }
     if (doVerify) {
-      doVerify(getConf(), tableDescriptor);
+      doVerify(getConf(), htd);
       if (doDelete) {
-        getTestingUtil(getConf()).deleteTable(tableDescriptor.getTableName());
+        getTestingUtil(getConf()).deleteTable(htd.getTableName());
       }
     }
     if (doSearch) {

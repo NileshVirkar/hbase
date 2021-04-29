@@ -16,15 +16,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+
 package org.apache.hadoop.hbase.metrics.impl;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
 
-import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.hbase.thirdparty.com.google.common.base.Supplier;
 
 /**
  * A map of K to V, but does ref counting for added and removed values. The values are
@@ -38,22 +41,26 @@ class RefCountingMap<K, V> {
   private ConcurrentHashMap<K, Payload<V>> map = new ConcurrentHashMap<>();
   private static class Payload<V> {
     V v;
-    int refCount;
+    final AtomicInteger refCount = new AtomicInteger(1); // create with ref count = 1
     Payload(V v) {
       this.v = v;
-      this.refCount = 1; // create with ref count = 1
     }
   }
 
-  V put(K k, Supplier<V> supplier) {
-    return ((Payload<V>)map.compute(k, (k1, oldValue) -> {
-      if (oldValue != null) {
-        oldValue.refCount++;
-        return oldValue;
-      } else {
-        return new Payload(supplier.get());
+  @edu.umd.cs.findbugs.annotations.SuppressWarnings(
+    value="AT_OPERATION_SEQUENCE_ON_CONCURRENT_ABSTRACTION",
+    justification="We use the object monitor to serialize operations on the concurrent map")
+  V put(K key, Supplier<V> supplier) {
+    synchronized (this) {
+      Payload<V> oldValue = map.get(key);
+      if (oldValue == null) {
+        oldValue = new Payload<V>(supplier.get());
+        map.put(key, oldValue);
+        return oldValue.v;
       }
-    })).v;
+      oldValue.refCount.incrementAndGet();
+      return oldValue.v;
+    }
   }
 
   V get(K k) {
@@ -66,9 +73,18 @@ class RefCountingMap<K, V> {
    * @param k the key to remove
    * @return the value associated with the specified key or null if key is removed from map.
    */
-  V remove(K k) {
-    Payload<V> p = map.computeIfPresent(k, (k1, v) -> --v.refCount <= 0 ? null : v);
-    return p == null ? null : p.v;
+  V remove(K key) {
+    synchronized (this) {
+      Payload<V> oldValue = map.get(key);
+      if (oldValue != null) {
+        if (oldValue.refCount.decrementAndGet() == 0) {
+          map.remove(key);
+          return null;
+        }
+        return oldValue.v;
+      }
+    }
+    return null;
   }
 
   void clear() {
@@ -80,7 +96,11 @@ class RefCountingMap<K, V> {
   }
 
   Collection<V> values() {
-    return map.values().stream().map(v -> v.v).collect(Collectors.toList());
+    ArrayList<V> values = new ArrayList<V>(map.size());
+    for (Payload<V> v : map.values()) {
+      values.add(v.v);
+    }
+    return values;
   }
 
   int size() {
