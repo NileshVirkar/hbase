@@ -96,8 +96,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     this.metricsBalancer = (metricsBalancer != null) ? metricsBalancer : new MetricsBalancer();
   }
 
-  @Override
-  public void setConf(Configuration conf) {
+  protected void setConf(Configuration conf) {
     this.config = conf;
     setSlop(conf);
     if (slop < 0) {
@@ -112,7 +111,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       overallSlop = 1;
     }
 
-    this.rackManager = new RackManager(getConf());
+    this.rackManager = new RackManager(config);
     useRegionFinder = config.getBoolean("hbase.master.balancer.uselocality", true);
     if (useRegionFinder) {
       regionFinder = new RegionHDFSBlockLocationFinder();
@@ -129,11 +128,6 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
   }
 
   @Override
-  public Configuration getConf() {
-    return this.config;
-  }
-
-  @Override
   public synchronized void setClusterMetrics(ClusterMetrics st) {
     this.clusterStatus = st;
     if (useRegionFinder) {
@@ -145,6 +139,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
   @Override
   public void setClusterInfoProvider(ClusterInfoProvider provider) {
     this.provider = provider;
+    setConf(provider.getConfiguration());
     if (useRegionFinder) {
       this.regionFinder.setClusterInfoProvider(provider);
     }

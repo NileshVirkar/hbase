@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,34 +18,22 @@
 package org.apache.hadoop.hbase.master.balancer;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.master.LoadBalancer;
-import org.apache.hadoop.hbase.util.ReflectionUtils;
+import org.apache.hadoop.hbase.master.balancer.BalancerClusterState.LocalityType;
 import org.apache.yetus.audience.InterfaceAudience;
 
-/**
- * The class that creates a load balancer from a conf.
- */
 @InterfaceAudience.Private
-public class LoadBalancerFactory {
+class RackLocalityCostFunction extends LocalityBasedCostFunction {
 
-  /**
-   * The default {@link LoadBalancer} class.
-   * @return The Class for the default {@link LoadBalancer}.
-   */
-  public static Class<? extends LoadBalancer> getDefaultLoadBalancerClass() {
-    return StochasticLoadBalancer.class;
+  private static final String RACK_LOCALITY_COST_KEY =
+    "hbase.master.balancer.stochastic.rackLocalityCost";
+  private static final float DEFAULT_RACK_LOCALITY_COST = 15;
+
+  public RackLocalityCostFunction(Configuration conf) {
+    super(conf, LocalityType.RACK, RACK_LOCALITY_COST_KEY, DEFAULT_RACK_LOCALITY_COST);
   }
 
-  /**
-   * Create a loadbalancer from the given conf.
-   * @return A {@link LoadBalancer}
-   */
-  public static LoadBalancer getLoadBalancer(Configuration conf) {
-    // Create the balancer
-    Class<? extends LoadBalancer> balancerKlass =
-      conf.getClass(HConstants.HBASE_MASTER_LOADBALANCER_CLASS, getDefaultLoadBalancerClass(),
-        LoadBalancer.class);
-    return ReflectionUtils.newInstance(balancerKlass);
+  @Override
+  int regionIndexToEntityIndex(int region) {
+    return cluster.getRackForRegion(region);
   }
 }

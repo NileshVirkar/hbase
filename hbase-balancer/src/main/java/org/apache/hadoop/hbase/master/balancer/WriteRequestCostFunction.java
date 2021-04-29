@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,34 +18,25 @@
 package org.apache.hadoop.hbase.master.balancer;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.master.LoadBalancer;
-import org.apache.hadoop.hbase.util.ReflectionUtils;
 import org.apache.yetus.audience.InterfaceAudience;
 
 /**
- * The class that creates a load balancer from a conf.
+ * Compute the cost of total number of write requests. The more unbalanced the higher the computed
+ * cost will be. This uses a rolling average of regionload.
  */
 @InterfaceAudience.Private
-public class LoadBalancerFactory {
+class WriteRequestCostFunction extends CostFromRegionLoadAsRateFunction {
 
-  /**
-   * The default {@link LoadBalancer} class.
-   * @return The Class for the default {@link LoadBalancer}.
-   */
-  public static Class<? extends LoadBalancer> getDefaultLoadBalancerClass() {
-    return StochasticLoadBalancer.class;
+  private static final String WRITE_REQUEST_COST_KEY =
+    "hbase.master.balancer.stochastic.writeRequestCost";
+  private static final float DEFAULT_WRITE_REQUEST_COST = 5;
+
+  WriteRequestCostFunction(Configuration conf) {
+    this.setMultiplier(conf.getFloat(WRITE_REQUEST_COST_KEY, DEFAULT_WRITE_REQUEST_COST));
   }
 
-  /**
-   * Create a loadbalancer from the given conf.
-   * @return A {@link LoadBalancer}
-   */
-  public static LoadBalancer getLoadBalancer(Configuration conf) {
-    // Create the balancer
-    Class<? extends LoadBalancer> balancerKlass =
-      conf.getClass(HConstants.HBASE_MASTER_LOADBALANCER_CLASS, getDefaultLoadBalancerClass(),
-        LoadBalancer.class);
-    return ReflectionUtils.newInstance(balancerKlass);
+  @Override
+  protected double getCostFromRl(BalancerRegionLoad rl) {
+    return rl.getWriteRequestsCount();
   }
 }

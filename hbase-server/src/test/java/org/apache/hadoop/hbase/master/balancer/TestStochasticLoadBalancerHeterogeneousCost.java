@@ -17,6 +17,7 @@ package org.apache.hadoop.hbase.master.balancer;
 import static junit.framework.TestCase.assertNotNull;
 import static junit.framework.TestCase.assertTrue;
 import static org.junit.Assert.assertNull;
+
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
@@ -27,7 +28,6 @@ import java.util.Queue;
 import java.util.Random;
 import java.util.TreeMap;
 import java.util.concurrent.ThreadLocalRandom;
-
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
@@ -75,7 +75,7 @@ public class TestStochasticLoadBalancerHeterogeneousCost extends StochasticBalan
       HeterogeneousRegionCountCostFunction.HBASE_MASTER_BALANCER_HETEROGENEOUS_RULES_FILE,
       RULES_FILE);
     loadBalancer = new StochasticLoadBalancer();
-    loadBalancer.setConf(BalancerTestBase.conf);
+    loadBalancer.setClusterInfoProvider(new DummyClusterInfoProvider(conf));
     loadBalancer.getCandidateGenerators().add(new FairRandomCandidateGenerator());
   }
 

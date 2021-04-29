@@ -98,19 +98,6 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
   public RSGroupBasedLoadBalancer() {}
 
   @Override
-  public Configuration getConf() {
-    return config;
-  }
-
-  @Override
-  public void setConf(Configuration conf) {
-    this.config = conf;
-    if(internalBalancer != null) {
-      internalBalancer.setConf(conf);
-    }
-  }
-
-  @Override
   public void setClusterMetrics(ClusterMetrics sm) {
     this.clusterStatus = sm;
     if (internalBalancer != null) {
@@ -120,6 +107,7 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
 
   public void setMasterServices(MasterServices masterServices) {
     this.masterServices = masterServices;
+    this.config = masterServices.getConfiguration();
   }
 
   /**
@@ -365,7 +353,6 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
       balancerClass = LoadBalancerFactory.getDefaultLoadBalancerClass();
     }
     internalBalancer = ReflectionUtils.newInstance(balancerClass);
-    internalBalancer.setConf(config);
     internalBalancer.setClusterInfoProvider(new MasterClusterInfoProvider(masterServices));
     if(clusterStatus != null) {
       internalBalancer.setClusterMetrics(clusterStatus);
@@ -409,12 +396,14 @@ public class RSGroupBasedLoadBalancer implements LoadBalancer {
 
   @Override
   public void onConfigurationChange(Configuration conf) {
+    this.config = conf;
     boolean newFallbackEnabled = conf.getBoolean(FALLBACK_GROUP_ENABLE_KEY, false);
     if (fallbackEnabled != newFallbackEnabled) {
       LOG.info("Changing the value of {} from {} to {}", FALLBACK_GROUP_ENABLE_KEY,
         fallbackEnabled, newFallbackEnabled);
       fallbackEnabled = newFallbackEnabled;
     }
+    internalBalancer.onConfigurationChange(conf);
   }
 
   @Override

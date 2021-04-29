@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,34 +18,33 @@
 package org.apache.hadoop.hbase.master.balancer;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.master.LoadBalancer;
-import org.apache.hadoop.hbase.util.ReflectionUtils;
 import org.apache.yetus.audience.InterfaceAudience;
 
 /**
- * The class that creates a load balancer from a conf.
+ * Compute the cost of a potential cluster configuration based upon how evenly distributed tables
+ * are.
  */
 @InterfaceAudience.Private
-public class LoadBalancerFactory {
+class TableSkewCostFunction extends CostFunction {
 
-  /**
-   * The default {@link LoadBalancer} class.
-   * @return The Class for the default {@link LoadBalancer}.
-   */
-  public static Class<? extends LoadBalancer> getDefaultLoadBalancerClass() {
-    return StochasticLoadBalancer.class;
+  private static final String TABLE_SKEW_COST_KEY =
+    "hbase.master.balancer.stochastic.tableSkewCost";
+  private static final float DEFAULT_TABLE_SKEW_COST = 35;
+
+  TableSkewCostFunction(Configuration conf) {
+    this.setMultiplier(conf.getFloat(TABLE_SKEW_COST_KEY, DEFAULT_TABLE_SKEW_COST));
   }
 
-  /**
-   * Create a loadbalancer from the given conf.
-   * @return A {@link LoadBalancer}
-   */
-  public static LoadBalancer getLoadBalancer(Configuration conf) {
-    // Create the balancer
-    Class<? extends LoadBalancer> balancerKlass =
-      conf.getClass(HConstants.HBASE_MASTER_LOADBALANCER_CLASS, getDefaultLoadBalancerClass(),
-        LoadBalancer.class);
-    return ReflectionUtils.newInstance(balancerKlass);
+  @Override
+  protected double cost() {
+    double max = cluster.numRegions;
+    double min = ((double) cluster.numRegions) / cluster.numServers;
+    double value = 0;
+
+    for (int i = 0; i < cluster.numMaxRegionsPerTable.length; i++) {
+      value += cluster.numMaxRegionsPerTable[i];
+    }
+
+    return scale(min, max, value);
   }
 }

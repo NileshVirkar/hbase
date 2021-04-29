@@ -27,16 +27,14 @@ import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.function.Predicate;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ClusterMetrics;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HDFSBlocksDistribution;
 import org.apache.hadoop.hbase.HDFSBlocksDistribution.HostAndWeight;
@@ -97,7 +95,7 @@ public class TestRegionHDFSBlockLocationFinder {
   @Before
   public void setUp() {
     finder = new RegionHDFSBlockLocationFinder();
-    finder.setClusterInfoProvider(new ClusterInfoProvider() {
+    finder.setClusterInfoProvider(new DummyClusterInfoProvider(HBaseConfiguration.create()) {
 
       @Override
       public TableDescriptor getTableDescriptor(TableName tableName) throws IOException {
@@ -113,28 +111,6 @@ public class TestRegionHDFSBlockLocationFinder {
       public HDFSBlocksDistribution computeHDFSBlocksDistribution(Configuration conf,
         TableDescriptor tableDescriptor, RegionInfo regionInfo) throws IOException {
         return generate(regionInfo);
-      }
-
-      @Override
-      public boolean hasRegionReplica(Collection<RegionInfo> regions) throws IOException {
-        return false;
-      }
-
-      @Override
-      public List<ServerName> getOnlineServersListWithPredicator(List<ServerName> servers,
-        Predicate<ServerMetrics> filter) {
-        return Collections.emptyList();
-      }
-
-      @Override
-      public Map<ServerName, List<RegionInfo>>
-        getSnapShotOfAssignment(Collection<RegionInfo> regions) {
-        return Collections.emptyMap();
-      }
-
-      @Override
-      public int getNumberOfTables() {
-        return 0;
       }
     });
   }

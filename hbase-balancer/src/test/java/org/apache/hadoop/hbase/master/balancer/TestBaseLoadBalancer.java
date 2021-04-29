@@ -91,9 +91,7 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     Configuration conf = HBaseConfiguration.create();
     conf.setClass("hbase.util.ip.to.rack.determiner", MockMapping.class, DNSToSwitchMapping.class);
     loadBalancer = new MockBalancer();
-    loadBalancer.setConf(conf);
-    ClusterInfoProvider provider = mock(ClusterInfoProvider.class);
-    loadBalancer.setClusterInfoProvider(provider);
+    loadBalancer.setClusterInfoProvider(new DummyClusterInfoProvider(conf));
 
     // Set up the rack topologies (5 machines per rack)
     rackManager = mock(RackManager.class);
@@ -223,8 +221,8 @@ public class TestBaseLoadBalancer extends BalancerTestBase {
     LoadBalancer balancer = new MockBalancer();
     Configuration conf = HBaseConfiguration.create();
     conf.setClass("hbase.util.ip.to.rack.determiner", MockMapping.class, DNSToSwitchMapping.class);
-    balancer.setConf(conf);
     ClusterInfoProvider provider = mock(ClusterInfoProvider.class);
+    when(provider.getConfiguration()).thenReturn(conf);
     when(
       provider.getOnlineServersListWithPredicator(anyList(), any()))
       .thenReturn(idleServers);

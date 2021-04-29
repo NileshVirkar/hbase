@@ -306,7 +306,7 @@ public class FavoredStochasticBalancer extends StochasticLoadBalancer implements
     List<ServerName> favoredNodes = fnm.getFavoredNodes(regionInfo);
     if (favoredNodes == null || favoredNodes.isEmpty()) {
       // Generate new favored nodes and return primary
-      FavoredNodeAssignmentHelper helper = new FavoredNodeAssignmentHelper(servers, getConf());
+      FavoredNodeAssignmentHelper helper = new FavoredNodeAssignmentHelper(servers, config);
       helper.initialize();
       try {
         favoredNodes = helper.generateFavoredNodes(regionInfo);
@@ -323,7 +323,7 @@ public class FavoredStochasticBalancer extends StochasticLoadBalancer implements
       destination = onlineServers.get(ThreadLocalRandom.current().nextInt(onlineServers.size()));
     }
 
-    boolean alwaysAssign = getConf().getBoolean(FAVORED_ALWAYS_ASSIGN_REGIONS, true);
+    boolean alwaysAssign = config.getBoolean(FAVORED_ALWAYS_ASSIGN_REGIONS, true);
     if (destination == null && alwaysAssign) {
       LOG.warn("Can't generate FN for region: " + regionInfo + " falling back");
       destination = super.randomAssignment(regionInfo, servers);
@@ -353,7 +353,7 @@ public class FavoredStochasticBalancer extends StochasticLoadBalancer implements
     }
 
     // Lets check if favored nodes info is in META, if not generate now.
-    FavoredNodeAssignmentHelper helper = new FavoredNodeAssignmentHelper(servers, getConf());
+    FavoredNodeAssignmentHelper helper = new FavoredNodeAssignmentHelper(servers, config);
     helper.initialize();
 
     LOG.debug("Generating favored nodes for regions missing them.");

@@ -406,6 +406,7 @@ public class RSGroupableBalancerTestBase extends BalancerTestBase {
     Mockito.when(services.getTableDescriptors()).thenReturn(tds);
     AssignmentManager am = Mockito.mock(AssignmentManager.class);
     Mockito.when(services.getAssignmentManager()).thenReturn(am);
+    Mockito.when(services.getConfiguration()).thenReturn(conf);
     return services;
   }
 
