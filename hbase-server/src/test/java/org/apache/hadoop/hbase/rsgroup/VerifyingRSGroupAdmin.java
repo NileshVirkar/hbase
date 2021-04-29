@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,7 +24,6 @@ import java.io.ByteArrayInputStream;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -49,9 +48,6 @@ import org.apache.hadoop.hbase.client.CompactType;
 import org.apache.hadoop.hbase.client.CompactionState;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.ServerType;
-import org.apache.hadoop.hbase.client.LogEntry;
-import org.apache.hadoop.hbase.client.NormalizeTableFilterParams;
 import org.apache.hadoop.hbase.client.OnlineLogRecord;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Result;
@@ -317,8 +313,8 @@ public class VerifyingRSGroupAdmin implements Admin, Closeable {
     admin.assign(regionName);
   }
 
-  public void unassign(byte[] regionName) throws IOException {
-    admin.unassign(regionName);
+  public void unassign(byte[] regionName, boolean force) throws IOException {
+    admin.unassign(regionName, force);
   }
 
   public void offline(byte[] regionName) throws IOException {
@@ -345,9 +341,8 @@ public class VerifyingRSGroupAdmin implements Admin, Closeable {
     return admin.clearBlockCache(tableName);
   }
 
-  @Override
-  public boolean normalize(NormalizeTableFilterParams ntfp) throws IOException {
-    return admin.normalize(ntfp);
+  public boolean normalize() throws IOException {
+    return admin.normalize();
   }
 
   public boolean isNormalizerEnabled() throws IOException {
@@ -500,6 +495,10 @@ public class VerifyingRSGroupAdmin implements Admin, Closeable {
 
   public void rollWALWriter(ServerName serverName) throws IOException, FailedLogCloseException {
     admin.rollWALWriter(serverName);
+  }
+
+  public void archiveWAL(ServerName serverName) throws IOException {
+    admin.archiveWAL(serverName);
   }
 
   public CompactionState getCompactionState(TableName tableName) throws IOException {
@@ -840,13 +839,6 @@ public class VerifyingRSGroupAdmin implements Admin, Closeable {
       throws IOException {
     admin.updateRSGroupConfig(groupName, configuration);
     verify();
-  }
-
-  @Override
-  public List<LogEntry> getLogEntries(Set<ServerName> serverNames, String logType,
-      ServerType serverType, int limit, Map<String, Object> filterParams)
-      throws IOException {
-    return Collections.emptyList();
   }
 
   private void verify() throws IOException {

@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -367,8 +367,8 @@ class AsyncHBaseAdmin implements AsyncAdmin {
   }
 
   @Override
-  public CompletableFuture<Void> unassign(byte[] regionName) {
-    return wrap(rawAdmin.unassign(regionName));
+  public CompletableFuture<Void> unassign(byte[] regionName, boolean forcible) {
+    return wrap(rawAdmin.unassign(regionName, forcible));
   }
 
   @Override
@@ -636,6 +636,11 @@ class AsyncHBaseAdmin implements AsyncAdmin {
   }
 
   @Override
+  public CompletableFuture<Void> archiveWAL(ServerName serverName) {
+    return wrap(rawAdmin.archiveWAL(serverName));
+  }
+
+  @Override
   public CompletableFuture<Void> clearCompactionQueues(ServerName serverName, Set<String> queues) {
     return wrap(rawAdmin.clearCompactionQueues(serverName, queues));
   }
@@ -709,8 +714,8 @@ class AsyncHBaseAdmin implements AsyncAdmin {
   }
 
   @Override
-  public CompletableFuture<Boolean> normalize(NormalizeTableFilterParams ntfp) {
-    return wrap(rawAdmin.normalize(ntfp));
+  public CompletableFuture<Boolean> normalize() {
+    return wrap(rawAdmin.normalize());
   }
 
   @Override
@@ -853,6 +858,12 @@ class AsyncHBaseAdmin implements AsyncAdmin {
   }
 
   @Override
+  public CompletableFuture<List<OnlineLogRecord>> getSlowLogResponses(
+      final Set<ServerName> serverNames, final LogQueryFilter logQueryFilter) {
+    return wrap(rawAdmin.getSlowLogResponses(serverNames, logQueryFilter));
+  }
+
+  @Override
   public CompletableFuture<List<Boolean>> clearSlowLogResponses(Set<ServerName> serverNames) {
     return wrap(rawAdmin.clearSlowLogResponses(serverNames));
   }
@@ -927,12 +938,5 @@ class AsyncHBaseAdmin implements AsyncAdmin {
   public CompletableFuture<Void>
     updateRSGroupConfig(String groupName, Map<String, String> configuration) {
     return wrap(rawAdmin.updateRSGroupConfig(groupName, configuration));
-  }
-
-  @Override
-  public CompletableFuture<List<LogEntry>> getLogEntries(Set<ServerName> serverNames,
-      String logType, ServerType serverType, int limit,
-      Map<String, Object> filterParams) {
-    return wrap(rawAdmin.getLogEntries(serverNames, logType, serverType, limit, filterParams));
   }
 }

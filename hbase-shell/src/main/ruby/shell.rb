@@ -297,11 +297,11 @@ For more on the HBase Shell, see http://hbase.apache.org/book.html
       return @irb_workspace unless @irb_workspace.nil?
 
       hbase_receiver = HBaseReceiver.new
+      # Install all the hbase commands, constants, and instance variables @shell and @hbase. This
+      # must be BEFORE the irb commands are installed so that our help command is not overwritten.
+      export_all(hbase_receiver)
       # install all the IRB commands onto our receiver
       IRB::ExtendCommandBundle.extend_object(hbase_receiver)
-      # Install all the hbase commands, constants, and instance variables @shell and @hbase. This
-      # will override names that conflict with IRB methods like "help".
-      export_all(hbase_receiver)
       ::IRB::WorkSpace.new(hbase_receiver.get_binding)
     end
 
@@ -311,10 +311,7 @@ For more on the HBase Shell, see http://hbase.apache.org/book.html
     # Unlike Ruby's require or load, this method allows us to execute code with a custom binding. In
     # this case, we are using the binding constructed with all the HBase shell constants and
     # methods.
-    #
-    # @param [IO] io instance of Ruby's IO (or subclass like File) to read script from
-    # @param [String] filename to print in tracebacks
-    def eval_io(io, filename = 'stdin')
+    def eval_io(io)
       require 'irb/ruby-lex'
       # Mixing HBaseIOExtensions into IO allows us to pass IO objects to RubyLex.
       IO.include HBaseIOExtensions
@@ -323,20 +320,10 @@ For more on the HBase Shell, see http://hbase.apache.org/book.html
       scanner = RubyLex.new
       scanner.set_input(io)
 
-      scanner.each_top_level_statement do |statement, linenum|
-        puts(workspace.evaluate(nil, statement, filename, linenum))
-      end
-      nil
-    end
-
-    ##
-    # Runs a block and logs exception from both Ruby and Java, optionally discarding the traceback
-    #
-    # @param [Boolean] hide_traceback if true, Exceptions will be converted to
-    #   a SystemExit so that the traceback is not printed
-    def self.exception_handler(hide_traceback)
       begin
-        yield
+        scanner.each_top_level_statement do |statement, linenum|
+          puts(workspace.evaluate(nil, statement, 'stdin', linenum))
+        end
       rescue Exception => e
         message = e.to_s
         # exception unwrapping in shell means we'll have to handle Java exceptions
@@ -348,9 +335,12 @@ For more on the HBase Shell, see http://hbase.apache.org/book.html
         # Include the 'ERROR' string to try to make transition easier for scripts that
         # may have already been relying on grepping output.
         puts "ERROR #{e.class}: #{message}"
-        raise e unless hide_traceback
-
-        exit 1
+        if $fullBacktrace
+          # re-raising the will include a backtrace and exit.
+          raise e
+        else
+          exit 1
+        end
       end
       nil
     end
@@ -454,7 +444,6 @@ Shell.load_command_group(
     compact
     compaction_switch
     flush
-    get_balancer_decisions
     get_slowlog_responses
     get_largelog_responses
     major_compact
@@ -464,6 +453,7 @@ Shell.load_command_group(
     unassign
     zk_dump
     wal_roll
+    wal_archive
     hbck_chore_run
     catalogjanitor_run
     catalogjanitor_switch
@@ -628,6 +618,5 @@ Shell.load_command_group(
     rename_rsgroup
     alter_rsgroup_config
     show_rsgroup_config
-    get_namespace_rsgroup
   ]
 )

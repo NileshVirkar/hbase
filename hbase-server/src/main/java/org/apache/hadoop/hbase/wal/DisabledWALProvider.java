@@ -25,15 +25,14 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.PrivateCellUtil;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl.WriteEntry;
+import org.apache.hadoop.hbase.regionserver.RegionServerServices;
 import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
 import org.apache.hadoop.hbase.regionserver.wal.WALCoprocessorHost;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
@@ -57,8 +56,7 @@ class DisabledWALProvider implements WALProvider {
   WAL disabled;
 
   @Override
-  public void init(WALFactory factory, Configuration conf, String providerId, Abortable abortable)
-      throws IOException {
+  public void init(WALFactory factory, Configuration conf, String providerId) throws IOException {
     if (null != disabled) {
       throw new IllegalStateException("WALProvider.init should only be called once.");
     }
@@ -147,6 +145,10 @@ class DisabledWALProvider implements WALProvider {
     }
 
     @Override
+    public void archive(RegionServerServices services) {
+    }
+
+    @Override
     public void shutdown() {
       if(closed.compareAndSet(false, true)) {
         if (!this.listeners.isEmpty()) {
@@ -227,7 +229,7 @@ class DisabledWALProvider implements WALProvider {
     }
 
     @Override
-    public void completeCacheFlush(final byte[] encodedRegionName, long maxFlushedSeqId) {
+    public void completeCacheFlush(final byte[] encodedRegionName) {
     }
 
     @Override

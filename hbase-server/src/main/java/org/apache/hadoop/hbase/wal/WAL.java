@@ -24,12 +24,15 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.regionserver.RegionServerServices;
 import org.apache.hadoop.hbase.regionserver.wal.FailedLogCloseException;
 import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
 import org.apache.hadoop.hbase.regionserver.wal.WALCoprocessorHost;
 import org.apache.hadoop.hbase.replication.regionserver.WALFileLengthProvider;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
+
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * A Write Ahead Log (WAL) provides service for reading, writing waledits. This interface provides
@@ -80,6 +83,11 @@ public interface WAL extends Closeable, WALFileLengthProvider {
    *         region names as returned by {@link RegionInfo#getEncodedName()}
    */
   Map<byte[], List<byte[]>> rollWriter(boolean force) throws IOException;
+
+  /**
+   * Archive the earliest log file.
+   */
+  void archive(RegionServerServices services) throws IOException;
 
   /**
    * Stop accepting new writes. If we have unsynced writes still in buffer, sync them.
@@ -182,7 +190,7 @@ public interface WAL extends Closeable, WALFileLengthProvider {
    * being flushed; in other words, this is effectively same as a flush of all of the region
    * though we were passed a subset of regions. Otherwise, it returns the sequence id of the
    * oldest/lowest outstanding edit.
-   * @see #completeCacheFlush(byte[], long)
+   * @see #completeCacheFlush(byte[])
    * @see #abortCacheFlush(byte[])
    */
   Long startCacheFlush(final byte[] encodedRegionName, Set<byte[]> families);
@@ -192,12 +200,10 @@ public interface WAL extends Closeable, WALFileLengthProvider {
   /**
    * Complete the cache flush.
    * @param encodedRegionName Encoded region name.
-   * @param maxFlushedSeqId The maxFlushedSeqId for this flush. There is no edit in memory that is
-   *          less that this sequence id.
    * @see #startCacheFlush(byte[], Set)
    * @see #abortCacheFlush(byte[])
    */
-  void completeCacheFlush(final byte[] encodedRegionName, long maxFlushedSeqId);
+  void completeCacheFlush(final byte[] encodedRegionName);
 
   /**
    * Abort a cache flush. Call if the flush fails. Note that the only recovery
@@ -219,6 +225,7 @@ public interface WAL extends Closeable, WALFileLengthProvider {
    * @deprecated Since version 1.2.0. Removing because not used and exposes subtle internal
    * workings. Use {@link #getEarliestMemStoreSeqNum(byte[], byte[])}
    */
+  @VisibleForTesting
   @Deprecated
   long getEarliestMemStoreSeqNum(byte[] encodedRegionName);
 

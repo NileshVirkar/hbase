@@ -1,4 +1,5 @@
-/*
+/**
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -42,10 +43,7 @@ import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.CompactType;
 import org.apache.hadoop.hbase.client.CompactionState;
 import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.ServerType;
-import org.apache.hadoop.hbase.client.LogEntry;
 import org.apache.hadoop.hbase.client.LogQueryFilter;
-import org.apache.hadoop.hbase.client.NormalizeTableFilterParams;
 import org.apache.hadoop.hbase.client.OnlineLogRecord;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.SnapshotDescription;
@@ -604,8 +602,9 @@ public class ThriftAdmin implements Admin {
   }
 
   @Override
-  public void unassign(byte[] regionName) {
+  public void unassign(byte[] regionName, boolean force) {
     throw new NotImplementedException("unassign not supported in ThriftAdmin");
+
   }
 
   @Override
@@ -640,7 +639,7 @@ public class ThriftAdmin implements Admin {
   }
 
   @Override
-  public boolean normalize(NormalizeTableFilterParams ntfp) {
+  public boolean normalize() {
     throw new NotImplementedException("normalize not supported in ThriftAdmin");
   }
 
@@ -792,6 +791,11 @@ public class ThriftAdmin implements Admin {
   public void rollWALWriter(ServerName serverName) {
     throw new NotImplementedException("rollWALWriter not supported in ThriftAdmin");
 
+  }
+
+  @Override
+  public void archiveWAL(ServerName serverName) {
+    throw new NotImplementedException("archiveWAL not supported in ThriftAdmin");
   }
 
   @Override
@@ -1277,12 +1281,5 @@ public class ThriftAdmin implements Admin {
   public void updateRSGroupConfig(String groupName, Map<String, String> configuration)
       throws IOException {
     throw new NotImplementedException("updateRSGroupConfig not supported in ThriftAdmin");
-  }
-
-  @Override
-  public List<LogEntry> getLogEntries(Set<ServerName> serverNames, String logType,
-      ServerType serverType, int limit, Map<String, Object> filterParams)
-      throws IOException {
-    throw new NotImplementedException("getLogEntries not supported in ThriftAdmin");
   }
 }

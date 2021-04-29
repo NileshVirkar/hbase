@@ -28,9 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.regionserver.RegionServerServices;
 import org.apache.hadoop.hbase.regionserver.wal.AbstractFSWAL;
 import org.apache.hadoop.hbase.regionserver.wal.FailedLogCloseException;
 import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
@@ -87,11 +87,6 @@ public abstract class AbstractWALRoller<T extends Abortable> extends Thread
               AbstractWALRoller.this.notifyAll();
             }
           }
-
-          @Override
-          public void postLogArchive(Path oldPath, Path newPath) throws IOException {
-            afterWALArchive(oldPath, newPath);
-          }
         });
       }
     }
@@ -103,6 +98,14 @@ public abstract class AbstractWALRoller<T extends Abortable> extends Thread
         controller.requestRoll();
       }
       notifyAll();
+    }
+  }
+
+  public void requestArchive() throws IOException {
+    synchronized (this) {
+      for (WAL wal : wals.keySet()) {
+        wal.archive((RegionServerServices) this.abortable);
+      }
     }
   }
 
@@ -196,6 +199,7 @@ public abstract class AbstractWALRoller<T extends Abortable> extends Thread
             LOG.warn("WAL has been closed. Skipping rolling of writer and just remove it", e);
             iter.remove();
           }
+          afterRoll(wal);
         }
       } catch (FailedLogCloseException | ConnectException e) {
         abort("Failed log close in log roller", e);
@@ -211,7 +215,10 @@ public abstract class AbstractWALRoller<T extends Abortable> extends Thread
     LOG.info("LogRoller exiting.");
   }
 
-  protected void afterWALArchive(Path oldPath, Path newPath) {
+  /**
+   * Called after we finish rolling the give {@code wal}.
+   */
+  protected void afterRoll(WAL wal) {
   }
 
   /**

@@ -71,7 +71,6 @@ import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequester;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.security.access.AccessChecker;
 import org.apache.hadoop.hbase.security.access.ZKPermissionWatcher;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
@@ -82,6 +81,8 @@ import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ArchiveWALRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ArchiveWALResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearCompactionQueuesRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearCompactionQueuesResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearRegionBlockCacheRequest;
@@ -114,6 +115,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ReplicateWA
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ReplicateWALEntryResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.RollWALWriterRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.RollWALWriterResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.SlowLogResponseRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.SlowLogResponses;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.StopServerRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.StopServerResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.UpdateConfigurationRequest;
@@ -515,6 +518,12 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   }
 
   @Override
+  public ArchiveWALResponse archiveWAL(RpcController controller,
+    ArchiveWALRequest request) throws ServiceException {
+    return null;
+  }
+
+  @Override
   public GetServerInfoResponse getServerInfo(RpcController controller,
       GetServerInfoRequest request) throws ServiceException {
     return null;
@@ -678,14 +687,20 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   }
 
   @Override
-  public ClearSlowLogResponses clearSlowLogsResponses(RpcController controller,
-      ClearSlowLogResponseRequest request) throws ServiceException {
+  public SlowLogResponses getSlowLogResponses(RpcController controller,
+      SlowLogResponseRequest request) throws ServiceException {
     return null;
   }
 
   @Override
-  public HBaseProtos.LogEntry getLogEntries(RpcController controller,
-      HBaseProtos.LogRequest request) throws ServiceException {
+  public SlowLogResponses getLargeLogResponses(RpcController controller,
+      SlowLogResponseRequest request) throws ServiceException {
+    return null;
+  }
+
+  @Override
+  public ClearSlowLogResponses clearSlowLogsResponses(RpcController controller,
+      ClearSlowLogResponseRequest request) throws ServiceException {
     return null;
   }
 
