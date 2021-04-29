@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 package org.apache.hadoop.hbase.wal;
-
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -57,7 +56,7 @@ import org.apache.hadoop.hbase.zookeeper.ZKSplitLog;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
@@ -158,6 +157,7 @@ public final class WALSplitUtil {
    * @return Path to file into which to dump split log edits.
    */
   @SuppressWarnings("deprecation")
+  @VisibleForTesting
   static Path getRegionSplitEditsPath(TableName tableName, byte[] encodedRegionName, long seqId,
       String fileNameBeingSplit, String tmpDirName, Configuration conf) throws IOException {
     FileSystem walFS = CommonFSUtils.getWALFileSystem(conf);
@@ -207,6 +207,7 @@ public final class WALSplitUtil {
     return new Path(srcPath.getParent(), fileName);
   }
 
+  @VisibleForTesting
   static String formatRecoveredEditsFileName(final long seqid) {
     return String.format("%019d", seqid);
   }
@@ -334,7 +335,8 @@ public final class WALSplitUtil {
   public static Path moveAsideBadEditsFile(final FileSystem fs, final Path edits)
       throws IOException {
     Path moveAsideName =
-        new Path(edits.getParent(), edits.getName() + "." + System.currentTimeMillis());
+        new Path(edits.getParent(), edits.getName() + "." + System.currentTimeMillis() +
+          HConstants.HREGION_EDITS_CORRUPTED_SUFFIX);
     if (!fs.rename(edits, moveAsideName)) {
       LOG.warn("Rename failed from {} to {}", edits, moveAsideName);
     }
@@ -344,6 +346,7 @@ public final class WALSplitUtil {
   /**
    * Is the given file a region open sequence id file.
    */
+  @VisibleForTesting
   public static boolean isSequenceIdFile(final Path file) {
     return file.getName().endsWith(SEQUENCE_ID_FILE_SUFFIX)
         || file.getName().endsWith(OLD_SEQUENCE_ID_FILE_SUFFIX);
