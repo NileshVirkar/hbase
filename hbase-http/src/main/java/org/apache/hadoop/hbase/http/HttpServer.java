@@ -36,6 +36,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
 import javax.servlet.Filter;
 import javax.servlet.FilterChain;
 import javax.servlet.FilterConfig;
@@ -52,7 +53,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.http.conf.ConfServlet;
-import org.apache.hadoop.hbase.http.jmx.JMXJsonServlet;
 import org.apache.hadoop.hbase.http.log.LogLevel;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
 import org.apache.hadoop.hbase.util.Threads;
@@ -64,34 +64,35 @@ import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.util.Shell;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
+import org.eclipse.jetty.http.HttpVersion;
+import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.HttpConfiguration;
+import org.eclipse.jetty.server.HttpConnectionFactory;
+import org.eclipse.jetty.server.RequestLog;
+import org.eclipse.jetty.server.SecureRequestCustomizer;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.SslConnectionFactory;
+import org.eclipse.jetty.server.handler.ContextHandlerCollection;
+import org.eclipse.jetty.server.handler.HandlerCollection;
+import org.eclipse.jetty.server.handler.RequestLogHandler;
+import org.eclipse.jetty.servlet.DefaultServlet;
+import org.eclipse.jetty.servlet.FilterHolder;
+import org.eclipse.jetty.servlet.FilterMapping;
+import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.servlet.ServletHolder;
+import org.eclipse.jetty.util.MultiException;
+import org.eclipse.jetty.util.ssl.SslContextFactory;
+import org.eclipse.jetty.util.thread.QueuedThreadPool;
+import org.eclipse.jetty.webapp.WebAppContext;
+import org.glassfish.jersey.server.ResourceConfig;
+import org.glassfish.jersey.servlet.ServletContainer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.http.HttpVersion;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.Handler;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.HttpConfiguration;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.HttpConnectionFactory;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.RequestLog;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SecureRequestCustomizer;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.Server;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.ServerConnector;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SslConnectionFactory;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.HandlerCollection;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.RequestLogHandler;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.gzip.GzipHandler;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.DefaultServlet;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.FilterHolder;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.FilterMapping;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletContextHandler;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletHolder;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.util.MultiException;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.util.thread.QueuedThreadPool;
-import org.apache.hbase.thirdparty.org.eclipse.jetty.webapp.WebAppContext;
-import org.apache.hbase.thirdparty.org.glassfish.jersey.server.ResourceConfig;
-import org.apache.hbase.thirdparty.org.glassfish.jersey.servlet.ServletContainer;
 
 /**
  * Create a Jetty embedded server to answer http requests. The primary goal
@@ -152,6 +153,15 @@ public class HttpServer implements FilterContainer {
   public static final String NO_CACHE_FILTER = "NoCacheFilter";
   public static final String APP_DIR = "webapps";
 
+  public static final String METRIC_SERVLETS_CONF_KEY = "hbase.http.metrics.servlets";
+  public static final String METRICS_SERVLETS_DEFAULT[] = { "jmx", "metrics"};
+  private static final Map<String, ServletConfig> METRIC_SERVLETS = new HashMap<String, ServletConfig>() {{
+    put("jmx", new ServletConfig("jmx", "/jmx", "org.apache.hadoop.hbase.http.jmx.JMXJsonServlet"));
+    put("metrics", new ServletConfig("metrics", "/metrics", "org.apache.hadoop.metrics.MetricsServlet"));
+    put("prometheus", new ServletConfig("prometheus", "/prometheus", "org.apache.hadoop.hbase.http.prometheus.PrometheusServlet"));
+    put("prometheus-hadoop2", new ServletConfig("prometheus-hadoop2", "/prometheus-hadoop2", "org.apache.hadoop.hbase.http.prometheus.PrometheusHadoop2Servlet"));
+  }};
+
   private final AccessControlList adminsAcl;
 
   protected final Server webServer;
@@ -173,6 +183,7 @@ public class HttpServer implements FilterContainer {
 
   private final List<ListenerInfo> listeners = Lists.newArrayList();
 
+  @VisibleForTesting
   public List<ServerConnector> getServerConnectors() {
     return listeners.stream().map(info -> info.listener).collect(Collectors.toList());
   }
@@ -412,7 +423,6 @@ public class HttpServer implements FilterContainer {
         httpConfig.setHeaderCacheSize(DEFAULT_MAX_HEADER_SIZE);
         httpConfig.setResponseHeaderSize(DEFAULT_MAX_HEADER_SIZE);
         httpConfig.setRequestHeaderSize(DEFAULT_MAX_HEADER_SIZE);
-        httpConfig.setSendServerVersion(false);
 
         if ("http".equals(scheme)) {
           listener = new ServerConnector(server.webServer, new HttpConnectionFactory(httpConfig));
@@ -575,7 +585,6 @@ public class HttpServer implements FilterContainer {
     this.findPort = b.findPort;
     this.authenticationEnabled = b.securityEnabled;
     initializeWebServer(b.name, b.hostName, b.conf, b.pathSpecs, b);
-    this.webServer.setHandler(buildGzipHandler(this.webServer.getHandler()));
   }
 
   private void initializeWebServer(String name, String hostName,
@@ -663,23 +672,6 @@ public class HttpServer implements FilterContainer {
     return ctx;
   }
 
-  /**
-   * Construct and configure an instance of {@link GzipHandler}. With complex
-   * multi-{@link WebAppContext} configurations, it's easiest to apply this handler directly to the
-   * instance of {@link Server} near the end of its configuration, something like
-   * <pre>
-   *    Server server = new Server();
-   *    //...
-   *    server.setHandler(buildGzipHandler(server.getHandler()));
-   *    server.start();
-   * </pre>
-   */
-  public static GzipHandler buildGzipHandler(final Handler wrapped) {
-    final GzipHandler gzipHandler = new GzipHandler();
-    gzipHandler.setHandler(wrapped);
-    return gzipHandler;
-  }
-
   private static void addNoCacheFilter(WebAppContext ctxt) {
     defineFilter(ctxt, NO_CACHE_FILTER, NoCacheFilter.class.getName(),
         Collections.<String, String> emptyMap(), new String[] { "/*" });
@@ -752,16 +744,7 @@ public class HttpServer implements FilterContainer {
     // set up default servlets
     addPrivilegedServlet("stacks", "/stacks", StackServlet.class);
     addPrivilegedServlet("logLevel", "/logLevel", LogLevel.Servlet.class);
-    // Hadoop3 has moved completely to metrics2, and  dropped support for Metrics v1's
-    // MetricsServlet (see HADOOP-12504).  We'll using reflection to load if against hadoop2.
-    // Remove when we drop support for hbase on hadoop2.x.
-    try {
-      Class<?> clz = Class.forName("org.apache.hadoop.metrics.MetricsServlet");
-      addPrivilegedServlet("metrics", "/metrics", clz.asSubclass(HttpServlet.class));
-    } catch (Exception e) {
-      // do nothing
-    }
-    addPrivilegedServlet("jmx", "/jmx", JMXJsonServlet.class);
+
     // While we don't expect users to have sensitive information in their configuration, they
     // might. Give them an option to not expose the service configuration to all users.
     if (conf.getBoolean(HTTP_PRIVILEGED_CONF_KEY, HTTP_PRIVILEGED_CONF_DEFAULT)) {
@@ -784,6 +767,19 @@ public class HttpServer implements FilterContainer {
       addUnprivilegedServlet("prof", "/prof", ProfileServlet.DisabledServlet.class);
       LOG.info("ASYNC_PROFILER_HOME environment variable and async.profiler.home system property " +
         "not specified. Disabling /prof endpoint.");
+    }
+
+    /* register metrics servlets */
+    String enabledServlets[] = conf.getStrings(METRIC_SERVLETS_CONF_KEY, METRICS_SERVLETS_DEFAULT);
+    for (String enabledServlet : enabledServlets) {
+      try {
+        ServletConfig servletConfig = METRIC_SERVLETS.get(enabledServlet);
+        Class<?> clz = Class.forName(servletConfig.getClazz());
+        addPrivilegedServlet(servletConfig.getName(), servletConfig.getPathSpec(), clz.asSubclass(HttpServlet.class));
+      } catch (Exception e) {
+        /* shouldn't be fatal, so warn the user about it */
+        LOG.warn("Couldn't register the servlet " + enabledServlet, e);
+      }
     }
   }
 
@@ -874,8 +870,6 @@ public class HttpServer implements FilterContainer {
       fmap.setFilterName(AdminAuthorizedFilter.class.getSimpleName());
       webAppContext.getServletHandler().addFilter(filter, fmap);
     }
-    webAppContext.getSessionHandler().getSessionCookieConfig().setHttpOnly(true);
-    webAppContext.getSessionHandler().getSessionCookieConfig().setSecure(true);
     webAppContext.addServlet(holder, pathSpec);
   }
 
@@ -1138,6 +1132,7 @@ public class HttpServer implements FilterContainer {
    * Open the main listener for the server
    * @throws Exception if the listener cannot be opened or the appropriate port is already in use
    */
+  @VisibleForTesting
   void openListeners() throws Exception {
     for (ListenerInfo li : listeners) {
       ServerConnector listener = li.listener;
