@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -31,6 +31,7 @@ import org.apache.hadoop.hbase.security.SecurityInfo;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.provider.SaslClientAuthenticationProvider;
 import org.apache.hadoop.hbase.security.provider.SaslClientAuthenticationProviders;
+import org.apache.hadoop.hbase.util.Addressing;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.io.compress.CompressionCodec;
@@ -89,7 +90,18 @@ abstract class RpcConnection {
       MetricsConnection metrics) throws IOException {
     this.timeoutTimer = timeoutTimer;
     this.codec = codec;
-    this.compressor = compressor;
+    if (compressor != null) {
+      // Only enable compression for remote rpcs.
+      InetSocketAddress remoteAddr = Address.toSocketAddress(remoteId.getAddress());
+      if (!remoteAddr.isUnresolved() && Addressing.isLocalAddress(remoteAddr.getAddress())) {
+          this.compressor = null;
+      } else {
+        this.compressor = compressor;
+      }
+    } else {
+      this.compressor = null;
+    }
+
     this.conf = conf;
     this.metrics = metrics;
     User ticket = remoteId.getTicket();
@@ -132,8 +144,8 @@ abstract class RpcConnection {
         @Override
         public void run(Timeout timeout) throws Exception {
           call.setTimeout(new CallTimeoutException(call.toShortString() + ", waitTime="
-              + (EnvironmentEdgeManager.currentTime() - call.getStartTime()) + "ms, rpcTimeout="
-              + call.timeout + "ms"));
+              + (EnvironmentEdgeManager.currentTime() - call.getStartTime()) + ", rpcTimeout="
+              + call.timeout));
           callTimeout(call);
         }
       }, call.timeout, TimeUnit.MILLISECONDS);
