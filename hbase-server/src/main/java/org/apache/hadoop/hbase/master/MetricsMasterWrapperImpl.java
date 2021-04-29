@@ -30,6 +30,8 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.metrics.Histogram;
+import org.apache.hadoop.hbase.procedure2.ProcedureMetrics;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.hadoop.hbase.quotas.QuotaObserverChore;
 import org.apache.hadoop.hbase.quotas.SpaceQuotaSnapshot;
@@ -55,18 +57,12 @@ public class MetricsMasterWrapperImpl implements MetricsMasterWrapper {
 
   @Override
   public long getSplitPlanCount() {
-    if (master.getRegionNormalizerManager() == null) {
-      return 0;
-    }
-    return master.getRegionNormalizerManager().getSplitPlanCount();
+    return master.getSplitPlanCount();
   }
 
   @Override
   public long getMergePlanCount() {
-    if (master.getRegionNormalizerManager() == null) {
-      return 0;
-    }
-    return master.getRegionNormalizerManager().getMergePlanCount();
+    return master.getMergePlanCount();
   }
 
   @Override
@@ -142,24 +138,6 @@ public class MetricsMasterWrapperImpl implements MetricsMasterWrapper {
 
   @Override public boolean isRunning() {
     return !(master.isStopped() || master.isStopping());
-  }
-
-  @Override
-  public String getDrainingRegionServers() {
-    ServerManager serverManager = this.master.getServerManager();
-    if (serverManager == null) {
-        return "";
-    }
-    return StringUtils.join(serverManager.getDrainingServersList()  , ";");
-  }
-
-  @Override
-  public int getNumDrainingRegionServers() {
-    ServerManager serverManager = this.master.getServerManager();
-    if (serverManager == null) {
-        return 0;
-    }
-    return serverManager.getDrainingServersList().size();
   }
 
   @Override
@@ -240,5 +218,25 @@ public class MetricsMasterWrapperImpl implements MetricsMasterWrapper {
     } catch (IOException e) {
       return new PairOfSameType<>(0, 0);
     }
+  }
+
+  @Override
+  public long getSplitProcedureRequestCount() {
+    return master.getAssignmentManager().getAssignmentManagerMetrics().getSplitProcMetrics()
+      .getSubmittedCounter().getCount();
+  }
+
+  @Override
+  public long getSplitProcedureSuccessCount() {
+    ProcedureMetrics splitProcMetrics =
+      master.getAssignmentManager().getAssignmentManagerMetrics().getSplitProcMetrics();
+    return splitProcMetrics.getSubmittedCounter().getCount() - splitProcMetrics.getFailedCounter()
+      .getCount();
+  }
+
+  @Override
+  public Histogram getSplitProcedureTimeHisto() {
+    return master.getAssignmentManager().getAssignmentManagerMetrics().getSplitProcMetrics()
+      .getTimeHisto();
   }
 }

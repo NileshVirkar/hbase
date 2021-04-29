@@ -56,11 +56,6 @@ public class MetricsRegionServerSourceImpl
   private final MutableFastCounter slowIncrement;
   private final MutableFastCounter slowAppend;
 
-  // split related metrics
-  private final MutableFastCounter splitRequest;
-  private final MutableFastCounter splitSuccess;
-  private final MetricHistogram splitTimeHisto;
-
   // flush related metrics
   private final MetricHistogram flushTimeHisto;
   private final MetricHistogram flushMemstoreSizeHisto;
@@ -168,10 +163,6 @@ public class MetricsRegionServerSourceImpl
     majorCompactedOutputBytes = getMetricsRegistry()
         .newCounter(MAJOR_COMPACTED_OUTPUT_BYTES, MAJOR_COMPACTED_OUTPUT_BYTES_DESC, 0L);
 
-    splitTimeHisto = getMetricsRegistry().newTimeHistogram(SPLIT_KEY);
-    splitRequest = getMetricsRegistry().newCounter(SPLIT_REQUEST_KEY, SPLIT_REQUEST_DESC, 0L);
-    splitSuccess = getMetricsRegistry().newCounter(SPLIT_SUCCESS_KEY, SPLIT_SUCCESS_DESC, 0L);
-
     // pause monitor metrics
     infoPauseThresholdExceeded = getMetricsRegistry().newCounter(INFO_THRESHOLD_COUNT_KEY,
       INFO_THRESHOLD_COUNT_DESC, 0L);
@@ -244,21 +235,6 @@ public class MetricsRegionServerSourceImpl
   @Override
   public void incrSlowAppend() {
     slowAppend.incr();
-  }
-
-  @Override
-  public void incrSplitRequest() {
-    splitRequest.incr();
-  }
-
-  @Override
-  public void incrSplitSuccess() {
-    splitSuccess.incr();
-  }
-
-  @Override
-  public void updateSplitTime(long t) {
-    splitTimeHisto.add(t);
   }
 
   @Override
@@ -351,8 +327,6 @@ public class MetricsRegionServerSourceImpl
                       rsWrap.getWriteRequestsCount())
               .addCounter(Interns.info(RPC_GET_REQUEST_COUNT, RPC_GET_REQUEST_COUNT_DESC),
                       rsWrap.getRpcGetRequestsCount())
-              .addCounter(Interns.info(RPC_FULL_SCAN_REQUEST_COUNT, RPC_FULL_SCAN_REQUEST_COUNT_DESC),
-                      rsWrap.getRpcFullScanRequestsCount())
               .addCounter(Interns.info(RPC_SCAN_REQUEST_COUNT, RPC_SCAN_REQUEST_COUNT_DESC),
                       rsWrap.getRpcScanRequestsCount())
               .addCounter(Interns.info(RPC_MULTI_REQUEST_COUNT, RPC_MULTI_REQUEST_COUNT_DESC),
@@ -460,8 +434,6 @@ public class MetricsRegionServerSourceImpl
               .addCounter(Interns.info(HEDGED_READS, HEDGED_READS_DESC), rsWrap.getHedgedReadOps())
               .addCounter(Interns.info(HEDGED_READ_WINS, HEDGED_READ_WINS_DESC),
                       rsWrap.getHedgedReadWins())
-              .addCounter(Interns.info(HEDGED_READ_IN_CUR_THREAD, HEDGED_READ_IN_CUR_THREAD_DESC),
-                      rsWrap.getHedgedReadOpsInCurThread())
               .addCounter(Interns.info(BLOCKED_REQUESTS_COUNT, BLOCKED_REQUESTS_COUNT_DESC),
                       rsWrap.getBlockedRequestsCount())
               .tag(Interns.info(ZOOKEEPER_QUORUM_NAME, ZOOKEEPER_QUORUM_DESC),

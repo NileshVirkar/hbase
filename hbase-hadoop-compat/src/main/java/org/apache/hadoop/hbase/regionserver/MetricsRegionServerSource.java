@@ -158,22 +158,6 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   void incrSlowAppend();
 
   /**
-   * Update the split transaction time histogram
-   * @param t time it took, in milliseconds
-   */
-  void updateSplitTime(long t);
-
-  /**
-   * Increment number of a requested splits
-   */
-  void incrSplitRequest();
-
-  /**
-   * Increment number of successful splits
-   */
-  void incrSplitSuccess();
-
-  /**
    * Update the flush time histogram
    * @param t time it took, in milliseconds
    */
@@ -486,9 +470,6 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String HEDGED_READ_WINS = "hedgedReadWins";
   String HEDGED_READ_WINS_DESC =
       "The number of times we started a hedged read and a hedged read won";
-  String HEDGED_READ_IN_CUR_THREAD = "hedgedReadOpsInCurThread";
-  String HEDGED_READ_IN_CUR_THREAD_DESC =
-    "The number of times we execute a hedged read in current thread as a fallback for task rejection";
 
   String TOTAL_BYTES_READ = "totalBytesRead";
   String TOTAL_BYTES_READ_DESC = "The total number of bytes read from HDFS";
@@ -504,12 +485,6 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String BLOCKED_REQUESTS_COUNT = "blockedRequestCount";
   String BLOCKED_REQUESTS_COUNT_DESC = "The number of blocked requests because of memstore size is "
       + "larger than blockingMemStoreSize";
-
-  String SPLIT_KEY = "splitTime";
-  String SPLIT_REQUEST_KEY = "splitRequestCount";
-  String SPLIT_REQUEST_DESC = "Number of splits requested";
-  String SPLIT_SUCCESS_KEY = "splitSuccessCount";
-  String SPLIT_SUCCESS_DESC = "Number of successfully executed splits";
 
   String FLUSH_TIME = "flushTime";
   String FLUSH_TIME_DESC = "Histogram for the time in millis for memstore flush";
@@ -571,9 +546,6 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String RPC_SCAN_REQUEST_COUNT = "rpcScanRequestCount";
   String RPC_SCAN_REQUEST_COUNT_DESC =
       "Number of rpc scan requests this RegionServer has answered.";
-  String RPC_FULL_SCAN_REQUEST_COUNT = "rpcFullScanRequestCount";
-  String RPC_FULL_SCAN_REQUEST_COUNT_DESC =
-      "Number of rpc scan requests that were possible full region scans.";
   String RPC_MULTI_REQUEST_COUNT = "rpcMultiRequestCount";
   String RPC_MULTI_REQUEST_COUNT_DESC =
       "Number of rpc multi requests this RegionServer has answered.";
