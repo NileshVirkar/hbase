@@ -25,7 +25,7 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 @Category({ MasterTests.class, MediumTests.class })
-public class TestStochasticLoadBalancerLargeCluster extends StochasticBalancerTestBase {
+public class TestStochasticLoadBalancerLargeCluster extends BalancerTestBase {
 
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
@@ -38,6 +38,8 @@ public class TestStochasticLoadBalancerLargeCluster extends StochasticBalancerTe
     int numRegionsPerServer = 80; // all servers except one
     int numTables = 100;
     int replication = 1;
+
+    // we need to capture the outlier and generate a move
     testWithCluster(numNodes, numRegions, numRegionsPerServer, replication, numTables, true, true);
   }
 }
