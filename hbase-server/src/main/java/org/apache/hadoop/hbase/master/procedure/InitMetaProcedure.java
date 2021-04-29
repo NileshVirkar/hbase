@@ -17,17 +17,13 @@
  */
 package org.apache.hadoop.hbase.master.procedure;
 
-import static org.apache.hadoop.hbase.NamespaceDescriptor.DEFAULT_NAMESPACE;
-import static org.apache.hadoop.hbase.NamespaceDescriptor.SYSTEM_NAMESPACE;
-import static org.apache.hadoop.hbase.master.TableNamespaceManager.insertNamespaceToMeta;
-import static org.apache.hadoop.hbase.master.procedure.AbstractStateMachineNamespaceProcedure.createDirectory;
-
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.TableDescriptor;
@@ -71,23 +67,28 @@ public class InitMetaProcedure extends AbstractStateMachineTableProcedure<InitMe
     return TableOperationType.CREATE;
   }
 
-  private static TableDescriptor writeFsLayout(Path rootDir, Configuration conf) throws IOException {
+  private static void writeFsLayout(Path rootDir, Configuration conf) throws IOException {
     LOG.info("BOOTSTRAP: creating hbase:meta region");
     FileSystem fs = rootDir.getFileSystem(conf);
     Path tableDir = CommonFSUtils.getTableDir(rootDir, TableName.META_TABLE_NAME);
-    if (fs.exists(tableDir) && !fs.delete(tableDir, true)) {
+    boolean removeMeta = conf.getBoolean(HConstants.REMOVE_META_ON_RESTART,
+      HConstants.DEFAULT_REMOVE_META_ON_RESTART);
+    // we use zookeeper data to tell if this is a partial created meta, if so we should delete
+    // and recreate the meta table.
+    if (removeMeta && fs.exists(tableDir) && !fs.delete(tableDir, true)) {
       LOG.warn("Can not delete partial created meta table, continue...");
     }
     // Bootstrapping, make sure blockcache is off. Else, one will be
     // created here in bootstrap and it'll need to be cleaned up. Better to
     // not make it in first place. Turn off block caching for bootstrap.
     // Enable after.
-    TableDescriptor metaDescriptor =
-      FSTableDescriptors.tryUpdateAndGetMetaTableDescriptor(conf, fs, rootDir);
+    FSTableDescriptors.tryUpdateMetaTableDescriptor(conf, fs, rootDir,
+      builder -> builder.setRegionReplication(
+        conf.getInt(HConstants.META_REPLICAS_NUM, HConstants.DEFAULT_META_REPLICA_NUM)));
+    TableDescriptor metaDescriptor = new FSTableDescriptors(conf).get(TableName.META_TABLE_NAME);
     HRegion
       .createHRegion(RegionInfoBuilder.FIRST_META_REGIONINFO, rootDir, conf, metaDescriptor, null)
       .close();
-    return metaDescriptor;
   }
 
   @Override
@@ -99,26 +100,13 @@ public class InitMetaProcedure extends AbstractStateMachineTableProcedure<InitMe
         case INIT_META_WRITE_FS_LAYOUT:
           Configuration conf = env.getMasterConfiguration();
           Path rootDir = CommonFSUtils.getRootDir(conf);
-          TableDescriptor td = writeFsLayout(rootDir, conf);
-          env.getMasterServices().getTableDescriptors().update(td, true);
+          writeFsLayout(rootDir, conf);
           setNextState(InitMetaState.INIT_META_ASSIGN_META);
           return Flow.HAS_MORE_STATE;
         case INIT_META_ASSIGN_META:
           LOG.info("Going to assign meta");
           addChildProcedure(env.getAssignmentManager()
             .createAssignProcedures(Arrays.asList(RegionInfoBuilder.FIRST_META_REGIONINFO)));
-          setNextState(InitMetaState.INIT_META_CREATE_NAMESPACES);
-          return Flow.HAS_MORE_STATE;
-        case INIT_META_CREATE_NAMESPACES:
-          LOG.info("Going to create {} and {} namespaces", DEFAULT_NAMESPACE, SYSTEM_NAMESPACE);
-          createDirectory(env, DEFAULT_NAMESPACE);
-          createDirectory(env, SYSTEM_NAMESPACE);
-          // here the TableNamespaceManager has not been initialized yet, so we have to insert the
-          // record directly into meta table, later the TableNamespaceManager will load these two
-          // namespaces when starting.
-          insertNamespaceToMeta(env.getMasterServices().getConnection(), DEFAULT_NAMESPACE);
-          insertNamespaceToMeta(env.getMasterServices().getConnection(), SYSTEM_NAMESPACE);
-
           return Flow.NO_MORE_STATE;
         default:
           throw new UnsupportedOperationException("unhandled state=" + state);
@@ -139,13 +127,6 @@ public class InitMetaProcedure extends AbstractStateMachineTableProcedure<InitMe
   @Override
   protected boolean waitInitialized(MasterProcedureEnv env) {
     // we do not need to wait for master initialized, we are part of the initialization.
-    return false;
-  }
-
-  @Override
-  protected synchronized boolean setTimeoutFailure(MasterProcedureEnv env) {
-    setState(ProcedureProtos.ProcedureState.RUNNABLE);
-    env.getProcedureScheduler().addFront(this);
     return false;
   }
 
