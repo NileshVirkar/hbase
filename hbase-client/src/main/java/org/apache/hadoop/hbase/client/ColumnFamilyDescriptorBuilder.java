@@ -41,6 +41,8 @@ import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.ColumnFamilySchema;
+import static org.apache.hadoop.hbase.client.ColumnFamilyDescriptor.REPLICATION_SCOPE_BYTES;
+import static org.apache.hadoop.hbase.util.ColumnFamilyAttributeValidator.validateAttributeValue;
 
 /**
  * @since 2.0.0
@@ -75,10 +77,6 @@ public class ColumnFamilyDescriptorBuilder {
   @InterfaceAudience.Private
   public static final String COMPRESSION_COMPACT = "COMPRESSION_COMPACT";
   private static final Bytes COMPRESSION_COMPACT_BYTES = new Bytes(Bytes.toBytes(COMPRESSION_COMPACT));
-  public static final String COMPRESSION_COMPACT_MAJOR = "COMPRESSION_COMPACT_MAJOR";
-  private static final Bytes COMPRESSION_COMPACT_MAJOR_BYTES = new Bytes(Bytes.toBytes(COMPRESSION_COMPACT_MAJOR));
-  public static final String COMPRESSION_COMPACT_MINOR = "COMPRESSION_COMPACT_MINOR";
-  private static final Bytes COMPRESSION_COMPACT_MINOR_BYTES = new Bytes(Bytes.toBytes(COMPRESSION_COMPACT_MINOR));
   @InterfaceAudience.Private
   public static final String DATA_BLOCK_ENCODING = "DATA_BLOCK_ENCODING";
   private static final Bytes DATA_BLOCK_ENCODING_BYTES = new Bytes(Bytes.toBytes(DATA_BLOCK_ENCODING));
@@ -286,6 +284,7 @@ public class ColumnFamilyDescriptorBuilder {
 
   private final static Set<Bytes> RESERVED_KEYWORDS = new HashSet<>();
 
+
   static {
     DEFAULT_VALUES.put(BLOOMFILTER, DEFAULT_BLOOMFILTER.name());
     DEFAULT_VALUES.put(REPLICATION_SCOPE, String.valueOf(DEFAULT_REPLICATION_SCOPE));
@@ -450,16 +449,6 @@ public class ColumnFamilyDescriptorBuilder {
 
   public ColumnFamilyDescriptorBuilder setCompactionCompressionType(Compression.Algorithm value) {
     desc.setCompactionCompressionType(value);
-    return this;
-  }
-
-  public ColumnFamilyDescriptorBuilder setMajorCompactionCompressionType(Compression.Algorithm value) {
-    desc.setMajorCompactionCompressionType(value);
-    return this;
-  }
-
-  public ColumnFamilyDescriptorBuilder setMinorCompactionCompressionType(Compression.Algorithm value) {
-    desc.setMinorCompactionCompressionType(value);
     return this;
   }
 
@@ -701,6 +690,7 @@ public class ColumnFamilyDescriptorBuilder {
       if (value == null || value.getLength() == 0) {
         values.remove(key);
       } else {
+        validateAttributeValue(key, value);
         values.put(key, value);
       }
       return this;
@@ -853,18 +843,6 @@ public class ColumnFamilyDescriptorBuilder {
         n -> Compression.Algorithm.valueOf(n.toUpperCase()), getCompressionType());
     }
 
-    @Override
-    public Compression.Algorithm getMajorCompactionCompressionType() {
-      return getStringOrDefault(COMPRESSION_COMPACT_MAJOR_BYTES,
-        n -> Compression.Algorithm.valueOf(n.toUpperCase()), getCompactionCompressionType());
-    }
-
-    @Override
-    public Compression.Algorithm getMinorCompactionCompressionType() {
-      return getStringOrDefault(COMPRESSION_COMPACT_MINOR_BYTES,
-        n -> Compression.Algorithm.valueOf(n.toUpperCase()), getCompactionCompressionType());
-    }
-
     /**
      * Compression types supported in hbase. LZO is not bundled as part of the
      * hbase distribution. See
@@ -877,16 +855,6 @@ public class ColumnFamilyDescriptorBuilder {
     public ModifyableColumnFamilyDescriptor setCompactionCompressionType(
             Compression.Algorithm type) {
       return setValue(COMPRESSION_COMPACT_BYTES, type.name());
-    }
-
-    public ModifyableColumnFamilyDescriptor setMajorCompactionCompressionType(
-        Compression.Algorithm type) {
-      return setValue(COMPRESSION_COMPACT_MAJOR_BYTES, type.name());
-    }
-
-    public ModifyableColumnFamilyDescriptor setMinorCompactionCompressionType(
-        Compression.Algorithm type) {
-      return setValue(COMPRESSION_COMPACT_MINOR_BYTES, type.name());
     }
 
     @Override
@@ -1411,6 +1379,5 @@ public class ColumnFamilyDescriptorBuilder {
     public ModifyableColumnFamilyDescriptor setStoragePolicy(String policy) {
       return setValue(STORAGE_POLICY_BYTES, policy);
     }
-
   }
 }

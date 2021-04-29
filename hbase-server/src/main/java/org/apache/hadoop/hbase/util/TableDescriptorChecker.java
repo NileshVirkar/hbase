@@ -208,6 +208,13 @@ public final class TableDescriptorChecker {
       } catch (IllegalArgumentException e) {
         warnOrThrowExceptionForFailure(logWarn, e.getMessage(), e);
       }
+
+      // check Data Block Encoding
+      try {
+        hcd.getDataBlockEncoding();
+      } catch (IllegalArgumentException e) {
+        warnOrThrowExceptionForFailure(false, e.getMessage(), e);
+      }
     }
   }
 
@@ -293,8 +300,6 @@ public final class TableDescriptorChecker {
     for (ColumnFamilyDescriptor cfd : td.getColumnFamilies()) {
       CompressionTest.testCompression(cfd.getCompressionType());
       CompressionTest.testCompression(cfd.getCompactionCompressionType());
-      CompressionTest.testCompression(cfd.getMajorCompactionCompressionType());
-      CompressionTest.testCompression(cfd.getMinorCompactionCompressionType());
     }
   }
 
