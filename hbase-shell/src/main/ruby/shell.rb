@@ -203,7 +203,7 @@ module Shell
       puts 'HBase Shell'
       puts 'Use "help" to get list of supported commands.'
       puts 'Use "exit" to quit this interactive shell.'
-      puts 'For Reference, please visit: http://hbase.apache.org/book.html#shell'
+      puts 'For Reference, please visit: http://hbase.apache.org/2.0/book.html#shell'
       print 'Version '
       command('version')
       puts
@@ -527,7 +527,6 @@ Shell.load_command_group(
     get_peer_config
     list_peer_configs
     update_peer_config
-    transit_peer_sync_replication_state
   ]
 )
 
@@ -552,6 +551,7 @@ Shell.load_command_group(
   commands: %w[
     update_config
     update_all_config
+    update_rsgroup_config
   ]
 )
 
